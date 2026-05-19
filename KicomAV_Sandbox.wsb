@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Configuration>
+  <Vgpu>Enable</Vgpu>
+  <Networking>Enable</Networking>
+  <ClipboardRedirection>Enable</ClipboardRedirection>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ProtectedClient>Disable</ProtectedClient>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <DisplayLink>Disable</DisplayLink>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>D:\Random Projects\KicomAI_Project</HostFolder>
+      <SandboxFolder>C:\KicomAV_Project</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>D:\Random Projects\Python Installer\python_embed</HostFolder>
+      <SandboxFolder>C:\python_embed</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>D:\Random Projects\Python Installer\pip_cache</HostFolder>
+      <SandboxFolder>C:\pip_cache</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>D:\Random Programs\Sandboxie-Plus</HostFolder>
+      <SandboxFolder>C:\Sandboxie-Plus</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>cmd.exe /c "setx PATH C:\python_embed;C:\python_embed\Scripts;%PATH% &amp;&amp; explorer.exe C:\KicomAV_Project"</Command>
+  </LogonCommand>
+</Configuration>

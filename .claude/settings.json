@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "tokensave": {
+      "command": "D:\\Claude Co worker\\Token Save\\tokensave.exe",
+      "args": [
+        "serve",
+        "--path",
+        "D:\\Random Projects\\KicomAI_Project"
+      ]
+    }
+  }
+}

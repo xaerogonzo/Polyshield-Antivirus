@@ -1,0 +1,396 @@
+import subprocess
+import threading
+import json
+import re
+import os
+import shutil
+import ctypes
+from datetime import datetime
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parents[3]
+K2_EXE = str(BASE_DIR / "kicomav_env" / "Scripts" / "k2.exe")
+LOGS_DIR = BASE_DIR / "logs"
+QUARANTINE_DIR = BASE_DIR / "quarantine"
+
+
+def is_available() -> bool:
+    """True if the bundled k2.exe is present. K2 is optional in v1.6.1+."""
+    return Path(K2_EXE).exists()
+
+LOGS_DIR.mkdir(exist_ok=True)
+QUARANTINE_DIR.mkdir(exist_ok=True)
+
+
+def _short_path(path: Path | str) -> str:
+    """
+    Return the 8.3 short-name form of a path so k2.exe receives a space-free
+    argument.  k2 does not handle spaces inside --report= / --infp= values
+    even when subprocess passes them as a single quoted token.
+
+    For a file that doesn't exist yet (e.g. the report output), convert the
+    *parent directory* (which must already exist) and append the filename.
+    Falls back to the original path string if the API call fails (e.g. 8.3
+    names disabled on the volume).
+    """
+    p = Path(path)
+    buf = ctypes.create_unicode_buffer(1024)
+    target = p if p.exists() else p.parent
+    if ctypes.windll.kernel32.GetShortPathNameW(str(target), buf, 1024) and buf.value:
+        short = Path(buf.value)
+        return str(short if p.exists() else short / p.name)
+    return str(path)
+
+_ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
+# Matches a Windows absolute path anywhere in a line
+_FILE_PATH_RE = re.compile(r'([A-Za-z]:[\\\/][^\t\[\]\(\)\n\r]{2,}?)(?:\s|$|\[|\()')
+
+
+def _strip_ansi(text: str) -> str:
+    return _ANSI_ESCAPE.sub("", text)
+
+
+# ── Scan controller (pause / cancel) ─────────────────────────────────────────
+
+_PROCESS_SUSPEND_RESUME = 0x0800  # Windows access right for NtSuspendProcess
+
+
+class ScanController:
+    """
+    Returned by run_scan().  Lets the caller pause, resume, or cancel the
+    running k2.exe process without killing the background thread.
+
+    Thread-safety note: pause()/resume()/cancel() are safe to call from any
+    thread (e.g. the main UI thread via button clicks).
+    """
+
+    def __init__(self):
+        self._proc: subprocess.Popen | None = None
+        self._paused   = False
+        self._cancelled = False
+        self._lock = threading.Lock()
+
+    # Called from inside the background thread once Popen succeeds
+    def _attach(self, proc: subprocess.Popen):
+        with self._lock:
+            self._proc = proc
+
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    def pause(self):
+        with self._lock:
+            if self._paused or self._cancelled or self._proc is None:
+                return
+            _os_suspend(self._proc.pid)
+            self._paused = True
+
+    def resume(self):
+        with self._lock:
+            if not self._paused or self._proc is None:
+                return
+            _os_resume(self._proc.pid)
+            self._paused = False
+
+    def toggle_pause(self):
+        (self.resume if self._paused else self.pause)()
+
+    def cancel(self):
+        with self._lock:
+            self._cancelled = True
+            if self._proc is None:
+                return
+            # Must resume first on Windows — a suspended process ignores TerminateProcess
+            if self._paused:
+                _os_resume(self._proc.pid)
+                self._paused = False
+            try:
+                self._proc.kill()
+            except Exception:
+                pass
+
+
+def _os_suspend(pid: int):
+    try:
+        handle = ctypes.windll.kernel32.OpenProcess(
+            _PROCESS_SUSPEND_RESUME, False, pid)
+        if handle:
+            ctypes.windll.ntdll.NtSuspendProcess(handle)
+            ctypes.windll.kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+
+
+def _os_resume(pid: int):
+    try:
+        handle = ctypes.windll.kernel32.OpenProcess(
+            _PROCESS_SUSPEND_RESUME, False, pid)
+        if handle:
+            ctypes.windll.ntdll.NtResumeProcess(handle)
+            ctypes.windll.kernel32.CloseHandle(handle)
+    except Exception:
+        pass
+
+
+def count_files(paths: list[str]) -> int:
+    """Count total scannable files across all given paths."""
+    total = 0
+    for p in paths:
+        path = Path(p)
+        try:
+            if path.is_file():
+                total += 1
+            elif path.is_dir():
+                for item in path.rglob("*"):
+                    try:
+                        if item.is_file():
+                            total += 1
+                    except PermissionError:
+                        pass
+        except PermissionError:
+            pass
+    return total
+
+
+def _stream_process(proc, line_callback, progress_callback, total: int, done_callback):
+    """
+    Stream k2.exe output, calling progress_callback for each file line.
+
+    `total` is a Python pre-count estimate — k2 may scan more files (e.g. archives,
+    files accessible to k2 but not rglob).  To prevent the bar hitting 100% before
+    k2 finishes, we extend the effective total dynamically: whenever files_done is
+    within 5% of the estimate we add a 10% buffer, keeping the bar below 100% until
+    _on_done snaps it there.
+    """
+    files_done = 0
+    effective_total = total  # grows if k2 finds more files than we pre-counted
+    for raw in proc.stdout:
+        line = _strip_ansi(raw.rstrip("\n\r"))
+        if not line:
+            continue
+        line_callback(line)
+        if progress_callback:
+            m = _FILE_PATH_RE.search(line)
+            if m:
+                files_done += 1
+                # Keep effective_total ahead of files_done so the bar never
+                # reaches 100% on its own.  Buffer = 10% of original estimate
+                # (min 50 files) so the bar still moves meaningfully.
+                buffer = max(total // 10, 50) if total > 0 else 50
+                if files_done >= effective_total - buffer // 2:
+                    effective_total = files_done + buffer
+                progress_callback(files_done, effective_total, m.group(1).rstrip())
+    proc.wait()
+    done_callback(proc.returncode)
+
+
+def run_scan(
+    paths: list[str],
+    threat_action: str,
+    line_callback,
+    progress_callback,
+    done_callback,
+) -> "ScanController":
+    """
+    Start a scan in a background thread.  Returns a ScanController immediately.
+
+    threat_action : "quarantine" | "delete" | "report_only"
+    line_callback(line: str)
+    progress_callback(done: int, total: int, current_file: str)  — may be None
+    done_callback(returncode: int, report_path: str | None)
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    report_path = str(LOGS_DIR / f"scan_{timestamp}.json")
+    controller = ScanController()
+
+    # --report=json tells k2 to emit a JSON block to stdout after the scan summary.
+    # We capture those lines and write them to report_path ourselves so the path
+    # (which may contain spaces) never needs to be passed as a k2 argument.
+    cmd = [K2_EXE] + paths + ["--no-color", "-I", "--report=json"]
+    if threat_action == "quarantine":
+        cmd += ["--move", f"--infp={_short_path(QUARANTINE_DIR)}"]
+    elif threat_action == "delete":
+        cmd += ["-l"]
+
+    def _run():
+        # Pre-count files so the progress bar has a denominator
+        total = 0
+        if progress_callback:
+            line_callback("[INFO] Counting files…")
+            total = count_files(paths)
+            line_callback(f"[INFO] {total} file(s) to scan")
+            progress_callback(0, total, "")
+
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            controller._attach(proc)
+
+            # k2 emits a JSON block to stdout AFTER the human-readable summary
+            # when --report=json is passed.  Accumulate those lines separately so
+            # we can write them to report_path; pass everything else to line_callback.
+            json_lines: list[str] = []
+            in_json = False
+            files_done = 0
+            effective_total = total
+
+            for raw in proc.stdout:
+                line = _strip_ansi(raw.rstrip("\n\r"))
+                if not line:
+                    continue
+
+                # JSON block starts with the opening brace
+                if not in_json and line.strip().startswith("{"):
+                    in_json = True
+
+                if in_json:
+                    json_lines.append(line)
+                    continue
+
+                # Normal scan output — forward to the UI
+                line_callback(line)
+                if progress_callback:
+                    m = _FILE_PATH_RE.search(line)
+                    if m:
+                        files_done += 1
+                        buffer = max(total // 10, 50) if total > 0 else 50
+                        if files_done >= effective_total - buffer // 2:
+                            effective_total = files_done + buffer
+                        progress_callback(files_done, effective_total, m.group(1).rstrip())
+
+            proc.wait()
+
+            # Persist the captured JSON report
+            rp = None
+            if json_lines:
+                try:
+                    json_text = "\n".join(json_lines)
+                    json.loads(json_text)          # validate before writing
+                    Path(report_path).write_text(json_text, encoding="utf-8")
+                    rp = report_path
+                except Exception:
+                    pass
+
+            if not controller.cancelled and threat_action == "quarantine":
+                _write_quarantine_meta(paths, timestamp)
+            done_callback(proc.returncode, rp)
+
+        except Exception as exc:
+            line_callback(f"[ERROR] Failed to start scanner: {exc}")
+            done_callback(-1, None)
+
+    threading.Thread(target=_run, daemon=True).start()
+    return controller
+
+
+def run_update(line_callback, done_callback):
+    """Run signature update in a background thread."""
+    cmd = [K2_EXE, "--update", "--no-color"]
+
+    def _run():
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            _stream_process(proc, line_callback, None, 0, done_callback)
+        except Exception as exc:
+            line_callback(f"[ERROR] Failed to start updater: {exc}")
+            done_callback(-1)
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def parse_report(report_path: str) -> dict:
+    """Parse a JSON report produced by k2 and return a summary dict."""
+    try:
+        with open(report_path, encoding="utf-8") as f:
+            data = json.load(f)
+        # k2 puts totals at top level; older manual reports may nest under "summary"
+        summary = data.get("summary", data)
+        # k2 reports elapsed as total_scan_time_ms (int); fall back to elapsed/scan_time strings
+        elapsed_ms = summary.get("total_scan_time_ms")
+        if elapsed_ms is not None:
+            elapsed = f"{elapsed_ms / 1000:.2f}s"
+        else:
+            elapsed = summary.get("elapsed", summary.get("scan_time", ""))
+        return {
+            "total":    summary.get("total_files",    summary.get("total",    0)),
+            "infected": summary.get("infected_files", summary.get("infected", 0)),
+            "clean":    summary.get("clean_files",    summary.get("clean",    0)),
+            "elapsed":  elapsed,
+            "raw":      data,
+        }
+    except Exception:
+        return {"total": 0, "infected": 0, "clean": 0, "elapsed": "", "raw": {}}
+
+
+def get_infected_paths(report_path: str) -> list[str]:
+    """
+    Extract file paths flagged as infected or suspect from a JSON scan report.
+    Returns a list of absolute path strings.
+    """
+    try:
+        with open(report_path, encoding="utf-8") as f:
+            data = json.load(f)
+        files = data.get("files", data.get("results", []))
+        if not isinstance(files, list):
+            return []
+        infected = []
+        for entry in files:
+            status = str(entry.get("status", entry.get("result", ""))).lower()
+            if "infected" in status or "suspect" in status:
+                # k2 uses "filepath"; older/manual reports may use "path" or "file"
+                path = entry.get("filepath", entry.get("path", entry.get("file", "")))
+                if path:
+                    infected.append(path)
+        return infected
+    except Exception:
+        return []
+
+
+def get_update_cfg_info() -> dict:
+    """Read rules/update.cfg and return version metadata."""
+    cfg_path = BASE_DIR / "rules" / "update.cfg"
+    result = {"version": "Unknown", "last_updated": "Unknown", "raw": ""}
+    if not cfg_path.exists():
+        return result
+    try:
+        text = cfg_path.read_text(encoding="utf-8")
+        result["raw"] = text
+        stat = cfg_path.stat()
+        result["last_updated"] = datetime.fromtimestamp(stat.st_mtime).strftime(
+            "%Y-%m-%d %H:%M"
+        )
+    except Exception:
+        pass
+    return result
+
+
+def _write_quarantine_meta(scanned_paths: list[str], timestamp: str):
+    meta_dir = QUARANTINE_DIR / f".meta_{timestamp}"
+    meta_dir.mkdir(exist_ok=True)
+    meta = {
+        "scan_timestamp": timestamp,
+        "original_paths": scanned_paths,
+        "quarantine_date": datetime.now().isoformat(),
+    }
+    with open(meta_dir / "scan_meta.json", "w", encoding="utf-8") as f:
+        json.dump(meta, f, indent=2)

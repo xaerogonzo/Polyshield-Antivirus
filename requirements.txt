@@ -1,0 +1,55 @@
+# KicomAV Suite — Python dependencies for kicomav_env
+# Install with: kicomav_env\Scripts\pip.exe install -r requirements.txt
+# Or let install.bat handle this automatically.
+
+# Core scanner engine (includes k2.exe, k2c.exe, k2d.exe)
+kicomav>=0.41
+
+# GUI framework
+customtkinter>=5.2.2
+tkinterdnd2>=0.4.3
+
+# Config / environment
+python-dotenv>=1.2.2
+
+# Networking (VirusTotal, MalwareBazaar, update checks)
+requests>=2.34.0
+
+# Archive support (scanning compressed files)
+py7zr>=1.1.0
+rarfile>=4.2
+
+# PE / binary analysis
+pefile>=2024.8.26
+yara-python>=4.5.4
+
+# Behavioral analysis (Speakeasy PE emulation — mandiant/speakeasy)
+# speakeasy-emulator 1.5.11 requires unicorn==1.0.2, which uses distutils and pkg_resources.
+# Both were removed in Python 3.12+. setuptools==68.2.2 restores them as compatibility shims.
+# unicorn must be pinned to 1.0.2 — the 2.x API is incompatible with speakeasy-emulator.
+# Note: speakeasy-emulator-refined (PyPI) is a DIFFERENT library (binref/speakeasy),
+# not an updated fork of mandiant/speakeasy — do not substitute it.
+speakeasy-emulator>=1.5.11
+unicorn==1.0.2
+setuptools==68.2.2
+
+# Cryptography
+pycryptodome>=3.23.0
+
+# Filesystem watcher
+watchdog>=6.0.0
+
+# Process management (pause/resume via psutil)
+psutil>=7.2.2
+
+# Terminal / rich output
+rich>=15.0.0
+
+# System tray (minimize to notification area)
+pystray>=0.19
+
+# Windows Service support
+pywin32>=307
+
+# Bloom filter for NSRL known-safe lookup (72M hashes → ~150 MB vs 4-6 GB for a plain set)
+pybloom-live>=3.0.0
