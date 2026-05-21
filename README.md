@@ -15,7 +15,7 @@ No telemetry. No cloud upload of your files (unless you opt into VirusTotal with
 
 ## Screenshots
 
-![Scan view — pipeline, presets, and drop zone](docs/images/scan_view.png)
+![Scan view — pipeline, presets, and drop zone](docs/images/Scan%20View.png)
 *Scan view: six-engine pipeline with drag-to-reorder, scan-type tabs, custom path drop zone, and per-engine status badges.*
 
 ---
