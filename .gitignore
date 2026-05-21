@@ -38,3 +38,13 @@ Thumbs.db
 desktop.ini
 *.swp
 *.swo
+
+# Added by TokenSave Manager
+*.local.json
+.claude/
+*.onefile-build/
+*.build/
+dist/
+build/
+.venv/
+venv/

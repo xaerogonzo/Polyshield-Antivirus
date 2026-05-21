@@ -8,5 +8,18 @@
         "D:\\Random Projects\\KicomAI_Project"
       ]
     }
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git add -A && git diff --cached --quiet || git commit -m \"auto: Claude session\""
+          }
+        ]
+      }
+    ]
   }
 }
