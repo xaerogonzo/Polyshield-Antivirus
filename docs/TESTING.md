@@ -2,7 +2,7 @@
 
 Procedures for verifying that PolyShield is working correctly — from basic sanity checks to stress tests for the service IPC plumbing.
 
-For feature descriptions, see [README.md](../README.md).  
+For feature descriptions, see [USAGE.md](USAGE.md). For a project overview, see [README.md](../README.md).  
 For architecture and internals, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ---
@@ -366,7 +366,7 @@ When distributing KicomAV as an executable, unsigned binaries acting as Windows 
 - Useful for internal VM deployments or controlled lab environments
 - Does NOT satisfy SmartScreen for new users
 
-**Nuitka compiled build** — also relevant here; see [README.md — Nuitka Compiled Build](README.md#nuitka-compiled-build-planned-post-feature-freeze).
+**Nuitka compiled build** — also relevant here; see [USAGE.md — Nuitka Compiled Build](USAGE.md#nuitka-compiled-build-planned-post-feature-freeze).
 
 ---
 

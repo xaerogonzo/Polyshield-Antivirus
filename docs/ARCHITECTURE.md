@@ -2,7 +2,7 @@
 
 Technical deep-dive: detection layers, scan pipeline, engine design, performance characteristics, database schema, and file structure.
 
-For setup and usage, see [README.md](../README.md).  
+For setup and usage, see [USAGE.md](USAGE.md). For a project overview, see [README.md](../README.md).  
 For service internals and IPC protocol, see [WINDOWS_SERVICE.md](WINDOWS_SERVICE.md).  
 For testing procedures, see [TESTING.md](TESTING.md).
 
@@ -303,7 +303,7 @@ service_client.block_ip(ip)
   → _record_manual_block() → ip_blocklist INSERT with tag "manual_block"
 ```
 
-**Why not PyDivert / OpenSnitch / Moon Secure:** See [README.md — Future Work](../README.md#network-monitoring-layer-implemented--v15).
+**Why not PyDivert / OpenSnitch / Moon Secure:** See [USAGE.md — Future Work](USAGE.md#future-work-roadmap).
 
 ---
 
