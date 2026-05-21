@@ -44,9 +44,13 @@ desktop.ini
 # and fill in their own paths.
 PolyShield_Sandbox.wsb
 
-# ── CodeGraph SQLite index (codegraph config.json + its .gitignore ARE tracked) ──
-.codegraph/codegraph.db
-.codegraph/codegraph.db-*
+# ── AI assistant / workflow tooling (personal — not part of the project) ──
+# Each contributor has their own preferences for how Claude Code / CodeGraph
+# behave when working on this codebase. These files belong in personal local
+# state, NOT in the shared repo.
+CLAUDE.md
+BASIC_INSTRUCTIONS.md
+.codegraph/
 
 # Added by TokenSave Manager
 *.local.json
