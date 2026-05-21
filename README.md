@@ -41,7 +41,7 @@ Commercial AV products have telemetry, ad-ware components, and they replace Defe
 - 🛡️ **Windows Service** — `PolyShield Realtime Protection`; survives logout, starts at boot, low-privilege by design
 - 🌐 **VirusTotal smart upload** — hash-first lookup; only uploads if no existing record
 - ⚖️ **Dispute resolution** — per-engine false-positive tracking + manual override system
-- 🎚️ **Sensitivity profiles** — Conservative / Balanced / Power, plus per-pattern toggles
+- 🎚️ **Sensitivity profiles for Guardian AI ** — Conservative / Balanced / Power, plus per-pattern toggles
 - 🐉 **Behavioral analysis** — optional Speakeasy PE emulation for unknown executables
 - 🔐 **Quarantine kept under Defender's watch** — second line of defense by design (not by accident)
 - 🚀 **No telemetry, no cloud-by-default, no API keys required**
