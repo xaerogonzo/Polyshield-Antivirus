@@ -39,6 +39,15 @@ desktop.ini
 *.swp
 *.swo
 
+# ── Windows Sandbox config (machine-specific paths)
+# A .template file IS tracked; users copy it to PolyShield_Sandbox.wsb
+# and fill in their own paths.
+PolyShield_Sandbox.wsb
+
+# ── CodeGraph SQLite index (codegraph config.json + its .gitignore ARE tracked) ──
+.codegraph/codegraph.db
+.codegraph/codegraph.db-*
+
 # Added by TokenSave Manager
 *.local.json
 .claude/

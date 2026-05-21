@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  PolyShield Windows Sandbox configuration TEMPLATE.
+
+  USAGE:
+    1. Copy this file to "PolyShield_Sandbox.wsb" (drop the .template extension).
+    2. Replace each [PLACEHOLDER] below with the absolute path on YOUR machine.
+    3. Double-click the .wsb file to launch PolyShield inside a Windows Sandbox.
+
+  PLACEHOLDERS:
+    [POLYSHIELD_ROOT]   Absolute path to this project on your machine.
+                        Example: D:\Projects\polyshield
+    [PYTHON_EMBED]      Absolute path to an embedded Python build (used inside
+                        the sandbox). If you don't use embedded Python, comment
+                        out the python_embed and pip_cache MappedFolder blocks.
+                        Example: D:\Tools\python-3.13.0-embed-amd64
+    [PIP_CACHE]         Absolute path to a pip download cache (read-write).
+                        Example: D:\Tools\pip_cache
+    [SANDBOXIE_PLUS]    Absolute path to your Sandboxie-Plus install (optional;
+                        delete the block if you don't use Sandboxie-Plus).
+                        Example: C:\Program Files\Sandboxie-Plus
+
+  The actual PolyShield_Sandbox.wsb file is gitignored so each contributor
+  can have their own paths without conflicting with anyone else's.
+-->
+<Configuration>
+  <Vgpu>Enable</Vgpu>
+  <Networking>Enable</Networking>
+  <ClipboardRedirection>Enable</ClipboardRedirection>
+  <AudioInput>Disable</AudioInput>
+  <VideoInput>Disable</VideoInput>
+  <ProtectedClient>Disable</ProtectedClient>
+  <PrinterRedirection>Disable</PrinterRedirection>
+  <DisplayLink>Disable</DisplayLink>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>[POLYSHIELD_ROOT]</HostFolder>
+      <SandboxFolder>C:\PolyShield_Project</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>[PYTHON_EMBED]</HostFolder>
+      <SandboxFolder>C:\python_embed</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>[PIP_CACHE]</HostFolder>
+      <SandboxFolder>C:\pip_cache</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>[SANDBOXIE_PLUS]</HostFolder>
+      <SandboxFolder>C:\Sandboxie-Plus</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>cmd.exe /c "setx PATH C:\python_embed;C:\python_embed\Scripts;%PATH% &amp;&amp; explorer.exe C:\PolyShield_Project"</Command>
+  </LogonCommand>
+</Configuration>

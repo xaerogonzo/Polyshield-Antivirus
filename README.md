@@ -13,7 +13,7 @@ A multi-engine Windows security suite combining signature detection, heuristic a
 | Engine | What it does | Author / Project |
 |--------|-------------|------------------|
 | **k2.exe** | Signature-based scanner; the primary detection engine | Kei Choi — [hanul93/kicomav](https://github.com/hanul93/kicomav) |
-| **Guardian AI** | Hash DB + 7 heuristic patterns; tier-aware verdicts | Kei Choi — [hanul93/guardianai](https://github.com/hanul93/guardianai) |
+| **Guardian AI** | Hash DB + 7 heuristic patterns; tier-aware verdicts | Matt Emilien — [MattEmilien/GuardianAI](https://github.com/MattEmilien/GuardianAI) |
 | **ClamAV** | Community-maintained AV signature database | [ClamAV / Cisco Talos](https://www.clamav.net/) |
 | **Speakeasy** | Pure-Python PE emulator; Windows API trace without execution | Mandiant — [mandiant/speakeasy](https://github.com/mandiant/speakeasy) |
 | **Sandboxie-Plus** | Live sandboxing; runs files in an isolated glass box | David Xanatos — [sandboxie-plus/Sandboxie](https://github.com/sandboxie-plus/Sandboxie) |
