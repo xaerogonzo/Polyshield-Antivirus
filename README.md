@@ -18,6 +18,12 @@ No telemetry. No cloud upload of your files (unless you opt into VirusTotal with
 ![Scan view — pipeline, presets, and drop zone](docs/images/Scan%20View.png)
 *Scan view: six-engine pipeline with drag-to-reorder, scan-type tabs, custom path drop zone, and per-engine status badges.*
 
+![Realtime Protection Service](docs/images/Service.png)
+*Service view: install, start, and stop the PolyShield Windows Service; live threat event feed.*
+
+![Windows Security overview](docs/images/Win%20Security.png)
+*Windows Security view: composite security score, ASR rules, Controlled Folder Access, and Secure Boot / TPM status.*
+
 ---
 
 ## Why PolyShield?
