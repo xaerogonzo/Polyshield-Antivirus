@@ -529,12 +529,12 @@ class HelpView(ctk.CTkScrollableFrame):
             row=0, column=0, sticky="w")
 
         ctk.CTkLabel(hdr,
-                     text="Click any section to expand it. For full technical details, open the README.",
+                     text="Click any section to expand it.  ·  Full technical docs: docs/ folder or GitHub ↗",
                      font=ctk.CTkFont(size=12), text_color=_SUBTEXT, anchor="w").grid(
             row=1, column=0, sticky="w", pady=(2, 0))
 
         ctk.CTkButton(
-            hdr, text="Open README", width=120,
+            hdr, text="📄 Full Docs", width=120,
             fg_color="#3a3a4a", hover_color="#4a4a5a",
             command=self._open_readme,
         ).grid(row=0, column=1, padx=(12, 0))
@@ -608,9 +608,30 @@ class HelpView(ctk.CTkScrollableFrame):
     # ── README opener ─────────────────────────────────────────────────────────
 
     def _open_readme(self):
-        # File lives at project root — four levels up from src/ui/views/help_view.py
-        readme = Path(__file__).resolve().parents[3] / "README.md"
-        if readme.exists():
-            os.startfile(str(readme))
-        else:
-            self._status_cb(f"README.md not found (looked at {readme})")
+        """Open the full PolyShield documentation from the docs/ folder.
+
+        Resolution order:
+          1. docs/README.md        — primary target (full readme moved here)
+          2. docs/USAGE.md         — detailed usage guide fallback
+          3. GitHub docs URL       — always works; opens in the default browser
+        """
+        root = Path(__file__).resolve().parents[3]
+        for candidate in (
+            root / "docs" / "README.md",
+            root / "docs" / "USAGE.md",
+        ):
+            if candidate.exists():
+                try:
+                    os.startfile(str(candidate))
+                    return
+                except Exception:
+                    pass
+
+        # Final fallback: open the GitHub docs tree in the browser
+        try:
+            import webbrowser
+            webbrowser.open(
+                "https://github.com/xaerogonzo/Polyshield-Antivirus/tree/main/docs"
+            )
+        except Exception:
+            self._status_cb("Could not open docs — visit github.com/xaerogonzo/Polyshield-Antivirus")
