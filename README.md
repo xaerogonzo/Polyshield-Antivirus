@@ -21,7 +21,7 @@ No telemetry. No cloud upload of your files (unless you opt into VirusTotal with
 ![Realtime Protection Service](docs/images/Service.png)
 *Service view: install, start, and stop the PolyShield Windows Service; live threat event feed.*
 
-![Windows Security overview](docs/images/Win%20Security.png)
+![Windows Security overview](docs/images/Win_Security.png)
 *Windows Security view: composite security score, ASR rules, Controlled Folder Access, and Secure Boot / TPM status.*
 
 ---
