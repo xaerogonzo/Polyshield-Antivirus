@@ -5,8 +5,15 @@
 #
 # Run once from an elevated PowerShell prompt:
 #   Right-click PowerShell → "Run as Administrator"
-#   cd "D:\Random Projects\KicomAI_Project"
+#   cd <your PolyShield project root>
 #   .\scripts\components\add_defender_exclusions.ps1
+#
+# Optional: pass -SandboxiePath to point at a non-default Sandboxie-Plus
+# install. Otherwise the script auto-detects from common locations and
+# silently skips the Sandboxie exclusion if not found.
+param(
+    [string]$SandboxiePath = $env:SANDBOXIE_PATH
+)
 #
 # WHY TARGETED (not the whole project folder):
 #   The quarantine\ directory must NOT be excluded — Defender should keep
@@ -51,16 +58,32 @@ $root = Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $MyInvocation
 # Sandboxie-Plus: the kernel driver (SbieDrv.sys) and service binary are
 # security tools that Defender sometimes flags or interferes with, which
 # causes SBIE2331 "service does not exist" errors by unregistering the driver.
-# NOTE: Sandboxie path is hardcoded — update if you move the installation.
-$sandboxiePath = "D:\Random Programs\Sandboxie-Plus"
+# Auto-detect the install path. The -SandboxiePath param overrides everything;
+# otherwise we probe the common locations. If still not found, the Sandboxie
+# exclusion is skipped silently — PolyShield works fine without it.
+if (-not $SandboxiePath) {
+    foreach ($candidate in @(
+        "$env:ProgramFiles\Sandboxie-Plus",
+        "${env:ProgramFiles(x86)}\Sandboxie-Plus")) {
+        if (Test-Path $candidate) {
+            $SandboxiePath = $candidate
+            break
+        }
+    }
+}
 
 $pathExclusions = @(
     "$root\kicomav_env\Lib\site-packages\speakeasy",
     "$root\kicomav_env\Lib\site-packages\yara",
     "$root\kicomav_env\Scripts\k2.exe",
-    "$root\kicomav_env",
-    $sandboxiePath
+    "$root\kicomav_env"
 )
+if ($SandboxiePath -and (Test-Path $SandboxiePath)) {
+    $pathExclusions += $SandboxiePath
+} else {
+    Write-Host "  [info] Sandboxie-Plus not found on PATH — skipping its Defender exclusion." -ForegroundColor DarkGray
+    Write-Host "         (Use -SandboxiePath '<path>' or set `$env:SANDBOXIE_PATH if you have a custom install.)" -ForegroundColor DarkGray
+}
 
 # Process exclusions: prevent Defender from intercepting python.exe when
 # the Windows Service is launched by SCM as LocalSystem.  Without this,

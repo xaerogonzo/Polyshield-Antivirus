@@ -1,8 +1,8 @@
-# KicomAV — Windows 11 VM Setup Guide
+# PolyShield — Windows 11 VM Setup Guide
 
-A repeatable, frustration-free procedure for getting a Windows 11 VM working well on mechanical HDD storage — from ISO to a stable golden snapshot ready for KicomAV field testing.
+A repeatable, frustration-free procedure for getting a Windows 11 VM working well on mechanical HDD storage — from ISO to a stable golden snapshot ready for PolyShield field testing.
 
-This guide covers setup decisions that are independent of KicomAV itself. For the KicomAV-specific installation and testing steps that happen *after* your VM is running, see [TESTING.md → VM Field Testing](TESTING.md#vm-field-testing).
+This guide covers setup decisions that are independent of PolyShield itself. For the PolyShield-specific installation and testing steps that happen *after* your VM is running, see [TESTING.md → VM Field Testing](TESTING.md#vm-field-testing).
 
 ---
 

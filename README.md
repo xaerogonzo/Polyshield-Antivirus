@@ -1003,11 +1003,11 @@ nuitka --standalone --onefile --windows-disable-console
 - Fix step 2: Run `SandMan.exe` as Administrator — it detects missing service registration and offers to reinstall automatically.
 - Fix step 3 (manual fallback, elevated prompt):
   ```
-  cd "D:\Random Programs\Sandboxie-Plus"
+  cd "<your Sandboxie-Plus install path>"
   KmdUtil.exe install SbieDrv
   SbieSvc.exe /installsvc
   ```
-- Prevention: run `scripts\components\add_defender_exclusions.ps1` as Administrator — it adds `D:\Random Programs\Sandboxie-Plus\` to Defender exclusions so the driver is never touched again.
+- Prevention: run `scripts\components\add_defender_exclusions.ps1` as Administrator — it auto-detects Sandboxie-Plus from common install locations and adds the directory to Defender exclusions so the driver is never touched again. Pass `-SandboxiePath '<path>'` if you have a custom install location.
 
 ---
 

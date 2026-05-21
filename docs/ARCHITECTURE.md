@@ -1,4 +1,4 @@
-# KicomAV — Architecture Reference
+# PolyShield — Architecture Reference
 
 Technical deep-dive: detection layers, scan pipeline, engine design, performance characteristics, database schema, and file structure.
 

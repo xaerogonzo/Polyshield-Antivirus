@@ -1,6 +1,6 @@
-# KicomAV — Testing Guide
+# PolyShield — Testing Guide
 
-Procedures for verifying that KicomAV is working correctly — from basic sanity checks to stress tests for the service IPC plumbing.
+Procedures for verifying that PolyShield is working correctly — from basic sanity checks to stress tests for the service IPC plumbing.
 
 For feature descriptions, see [README.md](../README.md).  
 For architecture and internals, see [ARCHITECTURE.md](ARCHITECTURE.md).
@@ -216,16 +216,16 @@ For isolated testing without risking the host system. Uses Windows Sandbox (Hype
 
 ### Prerequisites (one-time)
 
-Files that live outside the main project:
+Files that live outside the main project (you choose the locations and document them in your `PolyShield_Sandbox.wsb` — see `PolyShield_Sandbox.wsb.template` for placeholders):
 
-| Path | Purpose |
-|------|---------|
-| `D:\Random Projects\Python Installer\python_embed\` | Portable Python 3.12 |
-| `D:\Random Projects\Python Installer\pip_cache\` | Pip cache (persists across sandbox runs) |
+| Folder | Purpose |
+|--------|---------|
+| Embedded Python (e.g. `python_embed/`) | Portable Python 3.12 |
+| Pip cache (e.g. `pip_cache/`) | Pip cache (persists across sandbox runs) |
 
 ### Every-Run Workflow
 
-1. **Double-click `KicomAV_Sandbox.wsb`** — sandbox opens; project mapped read-only at `C:\KicomAV_Project`
+1. **Double-click `PolyShield_Sandbox.wsb`** (copy from `.template` and fill in the paths first) — sandbox opens; project mapped read-only at `C:\PolyShield_Project`
 2. **Right-click `sandbox-auto-setup.bat` → Run as administrator**
    - Copies source files to `C:\KicomAV_Sandbox` (skips venvs, generated dirs, `.env`)
    - Builds a fresh venv with sandbox paths

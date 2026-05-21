@@ -1,4 +1,4 @@
-# KicomAI Realtime Protection — Windows Service
+# PolyShield Realtime Protection — Windows Service
 
 **Added in v1.3.** Technical deep-dive into the Windows Service implementation: what it is, why it was hard, what we did, and how to reproduce it on a new machine.
 
@@ -6,9 +6,9 @@
 
 ## What It Does
 
-The folder watcher (`ui/core/watcher.py`) runs inside the UI process by default. When you close KicomAV, monitoring stops. Professional AV tools solve this with a **Windows Service** — a background process that starts at boot and keeps running regardless of whether any user is logged in or the UI is open.
+The folder watcher (`ui/core/watcher.py`) runs inside the UI process by default. When you close PolyShield, monitoring stops. Professional AV tools solve this with a **Windows Service** — a background process that starts at boot and keeps running regardless of whether any user is logged in or the UI is open.
 
-`kicomai_service.py` implements `KicomAI Realtime Protection` as a proper Windows Service using `pywin32`. When the service is running:
+`polyshield_service.py` implements `PolyShield Realtime Protection` as a proper Windows Service using `pywin32`. When the service is running:
 
 - Folder monitoring continues 24/7, even after you close the UI
 - **Process creation monitoring** runs in the background — every new executable is hashed and checked within ≤1 second; threats are killed + quarantined autonomously when the UI is closed

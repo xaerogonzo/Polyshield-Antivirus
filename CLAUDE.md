@@ -1,5 +1,3 @@
-@D:/Claude Co worker/Token Save Manager Source/templates\project-baseline.md
-
 # PolyShield — Claude Project Instructions
 
 ## Tokensave: use it first
@@ -24,8 +22,11 @@ Only fall back to `Read` when you need the actual implementation body (to edit i
 
 ### Sync reminder
 
-> **⚠ The tokensave index was last synced against a different project.**
-> Run `tokensave sync` from `D:\Random Projects\KicomAI_Project\` once to index all the Python source. After that, the tools above will work properly. The index should exclude `kicomav_env/`, `guardian_env/`, `guardianai/`, `intelligence/`, and `logs/`.
+> If the tokensave index is stale or missing, run `tokensave sync` from
+> the project root once to (re-)index the Python source. After that, the
+> tools above will work properly. The index should exclude `kicomav_env/`,
+> `guardian_env/`, `guardianai/`, `intelligence/`, and `logs/` — see the
+> `.tokensaveignore` snippet below.
 
 Suggested `.tokensaveignore` (create at project root if it doesn't exist):
 ```
@@ -300,12 +301,14 @@ Uses `ctypes.windll.ntdll.NtSuspendProcess` / `NtResumeProcess` — standard Uni
 
 ## Sandbox Testing
 
-The sandbox setup lives **outside the main project** to keep the project root clean:
+The sandbox setup lives **outside the main project** to keep the project root clean. You'll need two helper folders somewhere on disk (paths are your choice — the sandbox `.wsb` template documents the placeholders):
 
-| Path | Contents |
-|------|----------|
-| `D:\Random Projects\Python Installer\python_embed\` | Portable Python 3.12 with pip + virtualenv |
-| `D:\Random Projects\Python Installer\pip_cache\` | Persistent pip cache (survives sandbox restarts) |
+| Folder | Contents |
+|--------|----------|
+| Embedded Python (e.g. `python_embed/`) | Portable Python 3.12 with pip + virtualenv |
+| Pip cache (e.g. `pip_cache/`) | Persistent pip cache that survives sandbox restarts |
+
+Edit `PolyShield_Sandbox.wsb` (copy from `PolyShield_Sandbox.wsb.template`) and replace the `[PYTHON_EMBED]` / `[PIP_CACHE]` placeholders with your chosen paths.
 
 **Workflow:** `PolyShield_Sandbox.wsb` (double-click) → right-click `scripts\sandbox\sandbox-auto-setup.bat` → Run as administrator.
 
