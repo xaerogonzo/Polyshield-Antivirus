@@ -13,7 +13,10 @@ PolyShield runs **six security engines in parallel** through a unified UI: K2 (K
 
 No telemetry. No cloud upload of your files (unless you opt into VirusTotal with your own API key). No vendor lock-in.
 
-<!-- TODO: add a screenshot of the main UI here. See https://github.com/xaerogonzo/Polyshield-Antivirus/issues if you want to contribute one. -->
+## Screenshots
+
+![Scan view — pipeline, presets, and drop zone](docs/images/scan_view.png)
+*Scan view: six-engine pipeline with drag-to-reorder, scan-type tabs, custom path drop zone, and per-engine status badges.*
 
 ---
 
