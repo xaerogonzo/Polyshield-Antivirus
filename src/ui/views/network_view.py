@@ -23,6 +23,7 @@ import customtkinter as ctk
 
 from ui.core import service_client as svc
 from ui.core.network_monitor import poll_connections
+import ui.theme as theme
 
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW
 
@@ -60,7 +61,7 @@ class NetworkView(ctk.CTkScrollableFrame):
 
         self._refresh_btn = ctk.CTkButton(
             hdr, text="↺  Refresh", width=110,
-            fg_color="#1f6aa5", hover_color="#144e7a",
+            fg_color=theme.color("accent"), hover_color=theme.color("accent_hover"),
             font=ctk.CTkFont(size=12),
             command=self._do_refresh,
         )
@@ -106,7 +107,7 @@ class NetworkView(ctk.CTkScrollableFrame):
         for col, text in enumerate(["Process", "Remote IP:Port", "Status", ""]):
             ctk.CTkLabel(
                 tbl_hdr, text=text,
-                font=ctk.CTkFont(size=11, weight="bold"), text_color="#888899",
+                font=ctk.CTkFont(size=11, weight="bold"), text_color=theme.color("subtext"),
                 anchor="w",
             ).grid(row=0, column=col, sticky="ew", padx=8, pady=4)
 

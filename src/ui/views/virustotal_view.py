@@ -5,6 +5,8 @@ from pathlib import Path
 from ui.core import virustotal as vt
 from ui.core import settings as cfg
 
+import ui.theme as theme
+
 try:
     from tkinterdnd2 import DND_FILES
     _DND_AVAILABLE = True
@@ -28,7 +30,7 @@ class VirusTotalView(ctk.CTkFrame):
             row=0, column=0, sticky="w", padx=24, pady=(20, 8))
 
         # ── API key status banner ──
-        self._key_banner = ctk.CTkFrame(self, corner_radius=8, fg_color="#12121e")
+        self._key_banner = ctk.CTkFrame(self, corner_radius=8, fg_color=theme.color("card2"))
         self._key_banner.grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 8))
         self._key_banner.grid_columnconfigure(0, weight=1)
         self._key_lbl = ctk.CTkLabel(
@@ -37,19 +39,19 @@ class VirusTotalView(ctk.CTkFrame):
         self._update_key_banner()
 
         # ── File input card ──
-        input_card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        input_card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         input_card.grid(row=2, column=0, sticky="ew", padx=24, pady=(0, 8))
         input_card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(input_card, text="File to Check",
                      font=ctk.CTkFont(size=13, weight="bold"),
-                     text_color="#5294e2").grid(
+                     text_color=theme.color("accent")).grid(
             row=0, column=0, columnspan=3, sticky="w", padx=16, pady=(12, 6))
 
         # Drop zone
         self._drop_frame = ctk.CTkFrame(
             input_card, height=72, corner_radius=8,
-            border_width=2, border_color="#3a3a3a")
+            border_width=2, border_color=theme.color("divider"))
         self._drop_frame.grid(row=1, column=0, columnspan=3,
                                sticky="ew", padx=16, pady=(0, 8))
         self._drop_frame.grid_propagate(False)
@@ -57,7 +59,7 @@ class VirusTotalView(ctk.CTkFrame):
         self._drop_frame.grid_rowconfigure(0, weight=1)
         self._drop_lbl = ctk.CTkLabel(
             self._drop_frame, text="Drop a file here or use Browse",
-            text_color="#888888", font=ctk.CTkFont(size=13))
+            text_color=theme.color("subtext"), font=ctk.CTkFont(size=13))
         self._drop_lbl.grid(row=0, column=0)
 
         if _DND_AVAILABLE:
@@ -74,12 +76,12 @@ class VirusTotalView(ctk.CTkFrame):
 
         self._lookup_btn = ctk.CTkButton(
             btn_row, text="Check on VirusTotal", width=180,
-            fg_color="#1f6aa5", hover_color="#144e7a",
+            fg_color=theme.color("accent"), hover_color=theme.color("accent_hover"),
             state="disabled", command=self._lookup)
         self._lookup_btn.grid(row=0, column=2)
 
         # Hash display
-        hash_frame = ctk.CTkFrame(input_card, fg_color="#12121e", corner_radius=6)
+        hash_frame = ctk.CTkFrame(input_card, fg_color=theme.color("card2"), corner_radius=6)
         hash_frame.grid(row=3, column=0, columnspan=3,
                          sticky="ew", padx=16, pady=(0, 12))
         hash_frame.grid_columnconfigure(1, weight=1)
@@ -88,11 +90,11 @@ class VirusTotalView(ctk.CTkFrame):
         for i, algo in enumerate(["sha256", "sha1", "md5"]):
             ctk.CTkLabel(hash_frame, text=f"{algo.upper()}:",
                          font=ctk.CTkFont(size=11, weight="bold"),
-                         text_color="#5294e2", width=60, anchor="w").grid(
+                         text_color=theme.color("accent"), width=60, anchor="w").grid(
                 row=i, column=0, padx=(10, 4), pady=3, sticky="w")
             lbl = ctk.CTkLabel(hash_frame, text="—",
                                 font=ctk.CTkFont(family="Consolas", size=11),
-                                text_color="#cdd6f4", anchor="w")
+                                text_color=theme.color("text"), anchor="w")
             lbl.grid(row=i, column=1, sticky="w", padx=(0, 10), pady=3)
             self._hash_labels[algo] = lbl
 
@@ -102,13 +104,13 @@ class VirusTotalView(ctk.CTkFrame):
             row=3, column=0, sticky="w", padx=24, pady=(4, 4))
 
         self._results_frame = ctk.CTkScrollableFrame(
-            self, corner_radius=8, fg_color="#1a1a2e")
+            self, corner_radius=8, fg_color=theme.color("card"))
         self._results_frame.grid(row=4, column=0, sticky="nsew", padx=24, pady=(0, 16))
         self._results_frame.grid_columnconfigure(0, weight=1)
 
         self._result_placeholder = ctk.CTkLabel(
             self._results_frame, text="No results yet",
-            text_color="#555577", font=ctk.CTkFont(size=13))
+            text_color=theme.color("dim"), font=ctk.CTkFont(size=13))
         self._result_placeholder.grid(row=0, column=0, pady=24)
 
     def _update_key_banner(self):
@@ -153,7 +155,7 @@ class VirusTotalView(ctk.CTkFrame):
                                       text_color="#ff5555")
             return
         self._current_hashes = hashes
-        self._drop_lbl.configure(text=Path(path).name, text_color="#cdd6f4")
+        self._drop_lbl.configure(text=Path(path).name, text_color=theme.color("text"))
         for algo, lbl in self._hash_labels.items():
             lbl.configure(text=hashes.get(algo, "—"))
         has_key = bool(cfg.get("vt_api_key"))
@@ -196,7 +198,7 @@ class VirusTotalView(ctk.CTkFrame):
         verdict = "MALICIOUS" if mal > 0 else "SUSPICIOUS" if sus > 0 else "CLEAN"
 
         # Summary banner
-        banner = ctk.CTkFrame(self._results_frame, corner_radius=8, fg_color="#12121e")
+        banner = ctk.CTkFrame(self._results_frame, corner_radius=8, fg_color=theme.color("card2"))
         banner.grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 8))
         banner.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
@@ -207,7 +209,7 @@ class VirusTotalView(ctk.CTkFrame):
             ("Engines", f"{total}", "#cdd6f4"),
         ]):
             ctk.CTkLabel(banner, text=label,
-                         font=ctk.CTkFont(size=11), text_color="#888888").grid(
+                         font=ctk.CTkFont(size=11), text_color=theme.color("subtext")).grid(
                 row=0, column=col, padx=12, pady=(10, 2))
             ctk.CTkLabel(banner, text=value,
                          font=ctk.CTkFont(size=18, weight="bold"),
@@ -217,7 +219,7 @@ class VirusTotalView(ctk.CTkFrame):
         if result.get("name"):
             ctk.CTkLabel(self._results_frame,
                          text=f"File: {result['name']}  •  {result.get('type', '')}",
-                         font=ctk.CTkFont(size=12), text_color="#888888",
+                         font=ctk.CTkFont(size=12), text_color=theme.color("subtext"),
                          anchor="w").grid(row=1, column=0, sticky="w", pady=(0, 8))
 
         # Detection list
@@ -234,7 +236,7 @@ class VirusTotalView(ctk.CTkFrame):
                 row_f.grid_columnconfigure(0, weight=1)
                 ctk.CTkLabel(row_f, text=det["engine"], anchor="w",
                              font=ctk.CTkFont(size=12),
-                             text_color="#cdd6f4").grid(
+                             text_color=theme.color("text")).grid(
                     row=0, column=0, sticky="w", padx=12, pady=4)
                 ctk.CTkLabel(row_f, text=det["result"],
                              font=ctk.CTkFont(size=12),

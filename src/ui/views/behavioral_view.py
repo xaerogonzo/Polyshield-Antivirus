@@ -23,6 +23,7 @@ import customtkinter as ctk
 from ui.core import emulate_engine as ee
 from ui.core import sandbox_engine as se
 from ui.core import settings as cfg
+import ui.theme as theme
 
 # ── Text-box color tags ───────────────────────────────────────────────────────
 _TAG_THREAT  = "threat"   # red
@@ -72,7 +73,7 @@ class BehavioralView(ctk.CTkFrame):
         ctk.CTkLabel(hdr,
                      text="Stage 4: Speakeasy traces API calls without executing the file  ·  "
                           "Stage 5: Sandboxie runs the file in an isolated box",
-                     font=ctk.CTkFont(size=11), text_color="#666688", anchor="w").grid(
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"), anchor="w").grid(
             row=1, column=0, columnspan=2, sticky="w", pady=(2, 0))
 
         badge_frame = ctk.CTkFrame(hdr, fg_color="transparent")
@@ -87,12 +88,12 @@ class BehavioralView(ctk.CTkFrame):
         self._sb_badge.grid(row=0, column=1)
 
         # ── File input ──
-        file_card = ctk.CTkFrame(self, corner_radius=8, fg_color="#1e1e2e")
+        file_card = ctk.CTkFrame(self, corner_radius=8, fg_color=theme.color("card2"))
         file_card.grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 8))
         file_card.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(file_card, text="Target file:",
-                     font=ctk.CTkFont(size=12), text_color="#888888",
+                     font=ctk.CTkFont(size=12), text_color=theme.color("subtext"),
                      anchor="w").grid(row=0, column=0, padx=(14, 8), pady=12)
 
         self._path_entry = ctk.CTkEntry(
@@ -101,7 +102,7 @@ class BehavioralView(ctk.CTkFrame):
         self._path_entry.grid(row=0, column=1, sticky="ew", padx=(0, 8), pady=8)
 
         ctk.CTkButton(file_card, text="Browse", width=80,
-                      fg_color="#3a3a4a", hover_color="#4a4a5a",
+                      fg_color=theme.color("input_hover"), hover_color="#4a4a5a",
                       command=self._browse).grid(row=0, column=2, padx=(0, 14), pady=8)
 
         # ── Stage cards ──
@@ -113,7 +114,7 @@ class BehavioralView(ctk.CTkFrame):
         self._build_detonation_card(stages)
 
         # ── Output tabs ──
-        self._tabs = ctk.CTkTabview(self, fg_color="#1a1a2e", corner_radius=8)
+        self._tabs = ctk.CTkTabview(self, fg_color=theme.color("card"), corner_radius=8)
         self._tabs.grid(row=3, column=0, sticky="nsew", padx=24, pady=(0, 16))
 
         for tab_name in ("API Calls", "Network", "Registry", "File Ops", "Indicators", "Raw JSON"):
@@ -131,7 +132,7 @@ class BehavioralView(ctk.CTkFrame):
         self._refresh_badges()
 
     def _build_emulation_card(self, parent):
-        card = ctk.CTkFrame(parent, corner_radius=8, fg_color="#1a1a2e")
+        card = ctk.CTkFrame(parent, corner_radius=8, fg_color=theme.color("card"))
         card.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         card.grid_columnconfigure(0, weight=1)
 
@@ -140,14 +141,14 @@ class BehavioralView(ctk.CTkFrame):
         title_row.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(title_row, text="Stage 4 — Behavioral Trace",
                      font=ctk.CTkFont(size=13, weight="bold"),
-                     text_color="#5294e2", anchor="w").grid(row=0, column=0, sticky="w")
+                     text_color=theme.color("accent"), anchor="w").grid(row=0, column=0, sticky="w")
 
         ctk.CTkLabel(card,
                      text="Speakeasy simulates the Windows environment\n"
                           "and observes what the file would do —\n"
                           "API calls, registry, network, file access.\n"
                           "The file never actually runs. Safe on any system.",
-                     font=ctk.CTkFont(size=11), text_color="#666688",
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                      anchor="w", justify="left").grid(
             row=1, column=0, sticky="w", padx=14, pady=(0, 8))
 
@@ -157,7 +158,7 @@ class BehavioralView(ctk.CTkFrame):
         self._emu_prog.grid_remove()
 
         self._emu_status = ctk.CTkLabel(
-            card, text="", font=ctk.CTkFont(size=11), text_color="#888888")
+            card, text="", font=ctk.CTkFont(size=11), text_color=theme.color("subtext"))
         self._emu_status.grid(row=3, column=0, sticky="w", padx=14, pady=(0, 4))
 
         self._emu_btn = ctk.CTkButton(
@@ -167,7 +168,7 @@ class BehavioralView(ctk.CTkFrame):
         self._emu_btn.grid(row=4, column=0, padx=14, pady=(0, 14), sticky="w")
 
     def _build_detonation_card(self, parent):
-        card = ctk.CTkFrame(parent, corner_radius=8, fg_color="#1a1a2e")
+        card = ctk.CTkFrame(parent, corner_radius=8, fg_color=theme.color("card"))
         card.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         card.grid_columnconfigure(0, weight=1)
 
@@ -183,12 +184,12 @@ class BehavioralView(ctk.CTkFrame):
                           "but traps all changes in an invisible box.\n"
                           "Your real OS is never touched.\n"
                           "Click Wipe Sandbox to discard everything.",
-                     font=ctk.CTkFont(size=11), text_color="#666688",
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                      anchor="w", justify="left").grid(
             row=1, column=0, sticky="w", padx=14, pady=(0, 8))
 
         self._det_status = ctk.CTkLabel(
-            card, text="", font=ctk.CTkFont(size=11), text_color="#888888")
+            card, text="", font=ctk.CTkFont(size=11), text_color=theme.color("subtext"))
         self._det_status.grid(row=2, column=0, sticky="w", padx=14, pady=(0, 4))
 
         btn_row = ctk.CTkFrame(card, fg_color="transparent")
@@ -212,15 +213,15 @@ class BehavioralView(ctk.CTkFrame):
         box = ctk.CTkTextbox(
             self._tabs.tab(tab_name),
             font=ctk.CTkFont(family="Consolas", size=11),
-            fg_color="#12121e", text_color="#cdd6f4",
+            fg_color=theme.color("card2"), text_color=theme.color("text"),
             wrap="none", state="disabled")
         box.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
         # Configure color tags
         box.tag_config(_TAG_THREAT, foreground="#ff5555")
         box.tag_config(_TAG_WARN,   foreground="#ffb86c")
-        box.tag_config(_TAG_INFO,   foreground="#5294e2")
+        box.tag_config(_TAG_INFO,   foreground=theme.color("accent"))
         box.tag_config(_TAG_CLEAN,  foreground="#50fa7b")
-        box.tag_config(_TAG_DIM,    foreground="#555577")
+        box.tag_config(_TAG_DIM,    foreground=theme.color("dim"))
         return box
 
     # ── Badge refresh ─────────────────────────────────────────────────────────
@@ -284,7 +285,7 @@ class BehavioralView(ctk.CTkFrame):
         self._emu_btn.configure(state="disabled")
         self._emu_status.configure(
             text="Emulating… (this may take up to 30 seconds)",
-            text_color="#888888")
+            text_color=theme.color("subtext"))
         self._emu_prog.configure(mode="indeterminate")
         self._emu_prog.grid()
         self._emu_prog.start()
@@ -441,7 +442,7 @@ class BehavioralView(ctk.CTkFrame):
 
     def _wipe_sandbox(self):
         self._wipe_btn.configure(state="disabled")
-        self._det_status.configure(text="Wiping sandbox…", text_color="#888888")
+        self._det_status.configure(text="Wiping sandbox…", text_color=theme.color("subtext"))
         self._status_cb("Wiping KicomHunter sandbox…")
         se.wipe_sandbox(on_done=lambda ok: self.after(0, self._on_wipe_done, ok))
 

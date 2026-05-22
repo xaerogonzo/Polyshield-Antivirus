@@ -68,7 +68,7 @@ class DisplayView(ctk.CTkScrollableFrame):
     """Sidebar view for visual / appearance customisation."""
 
     def __init__(self, master, status_callback=None, app_ref=None, **kw):
-        super().__init__(master, fg_color="#12121e", **kw)
+        super().__init__(master, fg_color=theme.color("card2"), **kw)
         self._status_cb  = status_callback or (lambda _: None)
         self._app: App | None = app_ref
         self._preview_after_id: str | None = None   # debounce handle for image preview
@@ -141,21 +141,36 @@ class DisplayView(ctk.CTkScrollableFrame):
             btn.grid(row=idx // 3, column=idx % 3, padx=6, pady=6, sticky="ew")
             self._preset_btns[key] = btn
 
+        ctk.CTkLabel(card, text="Sidebar and nav colours update live. Card and panel colours inside each view apply on next restart.",
+                     font=ctk.CTkFont(size=11), text_color=_DIM, anchor="w",
+                     wraplength=560, justify="left").grid(
+            row=2, column=0, columnspan=3, sticky="w", pady=(4, 0))
+
         return start_row + 1
 
     def _apply_preset(self, key: str) -> None:
-        theme.apply_preset(key, cfg)
-        self._status_cb(f"Theme preset: {dict(theme.preset_names()).get(key, key)}")
-        # Refresh button borders to show active state
-        for k, btn in self._preset_btns.items():
-            palette = theme.preset_palette(k)
-            is_active = (k == key)
-            btn.configure(border_color=palette["accent"] if is_active else "#2a2a3a")
-        # Update section title accent colours in this view
-        self._refresh_section_titles()
-        # Apply bg colour change (visible if no bg image is loaded)
-        if self._app:
-            self._app._apply_bg_image()
+        try:
+            theme.apply_preset(key, cfg)
+            self._status_cb(f"Theme preset: {dict(theme.preset_names()).get(key, key)}")
+            # Refresh preset button borders to show active state
+            for k, btn in self._preset_btns.items():
+                palette = theme.preset_palette(k)
+                is_active = (k == key)
+                btn.configure(border_color=palette["accent"] if is_active else "#2a2a3a")
+            # The preset clears any accent override — un-check all accent chips
+            # so the two sections don't visually contradict each other.
+            for hv, chip in self._accent_chips.items():
+                chip.configure(border_color=hv, text="")
+            # Update section title accent colours in this view
+            self._refresh_section_titles()
+            # Propagate sidebar / nav / content frame colours live
+            if self._app:
+                self._app.refresh_nav_theme()
+                self._app._apply_bg_image()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._status_cb(f"⚠ Preset error: {type(e).__name__}: {e}")
 
     # ── Section 2: Accent Color ───────────────────────────────────────────────
 
@@ -191,7 +206,7 @@ class DisplayView(ctk.CTkScrollableFrame):
         # Custom... button
         ctk.CTkButton(
             chips_row, text="Custom…", width=80,
-            fg_color="#2a2a3a", hover_color="#3a3a4a",
+            fg_color=theme.color("divider"), hover_color=theme.color("input_hover"),
             text_color=_TEXT, font=ctk.CTkFont(size=12),
             command=self._open_custom_accent,
         ).grid(row=0, column=len(_ACCENT_CHIPS) + 1, padx=(8, 0))
@@ -203,17 +218,24 @@ class DisplayView(ctk.CTkScrollableFrame):
         return start_row + 1
 
     def _pick_chip(self, hex_val: str) -> None:
-        theme.set_accent(hex_val)
-        cfg.set("display_accent_color", hex_val)
-        # Update chip borders and checkmarks
-        for hv, chip in self._accent_chips.items():
-            active = (hv.lower() == hex_val.lower())
-            chip.configure(
-                border_color="#ffffff" if active else hv,
-                text="✓" if active else "",
-            )
-        self._refresh_section_titles()
-        self._status_cb(f"Accent color: {hex_val}")
+        try:
+            theme.set_accent(hex_val)
+            cfg.set_value("display_accent_color", hex_val)
+            # Update chip borders and checkmarks
+            for hv, chip in self._accent_chips.items():
+                active = (hv.lower() == hex_val.lower())
+                chip.configure(
+                    border_color="#ffffff" if active else hv,
+                    text="✓" if active else "",
+                )
+            self._refresh_section_titles()
+            if self._app:
+                self._app.refresh_nav_theme()
+            self._status_cb(f"Accent color: {hex_val}")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._status_cb(f"⚠ Accent error: {type(e).__name__}: {e}")
 
     def _open_custom_accent(self) -> None:
         dlg = ctk.CTkToplevel(self)
@@ -266,7 +288,7 @@ class DisplayView(ctk.CTkScrollableFrame):
         browse_row.grid_columnconfigure(1, weight=1)
 
         ctk.CTkButton(browse_row, text="Browse…", width=80,
-                      fg_color="#2a2a3a", hover_color="#3a3a4a",
+                      fg_color=theme.color("divider"), hover_color=theme.color("input_hover"),
                       text_color=_TEXT, font=ctk.CTkFont(size=12),
                       command=self._browse_image).grid(row=0, column=0, padx=(0, 8))
 
@@ -276,7 +298,7 @@ class DisplayView(ctk.CTkScrollableFrame):
         self._bg_path_lbl.grid(row=0, column=1, sticky="w")
 
         ctk.CTkButton(browse_row, text="✕ Clear", width=68,
-                      fg_color="#2a2a3a", hover_color="#5a2a2a",
+                      fg_color=theme.color("divider"), hover_color="#5a2a2a",
                       text_color=_TEXT, font=ctk.CTkFont(size=12),
                       command=self._clear_image).grid(row=0, column=2, padx=(8, 0))
 
@@ -354,14 +376,14 @@ class DisplayView(ctk.CTkScrollableFrame):
                        ("All files", "*.*")]
         )
         if path:
-            cfg.set("display_bg_image", path)
+            cfg.set_value("display_bg_image", path)
             self._bg_path_lbl.configure(text=self._short_path())
             self._schedule_preview()
             if self._app:
                 self._app._apply_bg_image()
 
     def _clear_image(self) -> None:
-        cfg.set("display_bg_image", "")
+        cfg.set_value("display_bg_image", "")
         self._bg_path_lbl.configure(text="No image selected")
         self._preview_lbl.configure(text="No image", image=None)
         self._preview_img_ref = None
@@ -371,7 +393,7 @@ class DisplayView(ctk.CTkScrollableFrame):
     def _on_opacity_change(self, val) -> None:
         v = int(float(val))
         self._opacity_lbl.configure(text=f"{v}%")
-        cfg.set("display_bg_opacity", round(v / 100, 2))
+        cfg.set_value("display_bg_opacity", round(v / 100, 2))
         self._schedule_preview()
         if self._app:
             self._app._apply_bg_image()
@@ -379,7 +401,7 @@ class DisplayView(ctk.CTkScrollableFrame):
     def _on_blur_change(self, val) -> None:
         v = int(float(val))
         self._blur_lbl.configure(text=f"Blur: {v}")
-        cfg.set("display_bg_blur", v)
+        cfg.set_value("display_bg_blur", v)
         self._schedule_preview()
         if self._app:
             self._app._apply_bg_image()
@@ -434,7 +456,7 @@ class DisplayView(ctk.CTkScrollableFrame):
         card = self._section_card("Font Sizes", start_row)
         card.grid_columnconfigure(0, weight=1)
 
-        # Content tier
+        # Content tier — segmented button row
         self._build_font_row(card, 0,
                              "Reading content",
                              "(Help, descriptions, detail pane)",
@@ -442,17 +464,36 @@ class DisplayView(ctk.CTkScrollableFrame):
                              _CONTENT_SIZES,
                              self._on_content_size)
 
-        # Log tier
-        self._build_font_row(card, 2,
+        # Content preview — uses theme.get("body") so size changes show live
+        self._content_preview = ctk.CTkLabel(
+            card,
+            text="The quick brown fox jumps over the lazy dog.  ← live body preview",
+            font=theme.get("body"),
+            text_color=_TEXT, anchor="w", justify="left", wraplength=560)
+        self._content_preview.grid(row=2, column=0, sticky="w", pady=(4, 8))
+
+        ctk.CTkFrame(card, height=1, fg_color=theme.color("divider")).grid(
+            row=3, column=0, sticky="ew", pady=4)
+
+        # Log tier — segmented button row
+        self._build_font_row(card, 4,
                              "Log & output text",
                              "(Scan log, event feeds, network rows)",
                              "display_font_log_size",
                              _LOG_SIZES,
                              self._on_log_size)
 
+        # Log preview — uses theme.get("log") so size and mono changes show live
+        self._log_preview = ctk.CTkLabel(
+            card,
+            text="[12:34:56] scan complete — 0 infected, 1,247 clean  ← live log preview",
+            font=theme.get("log"),
+            text_color=_TEXT, anchor="w", justify="left", wraplength=560)
+        self._log_preview.grid(row=6, column=0, sticky="w", pady=(4, 8))
+
         # Monospace toggle
         mono_row = ctk.CTkFrame(card, fg_color="transparent")
-        mono_row.grid(row=4, column=0, sticky="ew", pady=(8, 0))
+        mono_row.grid(row=7, column=0, sticky="ew", pady=(8, 0))
         mono_row.grid_columnconfigure(1, weight=1)
 
         current_mono = cfg.get("display_log_monospace")
@@ -471,10 +512,12 @@ class DisplayView(ctk.CTkScrollableFrame):
             self._mono_switch.deselect()
 
         ctk.CTkLabel(card,
-                     text="UI chrome (buttons, labels, settings fields) uses fixed sizes to prevent layout breakage.",
+                     text="Previews above update live. Changes also appear in Help, Guardian AI, "
+                          "Update, and the Scan log. UI chrome (buttons, nav labels) uses fixed "
+                          "sizes to prevent layout breakage.",
                      font=ctk.CTkFont(size=11), text_color=_DIM, anchor="w",
                      wraplength=560, justify="left").grid(
-            row=5, column=0, sticky="w", pady=(6, 0))
+            row=8, column=0, sticky="w", pady=(6, 0))
 
         return start_row + 1
 
@@ -513,22 +556,22 @@ class DisplayView(ctk.CTkScrollableFrame):
         seg.grid(row=0, column=1, sticky="e", padx=(12, 0), rowspan=2)
 
         # Separator
-        ctk.CTkFrame(parent, height=1, fg_color="#2a2a3a").grid(
+        ctk.CTkFrame(parent, height=1, fg_color=theme.color("divider")).grid(
             row=base_row + 1, column=0, sticky="ew", pady=4)
 
     def _on_content_size(self, size: int) -> None:
-        cfg.set("display_font_content_size", size)
+        cfg.set_value("display_font_content_size", size)
         theme.set_content_size(size)
         self._status_cb(f"Content font size: {size}pt")
 
     def _on_log_size(self, size: int) -> None:
-        cfg.set("display_font_log_size", size)
+        cfg.set_value("display_font_log_size", size)
         theme.set_log_size(size)
         self._status_cb(f"Log font size: {size}pt")
 
     def _on_mono_toggle(self) -> None:
         mono = bool(self._mono_switch.get())
-        cfg.set("display_log_monospace", mono)
+        cfg.set_value("display_log_monospace", mono)
         theme.set_log_monospace(mono)
         self._status_cb("Log font: " + ("Consolas (monospace)" if mono else "proportional"))
 
@@ -568,12 +611,17 @@ class DisplayView(ctk.CTkScrollableFrame):
         return start_row + 1
 
     def _set_scale(self, val: float, label: str) -> None:
-        cfg.set("display_widget_scale", val)
-        # Update button highlights
-        for btn, (lbl_text, lbl_val) in zip(self._scale_btns, _SCALE_OPTIONS):
-            is_active = abs(lbl_val - val) < 0.01
-            btn.configure(fg_color=theme.color("accent") if is_active else "#2a2a3a")
-        self._status_cb(f"Widget scale set to {label} — restart to apply")
+        try:
+            cfg.set_value("display_widget_scale", val)
+            # Update button highlights
+            for btn, (lbl_text, lbl_val) in zip(self._scale_btns, _SCALE_OPTIONS):
+                is_active = abs(lbl_val - val) < 0.01
+                btn.configure(fg_color=theme.color("accent") if is_active else "#2a2a3a")
+            self._status_cb(f"Widget scale set to {label} — restart to apply")
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self._status_cb(f"⚠ Scale error: {type(e).__name__}: {e}")
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -596,7 +644,7 @@ class DisplayView(ctk.CTkScrollableFrame):
             self._section_title_labels: list[ctk.CTkLabel] = []
         self._section_title_labels.append(lbl)
 
-        ctk.CTkFrame(outer, height=1, fg_color="#2a2a3a").grid(
+        ctk.CTkFrame(outer, height=1, fg_color=theme.color("divider")).grid(
             row=1, column=0, sticky="ew", padx=16, pady=(0, 8))
 
         content = ctk.CTkFrame(outer, fg_color="transparent")

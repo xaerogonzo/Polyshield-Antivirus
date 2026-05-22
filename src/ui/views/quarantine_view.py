@@ -7,6 +7,7 @@ from pathlib import Path
 
 from ui.core import quarantine as qm
 from ui.core import settings as cfg
+import ui.theme as theme
 
 
 class QuarantineView(ctk.CTkFrame):
@@ -46,7 +47,7 @@ class QuarantineView(ctk.CTkFrame):
 
         self._restore_sel_btn = ctk.CTkButton(
             btn_row, text="Restore Selected", width=130,
-            fg_color="#1f4a7a", hover_color="#144e7a",
+            fg_color="#1f4a7a", hover_color=theme.color("accent_hover"),
             font=ctk.CTkFont(size=12),
             state="disabled",
             command=self._restore_selected)
@@ -61,13 +62,13 @@ class QuarantineView(ctk.CTkFrame):
         self._delete_sel_btn.grid(row=0, column=2, padx=(0, 6))
 
         ctk.CTkButton(btn_row, text="Refresh", width=90,
-                      fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      fg_color=theme.color("divider"), hover_color="#4a4a4a",
                       font=ctk.CTkFont(size=12),
                       command=self.refresh).grid(row=0, column=3)
 
         # ── Column headers ──
         # Columns: CB(0) | Threat(1) | Original Path(2) | Date(3) | Actions(4)
-        col_frame = ctk.CTkFrame(self, fg_color="#2a2a3a", height=32, corner_radius=0)
+        col_frame = ctk.CTkFrame(self, fg_color=theme.color("divider"), height=32, corner_radius=0)
         col_frame.grid(row=1, column=0, sticky="ew", padx=24)
         col_frame.grid_propagate(False)
         col_frame.grid_columnconfigure(0, minsize=36)
@@ -79,12 +80,12 @@ class QuarantineView(ctk.CTkFrame):
         ctk.CTkLabel(col_frame, text="", width=36).grid(row=0, column=0)
         for col, txt in enumerate(["Threat", "Original Path", "Date"], start=1):
             ctk.CTkLabel(col_frame, text=txt, font=ctk.CTkFont(size=12, weight="bold"),
-                         text_color="#888888").grid(row=0, column=col, sticky="w", padx=12)
+                         text_color=theme.color("subtext")).grid(row=0, column=col, sticky="w", padx=12)
         ctk.CTkLabel(col_frame, text="Actions", font=ctk.CTkFont(size=12, weight="bold"),
-                     text_color="#888888").grid(row=0, column=4, sticky="w", padx=12)
+                     text_color=theme.color("subtext")).grid(row=0, column=4, sticky="w", padx=12)
 
         # ── Scrollable list ──
-        self._scroll = ctk.CTkScrollableFrame(self, fg_color="#1a1a2e", corner_radius=8)
+        self._scroll = ctk.CTkScrollableFrame(self, fg_color=theme.color("card"), corner_radius=8)
         self._scroll.grid(row=2, column=0, sticky="nsew", padx=24, pady=(0, 16))
         self._scroll.grid_columnconfigure(0, minsize=36)
         self._scroll.grid_columnconfigure(1, weight=1)
@@ -94,7 +95,7 @@ class QuarantineView(ctk.CTkFrame):
 
         self._empty_label = ctk.CTkLabel(
             self._scroll, text="Quarantine is empty",
-            text_color="#555555", font=ctk.CTkFont(size=14))
+            text_color=theme.color("dim"), font=ctk.CTkFont(size=14))
 
     # ── Selection helpers ──────────────────────────────────────────────────────
 
@@ -215,7 +216,7 @@ class QuarantineView(ctk.CTkFrame):
 
         ctk.CTkButton(
             btn_frame, text="Restore", width=72, height=26,
-            fg_color="#1f6aa5", hover_color="#144e7a",
+            fg_color=theme.color("accent"), hover_color=theme.color("accent_hover"),
             font=ctk.CTkFont(size=11),
             command=lambda e=entry: self._restore(e),
         ).grid(row=0, column=0, padx=(4, 2))
@@ -229,7 +230,7 @@ class QuarantineView(ctk.CTkFrame):
 
         vt_verdict_lbl = ctk.CTkLabel(
             btn_frame, text="", font=ctk.CTkFont(size=10),
-            text_color="#888888", width=90, anchor="w")
+            text_color=theme.color("subtext"), width=90, anchor="w")
         vt_verdict_lbl.grid(row=0, column=3, padx=(2, 4))
 
         api_key = cfg.get("vt_api_key") or ""
@@ -258,12 +259,12 @@ class QuarantineView(ctk.CTkFrame):
 
         q_path = entry.get("path")
         if not q_path or not Path(q_path).exists():
-            verdict_lbl.configure(text="File not found", text_color="#888888")
+            verdict_lbl.configure(text="File not found", text_color=theme.color("subtext"))
             return
         q_path = str(q_path)
 
         self._vt_in_flight = True
-        verdict_lbl.configure(text="hashing…", text_color="#888888")
+        verdict_lbl.configure(text="hashing…", text_color=theme.color("subtext"))
         self._status_cb("Computing hash for VirusTotal…")
 
         def _run():
@@ -273,13 +274,13 @@ class QuarantineView(ctk.CTkFrame):
             except Exception:
                 if self.winfo_exists():
                     self.after(0, lambda: verdict_lbl.configure(
-                        text="hash error", text_color="#888888"))
+                        text="hash error", text_color=theme.color("subtext")))
                 self._vt_in_flight = False
                 return
 
             if self.winfo_exists():
                 self.after(0, lambda: verdict_lbl.configure(
-                    text="checking VT…", text_color="#888888"))
+                    text="checking VT…", text_color=theme.color("subtext")))
 
             import urllib.request, urllib.error, json as _json
             url = f"https://www.virustotal.com/api/v3/files/{sha256}"

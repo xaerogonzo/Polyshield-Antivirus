@@ -187,15 +187,17 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
         sidebar = ctk.CTkScrollableFrame(
             self, width=_SIDEBAR_WIDTH, corner_radius=0, fg_color="#141422")
         sidebar.grid(row=0, column=0, sticky="nsew")
+        self._sidebar = sidebar   # kept for live theme refresh
         sidebar.grid_columnconfigure(0, weight=1)
 
         # Logo
         logo = ctk.CTkFrame(sidebar, fg_color="transparent", height=70)
         logo.grid(row=0, column=0, sticky="ew", pady=(8, 4))
         logo.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(logo, text="PolyShield",
-                     font=ctk.CTkFont(size=20, weight="bold"),
-                     text_color="#5294e2").grid(row=0, column=0, pady=(14, 0))
+        self._logo_lbl = ctk.CTkLabel(logo, text="PolyShield",
+                                       font=ctk.CTkFont(size=20, weight="bold"),
+                                       text_color=theme.color("accent"))
+        self._logo_lbl.grid(row=0, column=0, pady=(14, 0))
         ctk.CTkLabel(logo, text="Security Suite",
                      font=ctk.CTkFont(size=10),
                      text_color="#555577").grid(row=1, column=0)
@@ -347,6 +349,77 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
             # Re-place in case it was hidden via place_forget()
             self._bg_label.place(x=0, y=0, relwidth=1, relheight=1)
             self._bg_label.lower()
+
+    def refresh_nav_theme(self) -> None:
+        """Update sidebar, content area, logo, active nav button, every
+        view's themed widgets, and all CTk default-styled widgets to the
+        current theme palette.  Called from DisplayView after any preset
+        or accent change."""
+        try:
+            self._sidebar.configure(fg_color=theme.color("sidebar"))
+        except Exception:
+            pass
+        try:
+            self._content.configure(fg_color=theme.color("content_bg"))
+        except Exception:
+            pass
+        try:
+            self._logo_lbl.configure(text_color=theme.color("accent"))
+        except Exception:
+            pass
+        if self._active_view and self._active_view in self._nav_buttons:
+            self._nav_buttons[self._active_view].configure(
+                fg_color=theme.color("nav_active"))
+        # Cascade to every view that implements _refresh_theme()
+        for view in self._views.values():
+            fn = getattr(view, "_refresh_theme", None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
+        # Walk the widget tree to re-pull defaults from ctk.ThemeManager.theme
+        # (which theme.apply_ctk_palette() just patched).
+        self._refresh_ctk_widgets()
+
+    def _refresh_ctk_widgets(self) -> None:
+        """Walk the widget tree and force CTk default-styled widgets to
+        re-pull their colours from ``ctk.ThemeManager.theme`` (which was
+        just patched by ``theme.apply_ctk_palette()``).
+
+        CTkButton and CTkCheckBox are deliberately excluded — many of our
+        buttons carry semantic colour meaning (red Stop, yellow Pause).
+        Anything that needs to follow the accent should use the explicit
+        ``theme.register(self._themed, btn, fg_color="accent")`` pattern."""
+        try:
+            import customtkinter as ctk
+            tm = ctk.ThemeManager.theme
+        except Exception:
+            return
+        refresh_map = {
+            "CTkSegmentedButton": ["selected_color", "selected_hover_color"],
+            "CTkOptionMenu":      ["button_color", "button_hover_color"],
+            "CTkComboBox":        ["button_color", "button_hover_color"],
+            "CTkProgressBar":     ["progress_color"],
+            "CTkSlider":          ["button_color", "button_hover_color"],
+            "CTkSwitch":          ["progress_color"],
+            "CTkScrollbar":       ["button_color", "button_hover_color"],
+        }
+
+        def _walk(w):
+            cls = w.__class__.__name__
+            if cls in refresh_map:
+                try:
+                    w.configure(**{k: tm[cls][k] for k in refresh_map[cls]})
+                except Exception:
+                    pass
+            try:
+                for child in w.winfo_children():
+                    _walk(child)
+            except Exception:
+                pass
+
+        _walk(self)
 
     def _set_status(self, text: str):
         self.after(0, lambda t=text: self._status_lbl.configure(text=t))

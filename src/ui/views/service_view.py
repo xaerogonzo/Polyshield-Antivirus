@@ -6,6 +6,7 @@ from pathlib import Path
 import customtkinter as ctk
 
 from ui.core import service_client as svc
+import ui.theme as theme
 
 _GREEN  = "#50fa7b"
 _RED    = "#ff5555"
@@ -88,7 +89,7 @@ class ServiceView(ctk.CTkFrame):
 
         self._stats_lbl = ctk.CTkLabel(
             status_card, text="",
-            font=ctk.CTkFont(size=11), text_color="#666688")
+            font=ctk.CTkFont(size=11), text_color=theme.color("subtext"))
         self._stats_lbl.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 4))
 
         # ── Crash banner (hidden until exit-1067 detected) ──
@@ -125,13 +126,13 @@ class ServiceView(ctk.CTkFrame):
 
         self._install_btn = ctk.CTkButton(
             ctrl_card, text="Install Service", height=34,
-            fg_color="#1f6aa5", hover_color="#144e7a",
+            fg_color=theme.color("accent"), hover_color=theme.color("accent_hover"),
             command=self._install)
         self._install_btn.grid(row=1, column=0, padx=(16, 4), pady=(0, 8), sticky="ew")
 
         self._uninstall_btn = ctk.CTkButton(
             ctrl_card, text="Uninstall Service", height=34,
-            fg_color="#3a3a3a", hover_color="#8b0000",
+            fg_color=theme.color("divider"), hover_color="#8b0000",
             command=self._uninstall)
         self._uninstall_btn.grid(row=1, column=1, padx=(4, 16), pady=(0, 8), sticky="ew")
 
@@ -149,7 +150,7 @@ class ServiceView(ctk.CTkFrame):
 
         ctk.CTkLabel(ctrl_card,
                      text="All service control actions require a UAC elevation prompt.",
-                     font=ctk.CTkFont(size=10), text_color="#555577").grid(
+                     font=ctk.CTkFont(size=10), text_color=theme.color("dim")).grid(
             row=3, column=0, columnspan=2, padx=16, pady=(0, 10))
 
         # ── Events log header ──
@@ -160,7 +161,7 @@ class ServiceView(ctk.CTkFrame):
                      font=ctk.CTkFont(size=14, weight="bold")).grid(
             row=0, column=0, sticky="w")
         ctk.CTkButton(log_hdr, text="Clear", width=70, height=26,
-                      fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      fg_color=theme.color("divider"), hover_color="#4a4a4a",
                       font=ctk.CTkFont(size=11),
                       command=self._clear_events).grid(row=0, column=1)
 
@@ -172,7 +173,7 @@ class ServiceView(ctk.CTkFrame):
         self.grid_rowconfigure(4, weight=1)
 
         ctk.CTkLabel(self._log_scroll, text="No events yet",
-                     text_color="#555577", font=ctk.CTkFont(size=12)).grid(
+                     text_color=theme.color("dim"), font=ctk.CTkFont(size=12)).grid(
             row=0, column=0, pady=20)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -295,7 +296,7 @@ class ServiceView(ctk.CTkFrame):
                      text_color=color).grid(row=0, column=0, sticky="w", padx=10, pady=4)
         ctk.CTkLabel(row_f, text=entry.get("time", ""),
                      font=ctk.CTkFont(size=11),
-                     text_color="#666688").grid(row=0, column=1, padx=8)
+                     text_color=theme.color("subtext")).grid(row=0, column=1, padx=8)
         ctk.CTkLabel(row_f, text=status.upper(),
                      font=ctk.CTkFont(size=11),
                      text_color=color).grid(row=0, column=2, padx=8)
@@ -379,7 +380,7 @@ class ServiceView(ctk.CTkFrame):
             w.destroy()
         self._last_event_id = 0
         ctk.CTkLabel(self._log_scroll, text="No events yet",
-                     text_color="#555577", font=ctk.CTkFont(size=12)).grid(
+                     text_color=theme.color("dim"), font=ctk.CTkFont(size=12)).grid(
             row=0, column=0, pady=20)
 
     def _after_action(self):

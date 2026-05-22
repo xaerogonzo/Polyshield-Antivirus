@@ -37,6 +37,7 @@ import customtkinter as ctk
 
 from ui.core import settings as cfg
 from ui.core import ignore_list as ignore
+import ui.theme as theme
 
 # Log tag constants — mirrored from scan_view.py.  Kept in sync intentionally:
 # importing them from scan_view would create a circular import (scan_view
@@ -267,13 +268,13 @@ class _ThreatActionsMixin:
 
         # ── Row 2: master (col 0) and detail (col 1) panes ──
         self._threat_master_frame = ctk.CTkScrollableFrame(
-            frame, height=420, fg_color="#12121e", corner_radius=6)
+            frame, height=420, fg_color=theme.color("card2"), corner_radius=6)
         self._threat_master_frame.grid(
             row=2, column=0, sticky="nsew", padx=(14, 4), pady=(0, 6))
         self._threat_master_frame.grid_columnconfigure(0, weight=1)
 
         self._threat_detail_frame = ctk.CTkScrollableFrame(
-            frame, height=420, fg_color="#12121e", corner_radius=6)
+            frame, height=420, fg_color=theme.color("card2"), corner_radius=6)
         self._threat_detail_frame.grid(
             row=2, column=1, sticky="nsew", padx=(4, 14), pady=(0, 6))
         self._threat_detail_frame.grid_columnconfigure(0, weight=1)
@@ -409,7 +410,7 @@ class _ThreatActionsMixin:
         self._threat_page = min(self._threat_page, total_pages - 1)
         page_lbl = ctk.CTkLabel(
             pag, text=f"Page {self._threat_page + 1} of {total_pages}",
-            font=ctk.CTkFont(size=11), text_color="#cdd6f4")
+            font=ctk.CTkFont(size=11), text_color=theme.color("text"))
         page_lbl.grid(row=0, column=0, sticky="w")
 
         prev_btn = ctk.CTkButton(
@@ -432,7 +433,7 @@ class _ThreatActionsMixin:
         # Search entry
         search_lbl = ctk.CTkLabel(
             pag, text="Search:", font=ctk.CTkFont(size=11),
-            text_color="#888888")
+            text_color=theme.color("subtext"))
         search_lbl.grid(row=0, column=3, padx=(12, 4))
         search_var = ctk.StringVar(value=self._threat_filter_text)
         search_entry = ctk.CTkEntry(
@@ -464,7 +465,7 @@ class _ThreatActionsMixin:
                 fg_color=("#3a3a6a" if active else "#1e1e2e"),
                 hover_color=("#4a4a8a" if active else "#2a2a3a"),
                 border_width=(1 if not active else 0),
-                border_color="#3a3a4a",
+                border_color=theme.color("input_hover"),
                 font=ctk.CTkFont(size=10),
                 command=lambda k=key: self._on_chip_change(k))
             chip.grid(row=0, column=idx, padx=(0, 6))
@@ -488,7 +489,7 @@ class _ThreatActionsMixin:
         if not page_paths:
             ctk.CTkLabel(
                 master, text="(no threats match current filter)",
-                font=ctk.CTkFont(size=11), text_color="#555577").grid(
+                font=ctk.CTkFont(size=11), text_color=theme.color("dim")).grid(
                 row=0, column=0, pady=20)
             return
 
@@ -507,7 +508,7 @@ class _ThreatActionsMixin:
         ctk.CTkLabel(
             hdr, text=f"Select all on page ({len(page_paths)})  •  "
                      f"In filter: {len(filtered)}",
-            font=ctk.CTkFont(size=10), text_color="#888888",
+            font=ctk.CTkFont(size=10), text_color=theme.color("subtext"),
             anchor="w").grid(row=0, column=1, sticky="w", padx=(4, 0))
 
         sel_all_filter_btn = ctk.CTkButton(
@@ -644,7 +645,7 @@ class _ThreatActionsMixin:
         name_lbl.grid(row=0, column=3, sticky="w", padx=(0, 4), pady=(4, 0))
         dir_lbl = ctk.CTkLabel(
             row_f, text=dir_part, anchor="w",
-            text_color="#666688",
+            text_color=theme.color("subtext"),
             font=ctk.CTkFont(size=10))
         dir_lbl.grid(row=1, column=3, sticky="w", padx=(0, 4), pady=(0, 4))
 
@@ -669,7 +670,7 @@ class _ThreatActionsMixin:
                 detail,
                 text="Select a file on the left to see its details.",
                 font=ctk.CTkFont(size=11),
-                text_color="#555577", anchor="center").grid(
+                text_color=theme.color("dim"), anchor="center").grid(
                 row=0, column=0, pady=40, padx=20)
             return
 
@@ -679,7 +680,7 @@ class _ThreatActionsMixin:
         ctk.CTkLabel(
             detail, text=Path(path).name, anchor="w",
             font=ctk.CTkFont(size=14, weight="bold"),
-            text_color="#cdd6f4", wraplength=480).grid(
+            text_color=theme.color("text"), wraplength=480).grid(
             row=row, column=0, sticky="w", padx=10, pady=(8, 0))
         row += 1
 
@@ -687,12 +688,12 @@ class _ThreatActionsMixin:
         ctk.CTkLabel(
             detail, text=path, anchor="w",
             font=ctk.CTkFont(family="Consolas", size=10),
-            text_color="#888888", wraplength=480).grid(
+            text_color=theme.color("subtext"), wraplength=480).grid(
             row=row, column=0, sticky="w", padx=10, pady=(0, 6))
         row += 1
 
         # File size + hashes
-        info_frame = ctk.CTkFrame(detail, fg_color="#1e1e2e", corner_radius=6)
+        info_frame = ctk.CTkFrame(detail, fg_color=theme.color("card2"), corner_radius=6)
         info_frame.grid(row=row, column=0, sticky="ew", padx=10, pady=4)
         info_frame.grid_columnconfigure(1, weight=1)
         row += 1
@@ -704,10 +705,10 @@ class _ThreatActionsMixin:
         except Exception:
             size_str = "—"
         ctk.CTkLabel(info_frame, text="Size:", font=ctk.CTkFont(size=10),
-                     text_color="#666688").grid(
+                     text_color=theme.color("subtext")).grid(
             row=0, column=0, sticky="w", padx=10, pady=(6, 2))
         ctk.CTkLabel(info_frame, text=size_str, font=ctk.CTkFont(size=10),
-                     text_color="#cdd6f4").grid(
+                     text_color=theme.color("text")).grid(
             row=0, column=1, sticky="w", pady=(6, 2))
 
         # MD5 / SHA-256 (lazy)
@@ -715,18 +716,18 @@ class _ThreatActionsMixin:
         md5_str    = cached.get("md5", "computing…")
         sha256_str = cached.get("sha256", "computing…")
         ctk.CTkLabel(info_frame, text="MD5:", font=ctk.CTkFont(size=10),
-                     text_color="#666688").grid(
+                     text_color=theme.color("subtext")).grid(
             row=1, column=0, sticky="w", padx=10, pady=2)
         md5_lbl = ctk.CTkLabel(info_frame, text=md5_str,
                                font=ctk.CTkFont(family="Consolas", size=10),
-                               text_color="#cdd6f4")
+                               text_color=theme.color("text"))
         md5_lbl.grid(row=1, column=1, sticky="w", pady=2)
         ctk.CTkLabel(info_frame, text="SHA-256:", font=ctk.CTkFont(size=10),
-                     text_color="#666688").grid(
+                     text_color=theme.color("subtext")).grid(
             row=2, column=0, sticky="w", padx=10, pady=(2, 6))
         sha_lbl = ctk.CTkLabel(info_frame, text=sha256_str,
                                font=ctk.CTkFont(family="Consolas", size=10),
-                               text_color="#cdd6f4", wraplength=320)
+                               text_color=theme.color("text"), wraplength=320)
         sha_lbl.grid(row=2, column=1, sticky="w", pady=(2, 6))
         if "md5" not in cached:
             self._compute_hashes_async(path, md5_lbl, sha_lbl)
@@ -762,12 +763,12 @@ class _ThreatActionsMixin:
 
         # Engine verdicts
         ctk.CTkLabel(detail, text="Engine verdicts:", font=ctk.CTkFont(size=11, weight="bold"),
-                     text_color="#5294e2", anchor="w").grid(
+                     text_color=theme.color("accent"), anchor="w").grid(
             row=row, column=0, sticky="w", padx=10, pady=(8, 2))
         row += 1
         if not verdicts:
             ctk.CTkLabel(detail, text="(no engine flagged this file)",
-                         font=ctk.CTkFont(size=10), text_color="#666688",
+                         font=ctk.CTkFont(size=10), text_color=theme.color("subtext"),
                          anchor="w").grid(
                 row=row, column=0, sticky="w", padx=14, pady=2)
             row += 1
@@ -804,7 +805,7 @@ class _ThreatActionsMixin:
             ctk.CTkLabel(
                 ctx_frame, text=f"Pattern: {pat_label}",
                 font=ctk.CTkFont(size=10),
-                text_color="#cdd6f4", anchor="w").grid(
+                text_color=theme.color("text"), anchor="w").grid(
                 row=1, column=0, sticky="w", padx=12, pady=(2, 4))
 
             snippet_box = ctk.CTkTextbox(
@@ -822,7 +823,7 @@ class _ThreatActionsMixin:
         if preview:
             ctk.CTkLabel(detail, text="Preview (first 200 bytes):",
                          font=ctk.CTkFont(size=11, weight="bold"),
-                         text_color="#5294e2", anchor="w").grid(
+                         text_color=theme.color("accent"), anchor="w").grid(
                 row=row, column=0, sticky="w", padx=10, pady=(8, 2))
             row += 1
             preview_box = ctk.CTkTextbox(detail, height=80, wrap="word",
@@ -889,17 +890,17 @@ class _ThreatActionsMixin:
 
         # k2 verdict
         k2_col = "#ff5555" if dispute["k2_verdict"] == "Infected" else "#50fa7b"
-        kf = ctk.CTkFrame(panel, fg_color="#1a1a2e", corner_radius=6)
+        kf = ctk.CTkFrame(panel, fg_color=theme.color("card"), corner_radius=6)
         kf.grid(row=1, column=0, sticky="ew", padx=(10, 4), pady=4)
         ctk.CTkLabel(kf, text="k2 Engine", font=ctk.CTkFont(size=10, weight="bold"),
-                     text_color="#5294e2").pack(anchor="w", padx=10, pady=(6, 0))
+                     text_color=theme.color("accent")).pack(anchor="w", padx=10, pady=(6, 0))
         ctk.CTkLabel(kf, text=dispute["k2_verdict"],
                      font=ctk.CTkFont(size=13, weight="bold"),
                      text_color=k2_col).pack(anchor="w", padx=10, pady=(0, 6))
 
         # Guardian verdict
         gcol = "#ff5555" if dispute["guardian_verdict"] == "Infected" else "#50fa7b"
-        gf = ctk.CTkFrame(panel, fg_color="#1a1a2e", corner_radius=6)
+        gf = ctk.CTkFrame(panel, fg_color=theme.color("card"), corner_radius=6)
         gf.grid(row=1, column=1, sticky="ew", padx=(4, 10), pady=4)
         ctk.CTkLabel(gf, text="Guardian AI", font=ctk.CTkFont(size=10, weight="bold"),
                      text_color="#f1fa8c").pack(anchor="w", padx=10, pady=(6, 0))
@@ -909,7 +910,7 @@ class _ThreatActionsMixin:
         reason = dispute.get("guardian_reason", "")[:90]
         if reason:
             ctk.CTkLabel(gf, text=reason, font=ctk.CTkFont(size=9),
-                         text_color="#888888", wraplength=200,
+                         text_color=theme.color("subtext"), wraplength=200,
                          anchor="w", justify="left").pack(anchor="w", padx=10, pady=(0, 6))
 
         # Resolve buttons (only if not resolved)
@@ -941,7 +942,7 @@ class _ThreatActionsMixin:
         n_selected = len(self._threat_checked)
         ctk.CTkLabel(
             bf, text=f"Bulk actions  ({n_selected} selected)",
-            font=ctk.CTkFont(size=11), text_color="#888888",
+            font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
             anchor="w").grid(row=0, column=0, sticky="w", padx=12, pady=6)
 
         state = "normal" if n_selected > 0 else "disabled"
@@ -1094,7 +1095,7 @@ class _ThreatActionsMixin:
         dlg.title("Ignore hash" + ("es" if len(paths) > 1 else ""))
         dlg.geometry("460x180")
         dlg.resizable(False, False)
-        dlg.configure(fg_color="#12121e")
+        dlg.configure(fg_color=theme.color("card2"))
         dlg.transient(self.winfo_toplevel())
         dlg.attributes("-topmost", True)
 
@@ -1105,11 +1106,11 @@ class _ThreatActionsMixin:
                      text_color="#ffb86c").pack(anchor="w", padx=20, pady=(16, 4))
         ctk.CTkLabel(dlg,
                      text="These files won't be flagged by Guardian AI on future scans.",
-                     font=ctk.CTkFont(size=10), text_color="#888888").pack(
+                     font=ctk.CTkFont(size=10), text_color=theme.color("subtext")).pack(
             anchor="w", padx=20, pady=(0, 8))
         ctk.CTkLabel(dlg, text="Note (optional):",
                      font=ctk.CTkFont(size=10),
-                     text_color="#cdd6f4").pack(anchor="w", padx=20)
+                     text_color=theme.color("text")).pack(anchor="w", padx=20)
 
         note_var = ctk.StringVar()
         entry = ctk.CTkEntry(dlg, textvariable=note_var, width=420, height=28,
@@ -1129,7 +1130,7 @@ class _ThreatActionsMixin:
             dlg.destroy()
 
         ctk.CTkButton(btn_row, text="Cancel", width=80, height=28,
-                      fg_color="#2a2a3a", hover_color="#3a3a4a",
+                      fg_color=theme.color("divider"), hover_color=theme.color("input_hover"),
                       command=_on_cancel).grid(row=0, column=0, padx=(0, 8))
         ctk.CTkButton(btn_row, text="Ignore", width=90, height=28,
                       fg_color="#4a4a1a", hover_color="#6a6a2a",
@@ -1207,7 +1208,7 @@ class _ThreatActionsMixin:
         dlg.title("Disable noisy pattern?")
         dlg.geometry("520x220")
         dlg.resizable(False, False)
-        dlg.configure(fg_color="#12121e")
+        dlg.configure(fg_color=theme.color("card2"))
         dlg.transient(self.winfo_toplevel())
         dlg.attributes("-topmost", True)
 
@@ -1220,7 +1221,7 @@ class _ThreatActionsMixin:
                   f"\"{pattern}\" in this scan session.\n\n"
                   "Disable this pattern in Guardian settings so it won't fire on "
                   "future scans? Existing ignored hashes remain on the ignore list."),
-            font=ctk.CTkFont(size=11), text_color="#cdd6f4",
+            font=ctk.CTkFont(size=11), text_color=theme.color("text"),
             wraplength=460, anchor="w", justify="left").pack(
             anchor="w", padx=20, pady=(0, 12))
 
@@ -1250,11 +1251,11 @@ class _ThreatActionsMixin:
             dlg.destroy()
 
         ctk.CTkButton(btn_row, text="Don't ask again", width=130, height=28,
-                      fg_color="#2a2a3a", hover_color="#3a3a4a",
+                      fg_color=theme.color("divider"), hover_color=theme.color("input_hover"),
                       font=ctk.CTkFont(size=11),
                       command=_dont_ask).grid(row=0, column=0, padx=(0, 8))
         ctk.CTkButton(btn_row, text="Keep enabled", width=110, height=28,
-                      fg_color="#3a3a4a", hover_color="#4a4a5a",
+                      fg_color=theme.color("input_hover"), hover_color="#4a4a5a",
                       font=ctk.CTkFont(size=11),
                       command=_keep).grid(row=0, column=1, padx=(0, 8))
         ctk.CTkButton(btn_row, text="Disable pattern", width=130, height=28,
@@ -1350,7 +1351,7 @@ class _ThreatActionsMixin:
 
         self._bulk_progress_lbl = ctk.CTkLabel(
             bf, text=f"{title}  0 / {total}",
-            font=ctk.CTkFont(size=11), text_color="#cdd6f4")
+            font=ctk.CTkFont(size=11), text_color=theme.color("text"))
         self._bulk_progress_lbl.grid(row=0, column=0, sticky="w", padx=12, pady=6)
 
         self._bulk_progress_bar = ctk.CTkProgressBar(bf, width=240, height=14,
@@ -1359,7 +1360,7 @@ class _ThreatActionsMixin:
         self._bulk_progress_bar.set(0)
 
         ctk.CTkButton(bf, text="Cancel", width=80, height=24,
-                      fg_color="#3a3a3a", hover_color="#5a5a5a",
+                      fg_color=theme.color("divider"), hover_color="#5a5a5a",
                       font=ctk.CTkFont(size=11),
                       command=self._cancel_bulk).grid(
             row=0, column=2, padx=(0, 12), pady=6)

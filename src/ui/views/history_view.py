@@ -4,6 +4,7 @@ import subprocess
 import customtkinter as ctk
 from pathlib import Path
 from ui.core import scanner as sc
+import ui.theme as theme
 
 _BASE_DIR = Path(__file__).resolve().parents[3]
 _LOGS_DIR = _BASE_DIR / "logs"
@@ -54,20 +55,20 @@ class HistoryView(ctk.CTkFrame):
         ctk.CTkLabel(header, text="Scan History",
                      font=ctk.CTkFont(size=22, weight="bold")).grid(row=0, column=0, sticky="w")
         ctk.CTkButton(header, text="Refresh", width=100,
-                      fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      fg_color=theme.color("divider"), hover_color="#4a4a4a",
                       command=self.refresh).grid(row=0, column=1)
 
         # ── Left: report list ──
-        self._list_frame = ctk.CTkScrollableFrame(self, width=260, fg_color="#1a1a2e",
+        self._list_frame = ctk.CTkScrollableFrame(self, width=260, fg_color=theme.color("card"),
                                                    corner_radius=8)
         self._list_frame.grid(row=1, column=0, sticky="ns", padx=(24, 8), pady=(0, 16))
         self._list_frame.grid_columnconfigure(0, weight=1)
 
         self._empty_lbl = ctk.CTkLabel(self._list_frame, text="No scans yet",
-                                        text_color="#555555", font=ctk.CTkFont(size=13))
+                                        text_color=theme.color("dim"), font=ctk.CTkFont(size=13))
 
         # ── Right: detail panel ──
-        self._detail = ctk.CTkFrame(self, fg_color="#1a1a2e", corner_radius=8)
+        self._detail = ctk.CTkFrame(self, fg_color=theme.color("card"), corner_radius=8)
         self._detail.grid(row=1, column=1, sticky="nsew", padx=(0, 24), pady=(0, 16))
         self._detail.grid_columnconfigure(0, weight=1)
         self._detail.grid_rowconfigure(1, weight=1)
@@ -81,12 +82,12 @@ class HistoryView(ctk.CTkFrame):
         self._detail_title.grid(row=0, column=0, sticky="w")
 
         self._open_btn = ctk.CTkButton(self._detail_header, text="Open JSON", width=100,
-                                        fg_color="#3a3a3a", hover_color="#4a4a4a",
+                                        fg_color=theme.color("divider"), hover_color="#4a4a4a",
                                         state="disabled", command=self._open_json)
         self._open_btn.grid(row=0, column=1)
 
         self._summary_bar = ctk.CTkLabel(self._detail_header, text="",
-                                          font=ctk.CTkFont(size=12), text_color="#888888")
+                                          font=ctk.CTkFont(size=12), text_color=theme.color("subtext"))
         self._summary_bar.grid(row=1, column=0, columnspan=2, sticky="w", pady=(4, 0))
 
         self._detail_log = ctk.CTkTextbox(self._detail,
@@ -96,7 +97,7 @@ class HistoryView(ctk.CTkFrame):
         self._detail_log.tag_config("infected", foreground="#ff5555")
         self._detail_log.tag_config("clean",    foreground="#50fa7b")
         self._detail_log.tag_config("warn",     foreground="#ffb86c")
-        self._detail_log.tag_config("info",     foreground="#cdd6f4")
+        self._detail_log.tag_config("info",     foreground=theme.color("text"))
 
     def refresh(self):
         for widget in self._list_frame.winfo_children():
@@ -105,7 +106,7 @@ class HistoryView(ctk.CTkFrame):
         self._reports = _load_reports()
         if not self._reports:
             self._empty_lbl = ctk.CTkLabel(self._list_frame, text="No scans yet",
-                                            text_color="#555555", font=ctk.CTkFont(size=13))
+                                            text_color=theme.color("dim"), font=ctk.CTkFont(size=13))
             self._empty_lbl.grid(row=0, column=0, pady=24)
             self._status_cb("No scan history")
             return
@@ -119,7 +120,7 @@ class HistoryView(ctk.CTkFrame):
                 text=label,
                 anchor="w",
                 font=ctk.CTkFont(size=11),
-                fg_color="#1e1e2e" if i % 2 == 0 else "#232340",
+                fg_color=theme.color("card2") if i % 2 == 0 else "#232340",
                 hover_color="#2a2a4a",
                 text_color=color,
                 corner_radius=4,

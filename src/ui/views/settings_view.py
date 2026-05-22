@@ -4,6 +4,7 @@ from datetime import datetime
 import customtkinter as ctk
 from ui.core import settings as cfg
 from ui.core import ignore_list as ignore
+import ui.theme as theme
 
 _SCAN_OPTIONS = [
     (
@@ -69,7 +70,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         self._divider(row=n + 2)
         self._section("VirusTotal", row=n + 3)
 
-        vt_card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        vt_card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         vt_card.grid(row=n + 4, column=0, sticky="ew", padx=24, pady=4)
         vt_card.grid_columnconfigure(1, weight=1)
 
@@ -79,7 +80,7 @@ class SettingsView(ctk.CTkScrollableFrame):
 
         ctk.CTkLabel(vt_card,
                      text="Free tier: 4 requests/min, 500/day. Get yours at virustotal.com.",
-                     font=ctk.CTkFont(size=11), text_color="#666688",
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                      anchor="w").grid(row=1, column=0, columnspan=3,
                                       sticky="w", padx=16, pady=(0, 6))
 
@@ -96,7 +97,7 @@ class SettingsView(ctk.CTkScrollableFrame):
             self._vt_key_entry.insert(0, saved_key)
 
         ctk.CTkButton(key_row, text="Save Key", width=100,
-                      fg_color="#1f6aa5", hover_color="#144e7a",
+                      fg_color=theme.color("accent"), hover_color=theme.color("accent_hover"),
                       command=self._save_vt_key).grid(row=0, column=1)
 
         self._vt_feedback = ctk.CTkLabel(
@@ -119,7 +120,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         self._vt_test_btn.grid(row=0, column=3, padx=(8, 0))
 
         # Smart upload level selector
-        ctk.CTkFrame(vt_card, height=1, fg_color="#2a2a3a").grid(
+        ctk.CTkFrame(vt_card, height=1, fg_color=theme.color("divider")).grid(
             row=4, column=0, columnspan=3, sticky="ew", padx=16, pady=(4, 8))
 
         ctk.CTkLabel(vt_card, text="Smart upload — auto-check detections after scan",
@@ -130,7 +131,7 @@ class SettingsView(ctk.CTkScrollableFrame):
                      text="Controls which flagged files are automatically checked against "
                           "VirusTotal after a dual-scan.\n"
                           "Only hash lookups — your files are never uploaded.",
-                     font=ctk.CTkFont(size=11), text_color="#666688",
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                      anchor="w", wraplength=560).grid(
             row=6, column=0, columnspan=3, sticky="w", padx=16, pady=(0, 6))
 
@@ -159,7 +160,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         from ui.core import guardian_engine as ge
         guardian_available = ge.is_available()
 
-        guardian_card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        guardian_card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         guardian_card.grid(row=n + 7, column=0, sticky="ew", padx=24, pady=4)
         guardian_card.grid_columnconfigure(0, weight=1)
 
@@ -178,7 +179,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         if not guardian_available:
             ctk.CTkLabel(guardian_card,
                          text="Run setup_guardian.bat to clone the repo and create guardian_env/.",
-                         font=ctk.CTkFont(size=11), text_color="#666688",
+                         font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                          anchor="w").grid(row=1, column=0, sticky="w",
                                           padx=16, pady=(0, 12))
         else:
@@ -186,7 +187,7 @@ class SettingsView(ctk.CTkScrollableFrame):
             stat_text = (f"{stats['known_bad']:,} known-bad signatures  •  "
                          f"Last updated: {stats['last_updated']}")
             ctk.CTkLabel(guardian_card, text=stat_text,
-                         font=ctk.CTkFont(size=11), text_color="#666688",
+                         font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                          anchor="w").grid(row=1, column=0, sticky="w",
                                           padx=16, pady=(0, 6))
 
@@ -208,18 +209,18 @@ class SettingsView(ctk.CTkScrollableFrame):
                 row=2, column=0, sticky="w", padx=16, pady=(4, 2))
             ctk.CTkLabel(guardian_card,
                          text="After each PolyShield scan, also run Guardian AI's scanner on the same paths.",
-                         font=ctk.CTkFont(size=11), text_color="#666688",
+                         font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                          anchor="w").grid(row=3, column=0, sticky="w",
                                           padx=16, pady=(0, 8))
 
             # Thin divider between dual-scan toggle and the tier toggles
-            ctk.CTkFrame(guardian_card, height=1, fg_color="#2a2a3a").grid(
+            ctk.CTkFrame(guardian_card, height=1, fg_color=theme.color("divider")).grid(
                 row=4, column=0, sticky="ew", padx=16, pady=(0, 8))
 
             ctk.CTkLabel(guardian_card,
                          text="Guardian AI scan tiers",
                          font=ctk.CTkFont(size=11, weight="bold"),
-                         text_color="#5294e2", anchor="w").grid(
+                         text_color=theme.color("accent"), anchor="w").grid(
                 row=5, column=0, sticky="w", padx=16, pady=(0, 4))
 
             # NSRL allow-list toggle
@@ -240,7 +241,7 @@ class SettingsView(ctk.CTkScrollableFrame):
             ctk.CTkLabel(guardian_card,
                          text="SQLite lookup per file against NIST known-safe hashes. "
                               "Disable if NSRL not imported or to skip ~1–5 ms per file.",
-                         font=ctk.CTkFont(size=11), text_color="#666688",
+                         font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                          anchor="w", wraplength=560).grid(
                 row=7, column=0, sticky="w", padx=16, pady=(0, 6))
 
@@ -263,7 +264,7 @@ class SettingsView(ctk.CTkScrollableFrame):
                          text="7 regex patterns: AutoRun, WScript dropper, encoded PowerShell, "
                               "MSHTA, Mimikatz, ransomware notes, Bitcoin demands. "
                               "Disable for pure hash-based detection with no regex overhead.",
-                         font=ctk.CTkFont(size=11), text_color="#666688",
+                         font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                          anchor="w", wraplength=560).grid(
                 row=9, column=0, sticky="w", padx=16, pady=(0, 12))
 
@@ -293,7 +294,7 @@ class SettingsView(ctk.CTkScrollableFrame):
                               "prevents the null-MD5 false positive (every 0-byte file appearing as "
                               "a 'Known Signature'). Increase if you're getting noise on tiny "
                               "lockfiles or placeholder files. 0 disables the guard.",
-                         font=ctk.CTkFont(size=11), text_color="#666688",
+                         font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                          anchor="w", wraplength=560).grid(
                 row=11, column=0, sticky="w", padx=16, pady=(0, 12))
 
@@ -308,14 +309,14 @@ class SettingsView(ctk.CTkScrollableFrame):
             self._ignored_count_lbl.grid(row=0, column=0, sticky="w")
             ctk.CTkButton(
                 ignored_row, text="Manage…", width=100, height=28,
-                fg_color="#3a3a4a", hover_color="#4a4a5a",
+                fg_color=theme.color("input_hover"), hover_color="#4a4a5a",
                 font=ctk.CTkFont(size=12),
                 command=self._open_ignored_manager).grid(row=0, column=1, padx=(8, 0))
 
             ctk.CTkLabel(guardian_card,
                          text="Files you've explicitly marked as false positives. Their MD5 "
                               "hashes short-circuit Guardian's detection on every future scan.",
-                         font=ctk.CTkFont(size=11), text_color="#666688",
+                         font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                          anchor="w", wraplength=560).grid(
                 row=13, column=0, sticky="w", padx=16, pady=(0, 12))
 
@@ -329,7 +330,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         from ui.core import yara_engine as ye
         yara_available = ye.is_available()
 
-        yara_card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        yara_card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         yara_card.grid(row=n + 10, column=0, sticky="ew", padx=24, pady=4)
         yara_card.grid_columnconfigure(0, weight=1)
 
@@ -348,18 +349,18 @@ class SettingsView(ctk.CTkScrollableFrame):
         ctk.CTkLabel(yara_card,
                      text="Drop .yar files into rules/user_rules/ to extend detection.\n"
                           "All rule files are compiled automatically at scan time.",
-                     font=ctk.CTkFont(size=11), text_color="#666688",
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                      anchor="w", wraplength=560).grid(
             row=1, column=0, sticky="w", padx=16, pady=(0, 6))
 
         yara_btn_row = ctk.CTkFrame(yara_card, fg_color="transparent")
         yara_btn_row.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 8))
         ctk.CTkButton(yara_btn_row, text="Open rules folder", width=140, height=28,
-                      fg_color="#3a3a4a", hover_color="#4a4a5a",
+                      fg_color=theme.color("input_hover"), hover_color="#4a4a5a",
                       font=ctk.CTkFont(size=12),
                       command=self._open_yara_rules_folder).pack(side="left")
 
-        ctk.CTkFrame(yara_card, height=1, fg_color="#2a2a3a").grid(
+        ctk.CTkFrame(yara_card, height=1, fg_color=theme.color("divider")).grid(
             row=3, column=0, sticky="ew", padx=16, pady=(0, 8))
 
         # Enable YARA in scan view by default
@@ -393,7 +394,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         if not yara_available:
             ctk.CTkLabel(yara_card,
                          text="Add at least one .yar file to rules/user_rules/ to enable.",
-                         font=ctk.CTkFont(size=11), text_color="#666688",
+                         font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                          anchor="w").grid(row=6, column=0, sticky="w", padx=16, pady=(0, 12))
 
         # ── ClamAV ──
@@ -403,7 +404,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         from ui.core import clamav_engine as ce
         clamav_available = ce.is_available()
 
-        clam_card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        clam_card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         clam_card.grid(row=n + 13, column=0, sticky="ew", padx=24, pady=4)
         clam_card.grid_columnconfigure(0, weight=1)
 
@@ -422,7 +423,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         ctk.CTkLabel(clam_card,
                      text="Open-source signature engine with millions of community-maintained rules.\n"
                           "Download the Windows installer from clamav.net, then set the install path below.",
-                     font=ctk.CTkFont(size=11), text_color="#666688",
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                      anchor="w", wraplength=560).grid(
             row=1, column=0, sticky="w", padx=16, pady=(0, 6))
 
@@ -440,18 +441,18 @@ class SettingsView(ctk.CTkScrollableFrame):
             self._clam_path_entry.insert(0, saved_clam)
 
         ctk.CTkButton(clam_path_row, text="Browse", width=80,
-                      fg_color="#3a3a4a", hover_color="#4a4a5a",
+                      fg_color=theme.color("input_hover"), hover_color="#4a4a5a",
                       command=self._browse_clamav).grid(row=0, column=1, padx=(0, 8))
 
         ctk.CTkButton(clam_path_row, text="Save", width=70,
-                      fg_color="#1f6aa5", hover_color="#144e7a",
+                      fg_color=theme.color("accent"), hover_color=theme.color("accent_hover"),
                       command=self._save_clamav_path).grid(row=0, column=2)
 
         self._clam_feedback = ctk.CTkLabel(clam_card, text="",
                                             font=ctk.CTkFont(size=11))
         self._clam_feedback.grid(row=3, column=0, sticky="w", padx=16, pady=(0, 6))
 
-        ctk.CTkFrame(clam_card, height=1, fg_color="#2a2a3a").grid(
+        ctk.CTkFrame(clam_card, height=1, fg_color=theme.color("divider")).grid(
             row=4, column=0, sticky="ew", padx=16, pady=(0, 8))
 
         # Enable ClamAV in scan view by default
@@ -485,14 +486,14 @@ class SettingsView(ctk.CTkScrollableFrame):
         if not clamav_available:
             ctk.CTkLabel(clam_card,
                          text="Install ClamAV and set the path above, or leave blank for auto-detection.",
-                         font=ctk.CTkFont(size=11), text_color="#666688",
+                         font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                          anchor="w").grid(row=7, column=0, sticky="w", padx=16, pady=(0, 12))
 
         # ── Behavioral Analysis ──
         self._divider(row=n + 14)
         self._section("Behavioral Analysis", row=n + 15)
 
-        behavioral_card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        behavioral_card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         behavioral_card.grid(row=n + 16, column=0, sticky="ew", padx=24, pady=4)
         behavioral_card.grid_columnconfigure(0, weight=1)
 
@@ -517,16 +518,16 @@ class SettingsView(ctk.CTkScrollableFrame):
             ctk.CTkLabel(behavioral_card,
                          text="Run: kicomav_env\\Scripts\\pip.exe install speakeasy-emulator",
                          font=ctk.CTkFont(family="Consolas", size=10),
-                         text_color="#666688", anchor="w").grid(
+                         text_color=theme.color("subtext"), anchor="w").grid(
                 row=1, column=0, sticky="w", padx=16, pady=(0, 8))
         else:
             ctk.CTkLabel(behavioral_card,
                          text="PE emulation ready — traces API calls, network, registry without execution.",
-                         font=ctk.CTkFont(size=11), text_color="#666688", anchor="w").grid(
+                         font=ctk.CTkFont(size=11), text_color=theme.color("subtext"), anchor="w").grid(
                 row=1, column=0, sticky="w", padx=16, pady=(0, 8))
 
         # Divider
-        ctk.CTkFrame(behavioral_card, height=1, fg_color="#2a2a3a").grid(
+        ctk.CTkFrame(behavioral_card, height=1, fg_color=theme.color("divider")).grid(
             row=2, column=0, sticky="ew", padx=16, pady=(0, 8))
 
         # Sandboxie-Plus path
@@ -547,7 +548,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         ctk.CTkLabel(behavioral_card,
                      text="Install Sandboxie-Plus from github.com/sandboxie-plus/Sandboxie\n"
                           "and point the path below to Start.exe  (system-wide or portable install both supported).",
-                     font=ctk.CTkFont(size=11), text_color="#666688",
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                      anchor="w", wraplength=560).grid(
             row=4, column=0, sticky="w", padx=16, pady=(0, 6))
 
@@ -564,11 +565,11 @@ class SettingsView(ctk.CTkScrollableFrame):
             self._sb_path_entry.insert(0, saved_sb)
 
         ctk.CTkButton(path_row, text="Browse", width=80,
-                      fg_color="#3a3a4a", hover_color="#4a4a5a",
+                      fg_color=theme.color("input_hover"), hover_color="#4a4a5a",
                       command=self._browse_sandboxie).grid(row=0, column=1, padx=(0, 8))
 
         ctk.CTkButton(path_row, text="Save", width=70,
-                      fg_color="#1f6aa5", hover_color="#144e7a",
+                      fg_color=theme.color("accent"), hover_color=theme.color("accent_hover"),
                       command=self._save_sandboxie_path).grid(row=0, column=2)
 
         self._sb_feedback = ctk.CTkLabel(behavioral_card, text="",
@@ -579,7 +580,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         self._divider(row=n + 17)
         self._section("Launch", row=n + 18)
 
-        launch_card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        launch_card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         launch_card.grid(row=n + 19, column=0, sticky="ew", padx=24, pady=4)
         launch_card.grid_columnconfigure(0, weight=1)
 
@@ -599,7 +600,7 @@ class SettingsView(ctk.CTkScrollableFrame):
                           "Required for full Device Security data (Secure Boot, TPM, VBS).\n"
                           "Default: off — use 'Run as Administrator' in Win Security as needed.\n"
                           "Takes effect on the next launch.",
-                     font=ctk.CTkFont(size=11), text_color="#666688",
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                      anchor="w", justify="left", wraplength=560).grid(
             row=1, column=0, sticky="w", padx=16, pady=(0, 12))
 
@@ -609,7 +610,7 @@ class SettingsView(ctk.CTkScrollableFrame):
                                    padx=16, pady=(0, 8))
 
         # Context menu card
-        ctx_card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        ctx_card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         ctx_card.grid(row=n + 20, column=0, sticky="ew", padx=24, pady=(4, 4))
         ctx_card.grid_columnconfigure(0, weight=1)
 
@@ -629,7 +630,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         ctk.CTkLabel(ctx_card,
                      text="Adds 'Scan with PolyShield' to the right-click menu for files, "
                           "folders, and drives.\nNo administrator rights required.",
-                     font=ctk.CTkFont(size=11), text_color="#666688",
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                      anchor="w", justify="left", wraplength=560).grid(
             row=1, column=0, sticky="w", padx=16, pady=(0, 4))
 
@@ -642,7 +643,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         # ── About ──
         self._divider(row=n + 21)
         self._section("About", row=n + 22)
-        about = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        about = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         about.grid(row=n + 23, column=0, sticky="ew", padx=24, pady=(4, 20))
         about.grid_columnconfigure(0, weight=1)
         for i, text in enumerate([
@@ -651,22 +652,22 @@ class SettingsView(ctk.CTkScrollableFrame):
             "Settings saved to config/ui_settings.json",
         ]):
             ctk.CTkLabel(about, text=text, font=ctk.CTkFont(size=12),
-                         text_color="#555577", anchor="w").grid(
+                         text_color=theme.color("dim"), anchor="w").grid(
                 row=i, column=0, sticky="w", padx=16,
                 pady=(10 if i == 0 else 2, 10 if i == 2 else 2))
 
     def _section(self, title: str, row: int):
         ctk.CTkLabel(self, text=title,
                      font=ctk.CTkFont(size=13, weight="bold"),
-                     text_color="#5294e2").grid(
+                     text_color=theme.color("accent")).grid(
             row=row, column=0, sticky="w", padx=24, pady=(12, 4))
 
     def _divider(self, row: int):
-        ctk.CTkFrame(self, height=1, fg_color="#2a2a3a").grid(
+        ctk.CTkFrame(self, height=1, fg_color=theme.color("divider")).grid(
             row=row, column=0, sticky="ew", padx=24, pady=(16, 0))
 
     def _option_row(self, key: str, label: str, desc: str, row: int):
-        card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         card.grid(row=row, column=0, sticky="ew", padx=24, pady=4)
         card.grid_columnconfigure(0, weight=1)
 
@@ -683,7 +684,7 @@ class SettingsView(ctk.CTkScrollableFrame):
                      font=ctk.CTkFont(size=13, weight="bold")).grid(
             row=0, column=0, sticky="w", padx=16, pady=(12, 2))
         ctk.CTkLabel(card, text=desc, anchor="w", justify="left",
-                     font=ctk.CTkFont(size=11), text_color="#666688",
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                      wraplength=580).grid(
             row=1, column=0, sticky="w", padx=16, pady=(0, 12))
 
@@ -722,7 +723,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         dlg = ctk.CTkToplevel(self)
         dlg.title("Ignored Hashes")
         dlg.geometry("720x460")
-        dlg.configure(fg_color="#12121e")
+        dlg.configure(fg_color=theme.color("card2"))
         dlg.transient(self.winfo_toplevel())
         dlg.attributes("-topmost", True)
 
@@ -735,14 +736,14 @@ class SettingsView(ctk.CTkScrollableFrame):
         hdr.grid_columnconfigure(0, weight=1)
         title = ctk.CTkLabel(hdr, text="Ignored Hashes",
                              font=ctk.CTkFont(size=15, weight="bold"),
-                             text_color="#cdd6f4")
+                             text_color=theme.color("text"))
         title.grid(row=0, column=0, sticky="w")
         count_lbl = ctk.CTkLabel(
-            hdr, text="", font=ctk.CTkFont(size=11), text_color="#888888")
+            hdr, text="", font=ctk.CTkFont(size=11), text_color=theme.color("subtext"))
         count_lbl.grid(row=0, column=1)
 
         # Scrollable list
-        list_frame = ctk.CTkScrollableFrame(dlg, fg_color="#1a1a2e",
+        list_frame = ctk.CTkScrollableFrame(dlg, fg_color=theme.color("card"),
                                              corner_radius=6)
         list_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=4)
         list_frame.grid_columnconfigure(0, weight=1)
@@ -758,7 +759,7 @@ class SettingsView(ctk.CTkScrollableFrame):
                           list_frame, count_lbl)).grid(
             row=0, column=0, sticky="w")
         ctk.CTkButton(footer, text="Close", width=80, height=30,
-                      fg_color="#3a3a4a", hover_color="#4a4a5a",
+                      fg_color=theme.color("input_hover"), hover_color="#4a4a5a",
                       command=dlg.destroy).grid(row=0, column=1, sticky="e")
 
         self._ignored_render_list(list_frame, count_lbl)
@@ -776,7 +777,7 @@ class SettingsView(ctk.CTkScrollableFrame):
 
         if not rows:
             ctk.CTkLabel(parent, text="(no ignored hashes yet)",
-                         font=ctk.CTkFont(size=11), text_color="#555577").grid(
+                         font=ctk.CTkFont(size=11), text_color=theme.color("dim")).grid(
                 row=0, column=0, pady=40)
             return
 
@@ -788,7 +789,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         head.grid_columnconfigure(2, weight=2)
         for col, label in enumerate(("File", "Note / Reason", "Added")):
             ctk.CTkLabel(head, text=label, font=ctk.CTkFont(size=10, weight="bold"),
-                         text_color="#888888", anchor="w").grid(
+                         text_color=theme.color("subtext"), anchor="w").grid(
                 row=0, column=col, sticky="w", padx=(6, 0))
 
         for i, entry in enumerate(rows):
@@ -801,12 +802,12 @@ class SettingsView(ctk.CTkScrollableFrame):
 
             fn = entry.get("filename") or "(unknown)"
             ctk.CTkLabel(row_f, text=fn, font=ctk.CTkFont(size=11),
-                         text_color="#cdd6f4", anchor="w", wraplength=180).grid(
+                         text_color=theme.color("text"), anchor="w", wraplength=180).grid(
                 row=0, column=0, sticky="w", padx=8, pady=4)
 
             note = entry.get("note") or entry.get("original_reason") or ""
             ctk.CTkLabel(row_f, text=note[:70],
-                         font=ctk.CTkFont(size=10), text_color="#888888",
+                         font=ctk.CTkFont(size=10), text_color=theme.color("subtext"),
                          anchor="w", wraplength=240).grid(
                 row=0, column=1, sticky="w", padx=8, pady=4)
 
@@ -816,7 +817,7 @@ class SettingsView(ctk.CTkScrollableFrame):
             except Exception:
                 added_disp = added
             ctk.CTkLabel(row_f, text=added_disp, font=ctk.CTkFont(size=10),
-                         text_color="#666688", anchor="w").grid(
+                         text_color=theme.color("subtext"), anchor="w").grid(
                 row=0, column=2, sticky="w", padx=8, pady=4)
 
             h = entry["hash"]
@@ -872,7 +873,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         title_lbl = ctk.CTkLabel(
             header, textvariable=lbl_text, anchor="w",
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="#cdd6f4")
+            text_color=theme.color("text"))
         title_lbl.grid(row=0, column=0, sticky="w", padx=10, pady=6)
 
         def _toggle(_=None):
@@ -900,7 +901,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         dlg = ctk.CTkToplevel(self)
         dlg.title(title)
         dlg.geometry(f"{width}x{height}")
-        dlg.configure(fg_color="#12121e")
+        dlg.configure(fg_color=theme.color("card2"))
         dlg.transient(self.winfo_toplevel())
         dlg.attributes("-topmost", True)
 
@@ -923,7 +924,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         footer.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 12))
         footer.grid_columnconfigure(0, weight=1)
         ctk.CTkButton(footer, text="Close", width=100, height=30,
-                      fg_color="#3a3a4a", hover_color="#4a4a5a",
+                      fg_color=theme.color("input_hover"), hover_color="#4a4a5a",
                       command=dlg.destroy).grid(row=0, column=1, sticky="e")
 
         return dlg
@@ -965,7 +966,7 @@ class SettingsView(ctk.CTkScrollableFrame):
 
         ctk.CTkLabel(sect, text="Sensitivity profile  (v1.10)",
                      font=ctk.CTkFont(size=12, weight="bold"),
-                     text_color="#5294e2", anchor="w").grid(
+                     text_color=theme.color("accent"), anchor="w").grid(
             row=0, column=0, sticky="w", padx=12, pady=(10, 4))
 
         # Dropdown row
@@ -978,7 +979,7 @@ class SettingsView(ctk.CTkScrollableFrame):
 
         desc_lbl = ctk.CTkLabel(
             sect, text=self._PROFILE_DESCRIPTIONS.get(profile_var.get(), ""),
-            font=ctk.CTkFont(size=11), text_color="#888888",
+            font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
             anchor="w", wraplength=520, justify="left")
         desc_lbl.grid(row=2, column=0, sticky="w", padx=12, pady=(0, 8))
 
@@ -998,13 +999,13 @@ class SettingsView(ctk.CTkScrollableFrame):
             dropdown_row, values=["conservative", "balanced", "power"],
             variable=profile_var, command=_on_profile_change,
             width=160, height=28,
-            fg_color="#2a2a3a", button_color="#3a3a4a",
+            fg_color=theme.color("divider"), button_color=theme.color("input_hover"),
             button_hover_color="#4a4a5a").grid(
             row=0, column=1, padx=(0, 8))
 
         adv_btn = ctk.CTkButton(
             dropdown_row, text="Advanced Guardian Settings…", width=210, height=28,
-            fg_color="#3a3a4a", hover_color="#4a4a5a",
+            fg_color=theme.color("input_hover"), hover_color="#4a4a5a",
             font=ctk.CTkFont(size=11),
             command=self._open_guardian_advanced)
         adv_btn.grid(row=0, column=2, sticky="e")
@@ -1030,7 +1031,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         dlg.title("Power profile activated")
         dlg.geometry("440x220")
         dlg.resizable(False, False)
-        dlg.configure(fg_color="#12121e")
+        dlg.configure(fg_color=theme.color("card2"))
         dlg.transient(self.winfo_toplevel())
         dlg.attributes("-topmost", True)
         ctk.CTkLabel(dlg, text="⚠  Power profile active",
@@ -1041,12 +1042,12 @@ class SettingsView(ctk.CTkScrollableFrame):
                        "'Confirmed' (red) instead of 'Suspicious' (amber). "
                        "This restores the pre-v1.10 behavior and may produce "
                        "high noise on legitimate text files / security docs."),
-            font=ctk.CTkFont(size=11), text_color="#cdd6f4",
+            font=ctk.CTkFont(size=11), text_color=theme.color("text"),
             wraplength=400, anchor="w", justify="left").pack(
             anchor="w", padx=20, pady=(0, 12))
         ctk.CTkButton(
             dlg, text="OK, got it", width=100, height=30,
-            fg_color="#3a3a4a", hover_color="#4a4a5a",
+            fg_color=theme.color("input_hover"), hover_color="#4a4a5a",
             command=dlg.destroy).pack(anchor="e", padx=20, pady=(0, 16))
 
     # Default values for all Guardian-specific settings (mirrors settings.py)
@@ -1107,7 +1108,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         toggle_hdr.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(toggle_hdr, text="Per-pattern toggles",
                      font=ctk.CTkFont(size=13, weight="bold"),
-                     text_color="#5294e2", anchor="w").grid(
+                     text_color=theme.color("accent"), anchor="w").grid(
             row=0, column=0, sticky="w")
 
         adv_reset_lbl = ctk.CTkLabel(
@@ -1127,7 +1128,7 @@ class SettingsView(ctk.CTkScrollableFrame):
                   "often each pattern fired vs. how often you added the matched "
                   "file to the ignore list — a 100% FP rate means every detection "
                   "was a false positive."),
-            font=ctk.CTkFont(size=10), text_color="#888888",
+            font=ctk.CTkFont(size=10), text_color=theme.color("subtext"),
             anchor="w", wraplength=660, justify="left").grid(
             row=1, column=0, sticky="w", padx=4, pady=(0, 8))
 
@@ -1178,7 +1179,7 @@ class SettingsView(ctk.CTkScrollableFrame):
                     f"({fp * 100:.0f}% FP rate)" if det else "no detections yet")
                 ctk.CTkLabel(row_f, text=label,
                              font=ctk.CTkFont(size=12, weight="bold"),
-                             text_color="#cdd6f4", anchor="w").grid(
+                             text_color=theme.color("text"), anchor="w").grid(
                     row=0, column=1, sticky="w", padx=(0, 8), pady=(8, 0))
                 ctk.CTkLabel(row_f, text=stat_str,
                              font=ctk.CTkFont(size=10),
@@ -1202,14 +1203,14 @@ class SettingsView(ctk.CTkScrollableFrame):
         # ── Suspicious display mode ──
         ctk.CTkLabel(parent, text="Suspicious tier display",
                      font=ctk.CTkFont(size=13, weight="bold"),
-                     text_color="#5294e2", anchor="w").grid(
+                     text_color=theme.color("accent"), anchor="w").grid(
             row=next_row, column=0, sticky="w", padx=4, pady=(14, 4))
         next_row += 1
         ctk.CTkLabel(
             parent,
             text=("How heuristic-only ('Suspicious') findings appear in the "
                   "Scan view's Threat Actions panel:"),
-            font=ctk.CTkFont(size=10), text_color="#888888", anchor="w",
+            font=ctk.CTkFont(size=10), text_color=theme.color("subtext"), anchor="w",
             wraplength=660).grid(row=next_row, column=0, sticky="w", padx=4, pady=(0, 6))
         next_row += 1
 
@@ -1236,7 +1237,7 @@ class SettingsView(ctk.CTkScrollableFrame):
                          font=ctk.CTkFont(size=12, weight="bold"),
                          anchor="w").grid(row=0, column=1, sticky="w")
             ctk.CTkLabel(rb_f, text=desc,
-                         font=ctk.CTkFont(size=10), text_color="#888888",
+                         font=ctk.CTkFont(size=10), text_color=theme.color("subtext"),
                          anchor="w", wraplength=560).grid(
                 row=1, column=1, sticky="w", padx=(0, 0), pady=(0, 4))
             next_row += 1
@@ -1244,7 +1245,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         # ── Circuit breaker threshold ──
         ctk.CTkLabel(parent, text="Circuit breaker threshold",
                      font=ctk.CTkFont(size=13, weight="bold"),
-                     text_color="#5294e2", anchor="w").grid(
+                     text_color=theme.color("accent"), anchor="w").grid(
             row=next_row, column=0, sticky="w", padx=4, pady=(14, 4))
         next_row += 1
         ctk.CTkLabel(
@@ -1252,7 +1253,7 @@ class SettingsView(ctk.CTkScrollableFrame):
             text=("If Guardian's pattern tier produces more than this many "
                   "matches in one scan, it auto-disables for the remainder "
                   "(hash tiers keep running). 0 = disabled."),
-            font=ctk.CTkFont(size=10), text_color="#888888", anchor="w",
+            font=ctk.CTkFont(size=10), text_color=theme.color("subtext"), anchor="w",
             wraplength=660).grid(row=next_row, column=0, sticky="w", padx=4, pady=(0, 4))
         next_row += 1
 
@@ -1266,14 +1267,14 @@ class SettingsView(ctk.CTkScrollableFrame):
             command=lambda v: _cfg.set_value(
                 "guardian_circuit_breaker_threshold", int(v)),
             width=140, height=28,
-            fg_color="#2a2a3a", button_color="#3a3a4a").grid(
+            fg_color=theme.color("divider"), button_color=theme.color("input_hover")).grid(
             row=0, column=0, sticky="w")
         next_row += 1
 
         # ── Watcher pattern tier toggle ──
         ctk.CTkLabel(parent, text="Real-time (watcher) pattern tier",
                      font=ctk.CTkFont(size=13, weight="bold"),
-                     text_color="#5294e2", anchor="w").grid(
+                     text_color=theme.color("accent"), anchor="w").grid(
             row=next_row, column=0, sticky="w", padx=4, pady=(14, 4))
         next_row += 1
         wp_row = ctk.CTkFrame(parent, fg_color="transparent")
@@ -1296,7 +1297,7 @@ class SettingsView(ctk.CTkScrollableFrame):
                   "(every new file in Downloads/Desktop/USB) cascade quickly. "
                   "Hash-based detection still runs. Turn on only if you're "
                   "actively testing heuristic coverage."),
-            font=ctk.CTkFont(size=10), text_color="#888888", anchor="w",
+            font=ctk.CTkFont(size=10), text_color=theme.color("subtext"), anchor="w",
             wraplength=660).grid(row=next_row, column=0, sticky="w", padx=4, pady=(0, 8))
         next_row += 1
 
@@ -1384,7 +1385,7 @@ class SettingsView(ctk.CTkScrollableFrame):
                 text="API key saved.", text_color="#50fa7b")
         else:
             self._vt_feedback.configure(
-                text="Key cleared.", text_color="#888888")
+                text="Key cleared.", text_color=theme.color("subtext"))
 
     def _test_vt_key(self):
         """
@@ -1398,10 +1399,10 @@ class SettingsView(ctk.CTkScrollableFrame):
         if not key:
             self._vt_feedback.configure(
                 text="No key to test — enter or paste a key first.",
-                text_color="#888888")
+                text_color=theme.color("subtext"))
             return
         self._vt_test_btn.configure(state="disabled", text="Testing…")
-        self._vt_feedback.configure(text="Contacting VirusTotal…", text_color="#888888")
+        self._vt_feedback.configure(text="Contacting VirusTotal…", text_color=theme.color("subtext"))
 
         def _run():
             import urllib.request, urllib.error

@@ -1,6 +1,7 @@
 import threading
 import customtkinter as ctk
 from ui.core import defender as dfn
+import ui.theme as theme
 
 _PROTECTION_FIELDS = [
     ("RealTimeProtectionEnabled",  "Real-Time Protection"),
@@ -33,39 +34,39 @@ class DefenderView(ctk.CTkFrame):
             row=0, column=0, sticky="w")
         self._refresh_btn = ctk.CTkButton(
             header, text="Refresh", width=100,
-            fg_color="#3a3a3a", hover_color="#4a4a4a",
+            fg_color=theme.color("divider"), hover_color="#4a4a4a",
             command=self.refresh)
         self._refresh_btn.grid(row=0, column=1)
 
         # ── Protection status cards ──
-        status_frame = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        status_frame = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         status_frame.grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 8))
         status_frame.grid_columnconfigure(tuple(range(len(_PROTECTION_FIELDS))), weight=1)
 
         ctk.CTkLabel(status_frame, text="Protection Status",
                      font=ctk.CTkFont(size=13, weight="bold"),
-                     text_color="#5294e2").grid(
+                     text_color=theme.color("accent")).grid(
             row=0, column=0, columnspan=len(_PROTECTION_FIELDS),
             sticky="w", padx=16, pady=(12, 8))
 
         for col, (key, label) in enumerate(_PROTECTION_FIELDS):
-            cell = ctk.CTkFrame(status_frame, corner_radius=8, fg_color="#12121e")
+            cell = ctk.CTkFrame(status_frame, corner_radius=8, fg_color=theme.color("card2"))
             cell.grid(row=1, column=col, padx=6, pady=(0, 12), sticky="ew")
             ctk.CTkLabel(cell, text=label, font=ctk.CTkFont(size=10),
-                         text_color="#666688", wraplength=100, justify="center").grid(
+                         text_color=theme.color("subtext"), wraplength=100, justify="center").grid(
                 row=0, column=0, padx=8, pady=(8, 2))
             lbl = ctk.CTkLabel(cell, text="—", font=ctk.CTkFont(size=13, weight="bold"))
             lbl.grid(row=1, column=0, padx=8, pady=(0, 8))
             self._status_labels[key] = lbl
 
         # ── Signature info + scan ages ──
-        info_frame = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        info_frame = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         info_frame.grid(row=2, column=0, sticky="ew", padx=24, pady=(0, 8))
         info_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
         ctk.CTkLabel(info_frame, text="Signature & Scan Info",
                      font=ctk.CTkFont(size=13, weight="bold"),
-                     text_color="#5294e2").grid(
+                     text_color=theme.color("accent")).grid(
             row=0, column=0, columnspan=4, sticky="w", padx=16, pady=(12, 8))
 
         self._info_labels: dict[str, ctk.CTkLabel] = {}
@@ -76,22 +77,22 @@ class DefenderView(ctk.CTkFrame):
             ("full_age",  "Full Scan Age"),
         ]
         for col, (key, label) in enumerate(info_items):
-            cell = ctk.CTkFrame(info_frame, corner_radius=8, fg_color="#12121e")
+            cell = ctk.CTkFrame(info_frame, corner_radius=8, fg_color=theme.color("card2"))
             cell.grid(row=1, column=col, padx=6, pady=(0, 12), sticky="ew")
             ctk.CTkLabel(cell, text=label, font=ctk.CTkFont(size=10),
-                         text_color="#666688").grid(row=0, column=0, padx=12, pady=(8, 2))
+                         text_color=theme.color("subtext")).grid(row=0, column=0, padx=12, pady=(8, 2))
             lbl = ctk.CTkLabel(cell, text="—", font=ctk.CTkFont(size=14, weight="bold"))
             lbl.grid(row=1, column=0, padx=12, pady=(0, 8))
             self._info_labels[key] = lbl
 
         # ── Scan trigger buttons ──
-        scan_frame = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        scan_frame = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         scan_frame.grid(row=3, column=0, sticky="ew", padx=24, pady=(0, 8))
         scan_frame.grid_columnconfigure((0, 1, 2), weight=1)
 
         ctk.CTkLabel(scan_frame, text="Trigger Scan",
                      font=ctk.CTkFont(size=13, weight="bold"),
-                     text_color="#5294e2").grid(
+                     text_color=theme.color("accent")).grid(
             row=0, column=0, columnspan=3, sticky="w", padx=16, pady=(12, 8))
 
         self._scan_btns = {}
@@ -101,14 +102,14 @@ class DefenderView(ctk.CTkFrame):
         ]):
             btn = ctk.CTkButton(
                 scan_frame, text=label, height=36,
-                fg_color="#1f6aa5", hover_color="#144e7a",
+                fg_color=theme.color("accent"), hover_color=theme.color("accent_hover"),
                 command=lambda t=stype: self._trigger_scan(t),
             )
             btn.grid(row=1, column=col, padx=8, pady=(0, 14), sticky="ew")
             self._scan_btns[stype] = btn
 
         self._scan_status_lbl = ctk.CTkLabel(
-            scan_frame, text="", font=ctk.CTkFont(size=12), text_color="#888888")
+            scan_frame, text="", font=ctk.CTkFont(size=12), text_color=theme.color("subtext"))
         self._scan_status_lbl.grid(row=1, column=2, padx=8, sticky="ew")
 
         # ── Threat history ──
@@ -117,7 +118,7 @@ class DefenderView(ctk.CTkFrame):
             row=4, column=0, sticky="w", padx=24, pady=(8, 4))
 
         self._threats_scroll = ctk.CTkScrollableFrame(
-            self, corner_radius=8, fg_color="#1a1a2e")
+            self, corner_radius=8, fg_color=theme.color("card"))
         self._threats_scroll.grid(row=5, column=0, sticky="nsew",
                                    padx=24, pady=(0, 16))
         self._threats_scroll.grid_columnconfigure((0, 1), weight=1)
@@ -125,7 +126,7 @@ class DefenderView(ctk.CTkFrame):
 
         self._no_threat_lbl = ctk.CTkLabel(
             self._threats_scroll, text="No threat history found",
-            text_color="#555577", font=ctk.CTkFont(size=13))
+            text_color=theme.color("dim"), font=ctk.CTkFont(size=13))
         self._no_threat_lbl.grid(row=0, column=0, columnspan=2, pady=24)
 
     def refresh(self):
@@ -142,7 +143,7 @@ class DefenderView(ctk.CTkFrame):
     def _apply(self, status: dict, threats: list):
         if not status.get("available"):
             for lbl in self._status_labels.values():
-                lbl.configure(text="N/A", text_color="#888888")
+                lbl.configure(text="N/A", text_color=theme.color("subtext"))
             for lbl in self._info_labels.values():
                 lbl.configure(text="N/A")
             self._status_cb("Defender status unavailable")
@@ -170,7 +171,7 @@ class DefenderView(ctk.CTkFrame):
         if not threats:
             lbl = ctk.CTkLabel(self._threats_scroll,
                                text="No threat history found",
-                               text_color="#555577", font=ctk.CTkFont(size=13))
+                               text_color=theme.color("dim"), font=ctk.CTkFont(size=13))
             lbl.grid(row=0, column=0, columnspan=2, pady=24)
         else:
             for i, t in enumerate(threats):

@@ -22,6 +22,7 @@ import customtkinter as ctk
 
 from ui.core import defender as dfn
 from ui.core import win_security as ws
+import ui.theme as theme
 
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW
 
@@ -69,7 +70,7 @@ class WinSecView(ctk.CTkScrollableFrame):
 
         self._refresh_btn = ctk.CTkButton(
             hdr, text="Refresh", width=100,
-            fg_color="#3a3a3a", hover_color="#4a4a4a",
+            fg_color=theme.color("divider"), hover_color="#4a4a4a",
             command=self.on_show,
         )
         self._refresh_btn.grid(row=0, column=1)
@@ -103,7 +104,7 @@ class WinSecView(ctk.CTkScrollableFrame):
 
         self._score_detail_btn = ctk.CTkButton(
             score_top, text="Details ▼", width=90,
-            fg_color="transparent", hover_color="#2a2a3a",
+            fg_color="transparent", hover_color=theme.color("divider"),
             font=ctk.CTkFont(size=11), text_color=_DIM,
             command=self._toggle_score_details,
         )
@@ -120,7 +121,7 @@ class WinSecView(ctk.CTkScrollableFrame):
 
         # Score breakdown (collapsed by default)
         self._score_details_frame = ctk.CTkFrame(
-            self._score_card, fg_color="#12121e", corner_radius=6)
+            self._score_card, fg_color=theme.color("card2"), corner_radius=6)
         self._score_details_frame.grid_columnconfigure(0, weight=1)
         self._score_details_visible = False
 
@@ -170,7 +171,7 @@ class WinSecView(ctk.CTkScrollableFrame):
         if open_cmd:
             ctk.CTkButton(
                 hdr, text="Open →", width=68, height=24,
-                fg_color="transparent", hover_color="#2a2a3a",
+                fg_color="transparent", hover_color=theme.color("divider"),
                 font=ctk.CTkFont(size=10), text_color=_BLUE,
                 border_width=1, border_color="#2a2a4a",
                 command=lambda cmd=open_cmd: self._open_settings(cmd),
@@ -186,7 +187,7 @@ class WinSecView(ctk.CTkScrollableFrame):
         outer._chevron = chevron  # type: ignore[attr-defined]
 
         # Detail area (hidden initially)
-        detail = ctk.CTkFrame(outer, fg_color="#12121e", corner_radius=6)
+        detail = ctk.CTkFrame(outer, fg_color=theme.color("card2"), corner_radius=6)
         detail.grid_columnconfigure(0, weight=1)
         # Not gridded until expanded
 
@@ -483,7 +484,7 @@ class WinSecView(ctk.CTkScrollableFrame):
         # Network connections sub-section
         net_btn = ctk.CTkButton(
             parent, text="Show Active Connections", height=28,
-            fg_color="#1f3355", hover_color="#144e7a",
+            fg_color=theme.color("nav_active"), hover_color=theme.color("accent_hover"),
             font=ctk.CTkFont(size=11),
             command=lambda: self._load_connections(parent, row))
         net_btn.grid(row=row, column=0, sticky="w", padx=14, pady=(4, 10))
@@ -637,7 +638,7 @@ class WinSecView(ctk.CTkScrollableFrame):
         if not ss_on:
             btn = ctk.CTkButton(
                 parent, text="Enable SmartScreen (Windows Settings)", height=26,
-                fg_color="#1f3355", hover_color="#144e7a", font=ctk.CTkFont(size=10),
+                fg_color=theme.color("nav_active"), hover_color=theme.color("accent_hover"), font=ctk.CTkFont(size=10),
                 command=lambda: self._open_settings("ms-settings:windowsdefender"))
             btn.grid(row=row, column=0, sticky="w", padx=22, pady=(0, 6)); row += 1
 
@@ -658,7 +659,7 @@ class WinSecView(ctk.CTkScrollableFrame):
         if not cfa:
             btn = ctk.CTkButton(
                 parent, text="Enable via PowerShell (requires admin)", height=26,
-                fg_color="#1f3355", hover_color="#144e7a", font=ctk.CTkFont(size=10),
+                fg_color=theme.color("nav_active"), hover_color=theme.color("accent_hover"), font=ctk.CTkFont(size=10),
                 command=self._enable_cfa)
             btn.grid(row=row, column=0, sticky="w", padx=22, pady=(0, 6)); row += 1
 
@@ -745,7 +746,7 @@ class WinSecView(ctk.CTkScrollableFrame):
                      text_color=color, anchor="w").grid(row=0, column=1, sticky="w")
 
     def _divider(self, parent, row: int):
-        ctk.CTkFrame(parent, height=1, fg_color="#2a2a3a").grid(
+        ctk.CTkFrame(parent, height=1, fg_color=theme.color("divider")).grid(
             row=row, column=0, sticky="ew", padx=10, pady=4)
 
     def _open_settings(self, uri: str):

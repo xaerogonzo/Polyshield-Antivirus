@@ -27,6 +27,7 @@ from datetime import datetime
 import customtkinter as ctk
 
 from ui.core import settings as cfg
+import ui.theme as theme
 
 _MAX_ROWS = 200   # max event rows kept in the live log (each event ≈ 2 lines)
 
@@ -46,21 +47,21 @@ class ProcessView(ctk.CTkFrame):
         self.grid_rowconfigure(2, weight=1)
 
         # ── Header card ──
-        header = ctk.CTkFrame(self, fg_color="#1a1a2e", corner_radius=10)
+        header = ctk.CTkFrame(self, fg_color=theme.color("card"), corner_radius=10)
         header.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 6))
         header.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
             header, text="Process Monitor",
             font=ctk.CTkFont(size=16, weight="bold"),
-            text_color="#cdd6f4",
+            text_color=theme.color("text"),
         ).grid(row=0, column=0, padx=14, pady=12, sticky="w")
 
         # Running / Stopped badge
         self._badge = ctk.CTkLabel(
             header, text="● Stopped",
             font=ctk.CTkFont(size=12),
-            text_color="#666688",
+            text_color=theme.color("subtext"),
         )
         self._badge.grid(row=0, column=1, padx=8, pady=12, sticky="w")
 
@@ -70,7 +71,7 @@ class ProcessView(ctk.CTkFrame):
 
         self._start_btn = ctk.CTkButton(
             btn_frame, text="Start", width=80,
-            fg_color="#1f6aa5", hover_color="#174f7a",
+            fg_color=theme.color("accent"), hover_color="#174f7a",
             command=self._on_start,
         )
         self._start_btn.pack(side="left", padx=(0, 6))
@@ -113,7 +114,7 @@ class ProcessView(ctk.CTkFrame):
             toggles, text="Clear Log", width=90,
             fg_color="transparent", border_width=1,
             border_color="#444466", text_color="#aaaacc",
-            hover_color="#2a2a3a",
+            hover_color=theme.color("divider"),
             command=self._clear_log,
         ).pack(side="right", padx=4)
 
@@ -127,7 +128,7 @@ class ProcessView(ctk.CTkFrame):
             log_frame,
             text="  Process Events  (live — last 200)",
             font=ctk.CTkFont(size=11),
-            text_color="#555577",
+            text_color=theme.color("dim"),
             anchor="w",
         ).grid(row=0, column=0, sticky="ew", padx=4, pady=(4, 0))
 
@@ -143,8 +144,8 @@ class ProcessView(ctk.CTkFrame):
 
         # Colour tags
         self._log._textbox.tag_configure("threat", foreground="#ff6b6b")
-        self._log._textbox.tag_configure("clean",  foreground="#555577")
-        self._log._textbox.tag_configure("info",   foreground="#5294e2")
+        self._log._textbox.tag_configure("clean",  foreground=theme.color("dim"))
+        self._log._textbox.tag_configure("info",   foreground=theme.color("accent"))
 
     # ── View lifecycle ─────────────────────────────────────────────────────────
 
@@ -301,7 +302,7 @@ class ProcessView(ctk.CTkFrame):
             self._start_btn.configure(state="disabled")
             self._stop_btn.configure(state="normal")
         else:
-            self._badge.configure(text="● Stopped", text_color="#666688")
+            self._badge.configure(text="● Stopped", text_color=theme.color("subtext"))
             self._start_btn.configure(state="normal")
             self._stop_btn.configure(state="disabled")
 

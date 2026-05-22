@@ -535,7 +535,7 @@ class HelpView(ctk.CTkScrollableFrame):
 
         ctk.CTkButton(
             hdr, text="📄 Full Docs", width=120,
-            fg_color="#3a3a4a", hover_color="#4a4a5a",
+            fg_color=theme.color("input_hover"), hover_color="#4a4a5a",
             command=self._open_readme,
         ).grid(row=0, column=1, padx=(12, 0))
 

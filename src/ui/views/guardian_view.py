@@ -18,6 +18,7 @@ from tkinter import filedialog
 from pathlib import Path
 
 import customtkinter as ctk
+import ui.theme as theme
 
 from ui.core import guardian_engine as ge
 from ui.core import settings as cfg
@@ -66,7 +67,7 @@ class GuardianView(ctk.CTkFrame):
                      text_color=badge_color).grid(row=0, column=1, padx=8)
 
         # ── Row 1: Info / setup card ──
-        info_card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        info_card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         info_card.grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 8))
         info_card.grid_columnconfigure(0, weight=1)
 
@@ -75,19 +76,19 @@ class GuardianView(ctk.CTkFrame):
             ctk.CTkLabel(info_card,
                          text="Second-opinion scanner: MD5 signatures + heuristic pattern matching.",
                          anchor="w", justify="left",
-                         font=ctk.CTkFont(size=11),
-                         text_color="#666688").grid(
+                         font=theme.get("body"),
+                         text_color=theme.color("subtext")).grid(
                 row=0, column=0, sticky="w", padx=16, pady=(10, 2))
 
             # Dynamic lines — stored so _refresh_stats() can update them
             self._db_count_lbl = ctk.CTkLabel(
                 info_card, text="", anchor="w", justify="left",
-                font=ctk.CTkFont(size=11), text_color="#666688")
+                font=ctk.CTkFont(size=11), text_color=theme.color("subtext"))
             self._db_count_lbl.grid(row=1, column=0, sticky="w", padx=16, pady=2)
 
             self._db_updated_lbl = ctk.CTkLabel(
                 info_card, text="", anchor="w", justify="left",
-                font=ctk.CTkFont(size=11), text_color="#666688")
+                font=ctk.CTkFont(size=11), text_color=theme.color("subtext"))
             self._db_updated_lbl.grid(row=2, column=0, sticky="w", padx=16, pady=(2, 4))
 
             self._refresh_stats()   # populate the two dynamic labels now
@@ -106,13 +107,13 @@ class GuardianView(ctk.CTkFrame):
 
             ctk.CTkButton(
                 update_row, text="Full list",
-                width=80, fg_color="#2a2a3a", hover_color="#3a3a4a",
+                width=80, fg_color=theme.color("divider"), hover_color=theme.color("input_hover"),
                 font=ctk.CTkFont(size=11),
                 command=self._run_update_full).grid(row=0, column=1, sticky="w")
 
             self._update_status = ctk.CTkLabel(
                 info_card, text="",
-                font=ctk.CTkFont(size=11), text_color="#888888", anchor="w")
+                font=ctk.CTkFont(size=11), text_color=theme.color("subtext"), anchor="w")
             self._update_status.grid(row=4, column=0,
                                       sticky="w", padx=16, pady=(0, 8))
         else:
@@ -124,7 +125,7 @@ class GuardianView(ctk.CTkFrame):
             for i, text in enumerate(not_installed_lines):
                 ctk.CTkLabel(info_card, text=text, anchor="w", justify="left",
                              font=ctk.CTkFont(size=11),
-                             text_color="#666688").grid(
+                             text_color=theme.color("subtext")).grid(
                     row=i, column=0, sticky="w", padx=16,
                     pady=(10 if i == 0 else 2, 4))
             ctk.CTkButton(
@@ -142,7 +143,7 @@ class GuardianView(ctk.CTkFrame):
 
         # ── Row 2: Drop zone ──
         self._drop_frame = ctk.CTkFrame(self, height=80, corner_radius=12,
-                                        border_width=2, border_color="#3a3a3a")
+                                        border_width=2, border_color=theme.color("divider"))
         self._drop_frame.grid(row=2, column=0, sticky="ew", padx=24, pady=(0, 6))
         self._drop_frame.grid_propagate(False)
         self._drop_frame.grid_columnconfigure(0, weight=1)
@@ -150,7 +151,7 @@ class GuardianView(ctk.CTkFrame):
 
         self._drop_label = ctk.CTkLabel(
             self._drop_frame, text="Drop files or folders here",
-            text_color="#888888", font=ctk.CTkFont(size=13))
+            text_color=theme.color("subtext"), font=ctk.CTkFont(size=13))
         self._drop_label.grid(row=0, column=0)
 
         if _DND_AVAILABLE:
@@ -169,16 +170,16 @@ class GuardianView(ctk.CTkFrame):
 
         self._scan_btn = ctk.CTkButton(
             toolbar, text="Scan", width=120,
-            fg_color="#1f6aa5", hover_color="#144e7a",
+            fg_color=theme.color("accent"), hover_color=theme.color("accent_hover"),
             command=self._start_scan)
         self._scan_btn.grid(row=0, column=3)
 
         ctk.CTkButton(toolbar, text="Clear", width=75,
-                      fg_color="#3a3a3a", hover_color="#4a4a4a",
+                      fg_color=theme.color("divider"), hover_color="#4a4a4a",
                       command=self._clear).grid(row=0, column=4, padx=(8, 0))
 
         # ── Row 4: Progress (hidden until scan) ──
-        self._progress_frame = ctk.CTkFrame(self, corner_radius=8, fg_color="#1a1a2e")
+        self._progress_frame = ctk.CTkFrame(self, corner_radius=8, fg_color=theme.color("card"))
         self._progress_frame.grid(row=4, column=0, sticky="ew", padx=24, pady=(0, 6))
         self._progress_frame.grid_columnconfigure(0, weight=1)
 
@@ -191,30 +192,30 @@ class GuardianView(ctk.CTkFrame):
         self._progress_bar.grid(row=0, column=0, sticky="ew", padx=(0, 10))
 
         self._pct_lbl = ctk.CTkLabel(top, text="0%", width=40,
-                                      font=ctk.CTkFont(size=12), text_color="#cdd6f4")
+                                      font=ctk.CTkFont(size=12), text_color=theme.color("text"))
         self._pct_lbl.grid(row=0, column=1)
 
         self._current_file_lbl = ctk.CTkLabel(
             self._progress_frame, text="",
             font=ctk.CTkFont(family="Consolas", size=11),
-            text_color="#666688", anchor="w")
+            text_color=theme.color("subtext"), anchor="w")
         self._current_file_lbl.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 8))
 
         self._progress_frame.grid_remove()
 
         # ── Row 5: Live log ──
         self._log = ctk.CTkTextbox(
-            self, font=ctk.CTkFont(family="Consolas", size=12),
+            self, font=theme.get("log"),
             wrap="word", state="disabled")
         self._log.grid(row=5, column=0, sticky="nsew", padx=24, pady=(0, 6))
         self._log.tag_config(_TAG_INFECTED, foreground="#ff5555")
         self._log.tag_config(_TAG_CLEAN,    foreground="#50fa7b")
         self._log.tag_config(_TAG_WARN,     foreground="#ffb86c")
-        self._log.tag_config(_TAG_INFO,     foreground="#cdd6f4")
+        self._log.tag_config(_TAG_INFO,     foreground=theme.color("text"))
         self._log.tag_config(_TAG_GUARDIAN, foreground="#f1fa8c")
 
         # ── Row 6: Summary bar ──
-        summary = ctk.CTkFrame(self, height=36, corner_radius=8, fg_color="#1e1e2e")
+        summary = ctk.CTkFrame(self, height=36, corner_radius=8, fg_color=theme.color("card2"))
         summary.grid(row=6, column=0, sticky="ew", padx=24, pady=(0, 16))
         summary.grid_propagate(False)
         summary.grid_columnconfigure((0, 1, 2), weight=1)
@@ -363,10 +364,10 @@ class GuardianView(ctk.CTkFrame):
         if self._paths:
             names = ", ".join(Path(p).name for p in self._paths[:3])
             extra = f" +{len(self._paths) - 3} more" if len(self._paths) > 3 else ""
-            self._drop_label.configure(text=f"{names}{extra}", text_color="#cdd6f4")
+            self._drop_label.configure(text=f"{names}{extra}", text_color=theme.color("text"))
         else:
             self._drop_label.configure(text="Drop files or folders here",
-                                       text_color="#888888")
+                                       text_color=theme.color("subtext"))
 
     def _browse_file(self):
         paths = filedialog.askopenfilenames(title="Select files to scan with Guardian AI")

@@ -6,6 +6,7 @@ import threading
 from tkinter import filedialog, messagebox
 import customtkinter as ctk
 from pathlib import Path
+import ui.theme as theme
 
 from ui.core import scanner as sc
 from ui.core import settings as cfg
@@ -154,7 +155,13 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
         self._threat_bulk_frame:       ctk.CTkFrame | None = None
         self._threat_dispute_banner:   ctk.CTkLabel | None = None
         self._threat_circuit_banner:   ctk.CTkFrame | None = None
+        # Theme: list of (widget, {attr: token}) for live theme refresh
+        self._themed: list = []
         self._build()
+
+    def _refresh_theme(self) -> None:
+        """Re-apply current theme colours to all registered widgets."""
+        theme.refresh(self._themed)
 
     def _build(self):
         self.grid_columnconfigure(0, weight=1)
@@ -170,9 +177,10 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
         self._preset_frame.grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 6))
         self._preset_frame.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(self._preset_frame, text="Scan type:",
-                     font=ctk.CTkFont(size=12), text_color="#888888").grid(
-            row=0, column=0, padx=(0, 10), sticky="w")
+        _scan_type_lbl = ctk.CTkLabel(self._preset_frame, text="Scan type:",
+                                       font=ctk.CTkFont(size=12))
+        _scan_type_lbl.grid(row=0, column=0, padx=(0, 10), sticky="w")
+        theme.register(self._themed, _scan_type_lbl, text_color="subtext")
 
         self._preset_btn = ctk.CTkSegmentedButton(
             self._preset_frame,
@@ -184,9 +192,10 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
         self._preset_btn.grid(row=0, column=1, sticky="w")
 
         # ── Row 1b: User-defined scan path presets ──
-        ctk.CTkLabel(self._preset_frame, text="My presets:",
-                     font=ctk.CTkFont(size=12), text_color="#888888").grid(
-            row=1, column=0, padx=(0, 10), pady=(4, 0), sticky="w")
+        _my_presets_lbl = ctk.CTkLabel(self._preset_frame, text="My presets:",
+                                        font=ctk.CTkFont(size=12))
+        _my_presets_lbl.grid(row=1, column=0, padx=(0, 10), pady=(4, 0), sticky="w")
+        theme.register(self._themed, _my_presets_lbl, text_color="subtext")
 
         _up_inner = ctk.CTkFrame(self._preset_frame, fg_color="transparent")
         _up_inner.grid(row=1, column=1, sticky="w", pady=(4, 0))
@@ -223,17 +232,19 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
 
         # ── Row 2: Drop zone ──
         self._drop_frame = ctk.CTkFrame(self, height=90, corner_radius=12,
-                                        border_width=2, border_color="#3a3a3a")
+                                        border_width=2)
         self._drop_frame.grid(row=2, column=0, sticky="ew", padx=24, pady=(0, 6))
         self._drop_frame.grid_propagate(False)
         self._drop_frame.grid_columnconfigure(0, weight=1)
         self._drop_frame.grid_rowconfigure(0, weight=1)
+        theme.register(self._themed, self._drop_frame, border_color="divider")
 
         self._drop_label = ctk.CTkLabel(
             self._drop_frame, text="Drop files or folders here",
-            text_color="#888888", font=ctk.CTkFont(size=13),
+            font=ctk.CTkFont(size=13),
         )
         self._drop_label.grid(row=0, column=0)
+        theme.register(self._themed, self._drop_label, text_color="subtext")
 
         if _DND_AVAILABLE:
             self._drop_frame.drop_target_register(DND_FILES)
@@ -248,17 +259,22 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
             toolbar, text="Browse File", width=115,
             command=self._browse_file)
         self._browse_file_btn.grid(row=0, column=0, padx=(0, 6))
+        theme.register(self._themed, self._browse_file_btn,
+                       fg_color="nav_active", hover_color="accent_hover")
 
         self._browse_folder_btn = ctk.CTkButton(
             toolbar, text="Browse Folder", width=125,
             command=self._browse_folder)
         self._browse_folder_btn.grid(row=0, column=1, padx=(0, 6))
+        theme.register(self._themed, self._browse_folder_btn,
+                       fg_color="nav_active", hover_color="accent_hover")
 
         self._startup_btn = ctk.CTkButton(
             toolbar, text="Startup Items", width=115,
-            fg_color="#2a2a5a", hover_color="#3a3a7a",
             command=self._load_startup_items)
         self._startup_btn.grid(row=0, column=2, padx=(0, 16))
+        theme.register(self._themed, self._startup_btn,
+                       fg_color="nav_active", hover_color="accent_hover")
 
         ctk.CTkLabel(toolbar, text="On threat:").grid(
             row=0, column=4, padx=(0, 6))
@@ -269,21 +285,25 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
 
         self._scan_btn = ctk.CTkButton(
             toolbar, text="Start Scan", width=130,
-            fg_color="#1f6aa5", hover_color="#144e7a",
             command=self._start_scan)
         self._scan_btn.grid(row=0, column=6)
+        theme.register(self._themed, self._scan_btn,
+                       fg_color="accent", hover_color="accent_hover")
 
-        ctk.CTkButton(toolbar, text="Clear", width=75,
-                      fg_color="#3a3a3a", hover_color="#4a4a4a",
-                      command=self._clear).grid(row=0, column=7, padx=(8, 0))
+        _clear_btn = ctk.CTkButton(toolbar, text="Clear", width=75,
+                                    command=self._clear)
+        _clear_btn.grid(row=0, column=7, padx=(8, 0))
+        theme.register(self._themed, _clear_btn,
+                       fg_color="input_bg", hover_color="input_hover")
 
         # ── Row 4: Scan Pipeline panel ──
         self._build_pipeline_panel()
 
         # ── Row 5: Progress section (hidden until scan starts) ──
-        self._progress_frame = ctk.CTkFrame(self, corner_radius=8, fg_color="#1a1a2e")
+        self._progress_frame = ctk.CTkFrame(self, corner_radius=8)
         self._progress_frame.grid(row=5, column=0, sticky="ew", padx=24, pady=(0, 6))
         self._progress_frame.grid_columnconfigure(0, weight=1)
+        theme.register(self._themed, self._progress_frame, fg_color="card")
 
         top = ctk.CTkFrame(self._progress_frame, fg_color="transparent")
         top.grid(row=0, column=0, sticky="ew", padx=12, pady=(10, 4))
@@ -294,13 +314,14 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
         self._progress_bar.grid(row=0, column=0, sticky="ew", padx=(0, 10))
 
         self._pct_lbl = ctk.CTkLabel(top, text="0%", width=40,
-                                      font=ctk.CTkFont(size=12), text_color="#cdd6f4")
+                                      font=ctk.CTkFont(size=12))
         self._pct_lbl.grid(row=0, column=1)
+        theme.register(self._themed, self._pct_lbl, text_color="text")
 
         self._eta_lbl = ctk.CTkLabel(top, text="ETA: —", width=90,
-                                      font=ctk.CTkFont(size=12), text_color="#888888",
-                                      anchor="e")
+                                      font=ctk.CTkFont(size=12), anchor="e")
         self._eta_lbl.grid(row=0, column=2)
+        theme.register(self._themed, self._eta_lbl, text_color="subtext")
 
         # Pause / Stop buttons live inside the progress frame
         self._pause_btn = ctk.CTkButton(
@@ -320,8 +341,9 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
         self._current_file_lbl = ctk.CTkLabel(
             self._progress_frame, text="",
             font=ctk.CTkFont(family="Consolas", size=11),
-            text_color="#666688", anchor="w")
+            anchor="w")
         self._current_file_lbl.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 8))
+        theme.register(self._themed, self._current_file_lbl, text_color="subtext")
 
         # Pause indicator — shown only while paused
         self._paused_lbl = ctk.CTkLabel(
@@ -338,7 +360,7 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
         self._progress_frame.grid_remove()
 
         # ── Row 6: Live log ──
-        self._log = ctk.CTkTextbox(self, font=ctk.CTkFont(family="Consolas", size=12),
+        self._log = ctk.CTkTextbox(self, font=theme.get("log"),
                                    wrap="word", state="disabled")
         self._log.grid(row=6, column=0, sticky="nsew", padx=24, pady=(0, 6))
         self._log.tag_config(_TAG_INFECTED,  foreground="#ff5555")
@@ -352,8 +374,9 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
         self._log.tag_config(_TAG_SPEAKEASY, foreground="#bd93f9")
 
         # ── Row 7: Summary bar ──
-        summary = ctk.CTkFrame(self, height=36, corner_radius=8, fg_color="#1e1e2e")
+        summary = ctk.CTkFrame(self, height=36, corner_radius=8)
         summary.grid(row=7, column=0, sticky="ew", padx=24, pady=(0, 4))
+        theme.register(self._themed, summary, fg_color="card2")
         summary.grid_propagate(False)
         summary.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
@@ -363,10 +386,11 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
         self._lbl_elapsed  = self._summary_label(summary, "Time: —",    3)
 
         # ── Row 8: VirusTotal verify panel (hidden until needed) ──
-        self._vt_frame = ctk.CTkFrame(self, corner_radius=8, fg_color="#1a1a2e")
+        self._vt_frame = ctk.CTkFrame(self, corner_radius=8)
         self._vt_frame.grid(row=8, column=0, sticky="ew", padx=24, pady=(0, 16))
         self._vt_frame.grid_columnconfigure(0, weight=1)
         self._vt_frame.grid_remove()
+        theme.register(self._themed, self._vt_frame, fg_color="card")
 
         vt_header = ctk.CTkFrame(self._vt_frame, fg_color="transparent")
         vt_header.grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 4))
@@ -375,24 +399,26 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
         self._vt_title = ctk.CTkLabel(
             vt_header, text="VirusTotal Verification",
             font=ctk.CTkFont(size=12, weight="bold"),
-            text_color="#5294e2", anchor="w")
+            anchor="w")
         self._vt_title.grid(row=0, column=0, sticky="w")
+        theme.register(self._themed, self._vt_title, text_color="accent")
 
         self._vt_status = ctk.CTkLabel(
-            vt_header, text="", font=ctk.CTkFont(size=11), text_color="#888888")
+            vt_header, text="", font=ctk.CTkFont(size=11))
         self._vt_status.grid(row=0, column=1, sticky="e")
+        theme.register(self._themed, self._vt_status, text_color="subtext")
 
         self._vt_rows_frame = ctk.CTkFrame(self._vt_frame, fg_color="transparent")
         self._vt_rows_frame.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 10))
         self._vt_rows_frame.grid_columnconfigure(0, weight=1)
 
         # ── Row 9: Threat Actions panel (hidden until scan finds threats) ──
-        self._threat_actions_frame = ctk.CTkFrame(
-            self, corner_radius=8, fg_color="#1a1a2e")
+        self._threat_actions_frame = ctk.CTkFrame(self, corner_radius=8)
         self._threat_actions_frame.grid(row=9, column=0, sticky="ew",
                                         padx=24, pady=(0, 16))
         self._threat_actions_frame.grid_columnconfigure(0, weight=1)
         self._threat_actions_frame.grid_remove()
+        theme.register(self._themed, self._threat_actions_frame, fg_color="card")
 
     # ── Pipeline panel ────────────────────────────────────────────────────────
 
@@ -433,18 +459,20 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
             self._pipeline_outer,
             text=self._pipeline_header_text(),
             anchor="w",
-            fg_color="#1e1e2e", hover_color="#2a2a3e",
             font=ctk.CTkFont(size=12, weight="bold"),
             command=self._toggle_pipeline_panel,
         )
         self._pipeline_toggle_btn.grid(row=0, column=0, sticky="ew", pady=(0, 2))
+        theme.register(self._themed, self._pipeline_toggle_btn,
+                       fg_color="card2", hover_color="divider")
 
         # Inner collapsible panel
         self._pipeline_inner = ctk.CTkFrame(
-            self._pipeline_outer, corner_radius=8,
-            fg_color="#1a1a2e", border_width=1, border_color="#2a2a4e")
+            self._pipeline_outer, corner_radius=8, border_width=1)
         self._pipeline_inner.grid(row=1, column=0, sticky="ew")
         self._pipeline_inner.grid_columnconfigure(0, weight=1)
+        theme.register(self._themed, self._pipeline_inner,
+                       fg_color="card", border_color="divider")
 
         yara_cnt = ye.get_rule_count() if yara_ok else 0
         clam_ver = ce.get_version() if clamav_ok else ""
@@ -459,14 +487,14 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
         self._clam_ver    = clam_ver
 
         def _row(parent, row_idx, var, label, badge, badge_color, state, cmd):
-            bg = "#1e1e2e" if row_idx % 2 == 0 else "#1a1a2e"
+            bg = theme.color("card2") if row_idx % 2 == 0 else theme.color("card")
             rf = ctk.CTkFrame(parent, fg_color=bg, corner_radius=4)
             rf.grid(row=row_idx, column=0, sticky="ew", pady=1, padx=4)
             rf.grid_columnconfigure(1, weight=1)
             ctk.CTkCheckBox(
                 rf, text=label, variable=var,
                 font=ctk.CTkFont(size=12), state=state,
-                text_color="#cdd6f4" if state == "normal" else "#555555",
+                text_color=theme.color("text") if state == "normal" else theme.color("dim"),
                 command=cmd, width=180,
             ).grid(row=0, column=0, padx=(12, 8), pady=6, sticky="w")
             ctk.CTkLabel(
@@ -475,11 +503,12 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
             ).grid(row=0, column=1, sticky="w")
 
         # ── Row 0: header note ────────────────────────────────────────────────
-        ctk.CTkLabel(
+        _pipe_note = ctk.CTkLabel(
             self._pipeline_inner,
             text="  Engines run in listed order — drag with ↑/↓",
-            font=ctk.CTkFont(size=10), text_color="#888888", anchor="w",
-        ).grid(row=0, column=0, sticky="ew", padx=8, pady=(4, 0))
+            font=ctk.CTkFont(size=10), anchor="w")
+        _pipe_note.grid(row=0, column=0, sticky="ew", padx=8, pady=(4, 0))
+        theme.register(self._themed, _pipe_note, text_color="subtext")
 
         # ── Row 1: reorderable engine rows (K2, Defender, Guardian, YARA, ClamAV)
         self._secondary_rows_frame = ctk.CTkFrame(
@@ -492,12 +521,13 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
         _reset_bar = ctk.CTkFrame(self._pipeline_inner, fg_color="transparent")
         _reset_bar.grid(row=2, column=0, sticky="ew", padx=4, pady=(0, 2))
         _reset_bar.grid_columnconfigure(0, weight=1)
-        ctk.CTkButton(
+        _reset_btn = ctk.CTkButton(
             _reset_bar, text="↺  Reset order", width=110, height=22,
-            fg_color="#2a2a4e", hover_color="#3a3a5e",
             font=ctk.CTkFont(size=10),
-            command=self._reset_pipeline_order,
-        ).grid(row=0, column=0, sticky="e", padx=4)
+            command=self._reset_pipeline_order)
+        _reset_btn.grid(row=0, column=0, sticky="e", padx=4)
+        theme.register(self._themed, _reset_btn,
+                       fg_color="input_bg", hover_color="input_hover")
 
         # ── Row 3: Speakeasy (always last — not reorderable) ──────────────────
         spk_badge = ("● always last — emulates flagged PEs"
@@ -514,16 +544,16 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
             ("Sandboxie",   "— manual via Threat Actions"),
             ("VirusTotal",  "— manual via Threat Actions"),
         ]:
-            bg = "#1e1e2e" if r % 2 == 0 else "#1a1a2e"
+            bg = theme.color("card2") if r % 2 == 0 else theme.color("card")
             rf = ctk.CTkFrame(self._pipeline_inner, fg_color=bg, corner_radius=4)
             rf.grid(row=r, column=0, sticky="ew", pady=1, padx=4)
             rf.grid_columnconfigure(1, weight=1)
             ctk.CTkLabel(rf, text=f"  {manual_label}",
-                         font=ctk.CTkFont(size=12), text_color="#444444",
+                         font=ctk.CTkFont(size=12), text_color=theme.color("dim"),
                          width=196, anchor="w").grid(
                 row=0, column=0, padx=(12, 8), pady=6, sticky="w")
             ctk.CTkLabel(rf, text=manual_note,
-                         font=ctk.CTkFont(size=11), text_color="#444444",
+                         font=ctk.CTkFont(size=11), text_color=theme.color("dim"),
                          anchor="w").grid(row=0, column=1, sticky="w")
             r += 1
 
@@ -619,7 +649,7 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
             if engine_id not in meta:
                 continue
             var, label, badge, badge_color, state, cmd = meta[engine_id]
-            bg = "#1e1e2e" if i % 2 == 0 else "#1a1a2e"
+            bg = theme.color("card2") if i % 2 == 0 else theme.color("card")
             rf = ctk.CTkFrame(parent, fg_color=bg, corner_radius=4)
             rf.grid(row=i, column=0, sticky="ew", pady=1, padx=4)
             # col 0: drag handle | col 1: checkbox | col 2: ↑ | col 3: ↓ | col 4: badge
@@ -629,7 +659,7 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
             # ── Drag handle ──────────────────────────────────────────────────
             handle = ctk.CTkLabel(
                 rf, text="⠿", width=18,
-                font=ctk.CTkFont(size=14), text_color="#555577",
+                font=ctk.CTkFont(size=14), text_color=theme.color("dim"),
                 cursor="fleur",
             )
             handle.grid(row=0, column=0, padx=(6, 0), pady=6)
@@ -642,7 +672,7 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
             ctk.CTkCheckBox(
                 rf, text=f"{i + 1}. {label}", variable=var,
                 font=ctk.CTkFont(size=12), state=state,
-                text_color="#cdd6f4" if state == "normal" else "#555555",
+                text_color=theme.color("text") if state == "normal" else theme.color("dim"),
                 command=cmd, width=200,
             ).grid(row=0, column=1, padx=(4, 4), pady=6, sticky="w")
 
@@ -650,7 +680,7 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
             ctk.CTkButton(
                 rf, text="↑", width=22, height=20,
                 font=ctk.CTkFont(size=10),
-                fg_color="#2a2a4e", hover_color="#3a3a5e",
+                fg_color=theme.color("input_bg"), hover_color=theme.color("input_hover"),
                 state="normal" if i > 0 else "disabled",
                 command=lambda eid=engine_id: self._move_engine(eid, -1),
             ).grid(row=0, column=2, padx=(0, 2), pady=6)
@@ -658,7 +688,7 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
             ctk.CTkButton(
                 rf, text="↓", width=22, height=20,
                 font=ctk.CTkFont(size=10),
-                fg_color="#2a2a4e", hover_color="#3a3a5e",
+                fg_color=theme.color("input_bg"), hover_color=theme.color("input_hover"),
                 state="normal" if i < n - 1 else "disabled",
                 command=lambda eid=engine_id: self._move_engine(eid, 1),
             ).grid(row=0, column=3, padx=(0, 8), pady=6)
@@ -706,7 +736,7 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
         self._drag_hover_engine = None
         rf = self._drag_row_registry.get(engine_id)
         if rf and rf.winfo_exists():
-            rf.configure(border_width=2, border_color="#1f6aa5")
+            rf.configure(border_width=2, border_color=theme.color("accent"))
 
     def _on_drag_motion(self, event) -> None:
         """Update drop-target highlight as the mouse moves."""
@@ -918,8 +948,8 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
             if not self._loading_user_preset:
                 self._paths.clear()
             self._drop_label.configure(text="Drop files or folders here",
-                                       text_color="#888888")
-            self._drop_frame.configure(border_color="#3a3a3a")
+                                       text_color=theme.color("subtext"))
+            self._drop_frame.configure(border_color=theme.color("divider"))
             self._browse_file_btn.grid()
             self._browse_folder_btn.grid()
             self._startup_btn.grid()
@@ -936,9 +966,9 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
                 # Use lambda closures — passing a dict positionally to configure
                 # is a silent no-op in CustomTkinter (only **kwargs accepted)
                 self.after(0, lambda t=desc: self._drop_label.configure(
-                    text=t, text_color="#cdd6f4"))
+                    text=t, text_color=theme.color("text")))
                 self.after(0, lambda: self._drop_frame.configure(
-                    border_color="#1f3355"))
+                    border_color=theme.color("nav_active")))
 
             threading.Thread(target=_resolve, daemon=True).start()
 
@@ -984,10 +1014,10 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
         if self._paths:
             names = ", ".join(Path(p).name for p in self._paths[:3])
             extra = f" +{len(self._paths) - 3} more" if len(self._paths) > 3 else ""
-            self._drop_label.configure(text=f"{names}{extra}", text_color="#cdd6f4")
+            self._drop_label.configure(text=f"{names}{extra}", text_color=theme.color("text"))
         else:
             self._drop_label.configure(text="Drop files or folders here",
-                                       text_color="#888888")
+                                       text_color=theme.color("subtext"))
 
     # ── Browse / startup ──────────────────────────────────────────────────────
 
@@ -1030,7 +1060,7 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
             self._user_preset_var.set(names[0] if names else "— no presets saved —")
         if self._user_preset_del_btn:
             self._user_preset_del_btn.configure(state="disabled")
-        self._drop_frame.configure(border_color="#3a3a3a")
+        self._drop_frame.configure(border_color=theme.color("divider"))
         self._refresh_drop_label()
         self._log_clear()
         self._progress_bar.set(0)
@@ -1826,17 +1856,17 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
         self._vt_row_labels: dict[str, dict] = {}
         for i, path in enumerate(infected_paths):
             name = Path(path).name
-            bg = "#1e1e2e" if i % 2 == 0 else "#232340"
+            bg = theme.color("card2") if i % 2 == 0 else theme.color("card")
             row_f = ctk.CTkFrame(self._vt_rows_frame, fg_color=bg)
             row_f.grid(row=i, column=0, sticky="ew", pady=1)
             row_f.grid_columnconfigure(0, weight=1)
             name_lbl = ctk.CTkLabel(row_f, text=name, anchor="w",
                                      font=ctk.CTkFont(size=12),
-                                     text_color="#cdd6f4")
+                                     text_color=theme.color("text"))
             name_lbl.grid(row=0, column=0, sticky="w", padx=10, pady=4)
             result_lbl = ctk.CTkLabel(row_f, text="queuing…",
                                        font=ctk.CTkFont(size=11),
-                                       text_color="#888888")
+                                       text_color=theme.color("subtext"))
             result_lbl.grid(row=0, column=1, padx=10)
             self._vt_row_labels[path] = {"result": result_lbl}
 

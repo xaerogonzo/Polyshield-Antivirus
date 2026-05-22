@@ -23,6 +23,7 @@ import customtkinter as ctk
 
 from ui.core import scanner as sc
 from ui.core import guardian_engine as ge
+import ui.theme as theme
 
 _TAG_OK        = "ok"
 _TAG_ERR       = "err"
@@ -73,7 +74,7 @@ class UpdateView(ctk.CTkScrollableFrame):
 
         self._update_all_btn = ctk.CTkButton(
             header, text="⟳  Update All", width=140,
-            fg_color="#1f6aa5", hover_color="#144e7a",
+            fg_color=theme.color("accent"), hover_color=theme.color("accent_hover"),
             font=ctk.CTkFont(size=13),
             command=self._run_update_all)
         self._update_all_btn.grid(row=0, column=1, padx=(0, 0))
@@ -103,13 +104,13 @@ class UpdateView(ctk.CTkScrollableFrame):
         self._build_clamav_section(row=8)
 
         # ── Divider before log ──
-        ctk.CTkFrame(self, height=1, fg_color="#2a2a3a").grid(
+        ctk.CTkFrame(self, height=1, fg_color=theme.color("divider")).grid(
             row=9, column=0, sticky="ew", padx=24, pady=(4, 0))
 
         # ── Shared log ──
         log_label = ctk.CTkLabel(self, text="Update Log",
                                   font=ctk.CTkFont(size=12, weight="bold"),
-                                  text_color="#555577")
+                                  text_color=theme.color("dim"))
         log_label.grid(row=9, column=0, sticky="w", padx=28, pady=(6, 2))
 
         self._log = ctk.CTkTextbox(
@@ -119,7 +120,7 @@ class UpdateView(ctk.CTkScrollableFrame):
 
         self._log.tag_config(_TAG_OK,        foreground="#50fa7b")
         self._log.tag_config(_TAG_ERR,       foreground="#ff5555")
-        self._log.tag_config(_TAG_INFO,      foreground="#cdd6f4")
+        self._log.tag_config(_TAG_INFO,      foreground=theme.color("text"))
         self._log.tag_config(_TAG_K2,         foreground="#8be9fd")
         self._log.tag_config(_TAG_GUARDIAN,  foreground="#bd93f9")
         self._log.tag_config(_TAG_INTEL,     foreground="#f1fa8c")
@@ -133,7 +134,7 @@ class UpdateView(ctk.CTkScrollableFrame):
 
     def _build_k2_section(self, row: int):
         """K2 engine signature definitions card."""
-        card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         card.grid(row=row, column=0, sticky="ew", padx=24, pady=(0, 8))
         card.grid_columnconfigure(1, weight=1)
 
@@ -149,14 +150,14 @@ class UpdateView(ctk.CTkScrollableFrame):
         info_row.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(info_row, text="Last updated:",
-                     font=ctk.CTkFont(size=12), text_color="#888888").grid(
+                     font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
             row=0, column=0, sticky="w")
         self._k2_date = ctk.CTkLabel(info_row, text="—",
                                          font=ctk.CTkFont(size=12))
         self._k2_date.grid(row=0, column=1, sticky="w", padx=8)
 
         ctk.CTkLabel(info_row, text="Signature files:",
-                     font=ctk.CTkFont(size=12), text_color="#888888").grid(
+                     font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
             row=1, column=0, sticky="w")
         self._k2_files = ctk.CTkLabel(info_row, text="—",
                                           font=ctk.CTkFont(size=12))
@@ -170,7 +171,7 @@ class UpdateView(ctk.CTkScrollableFrame):
 
         self._k2_btn = ctk.CTkButton(
             btn_row, text="Update Now", width=130,
-            fg_color="#1f6aa5", hover_color="#144e7a",
+            fg_color=theme.color("accent"), hover_color=theme.color("accent_hover"),
             font=ctk.CTkFont(size=12),
             command=self._run_k2_update)
         self._k2_btn.grid(row=0, column=0, padx=(0, 12))
@@ -186,7 +187,7 @@ class UpdateView(ctk.CTkScrollableFrame):
         guardian_dir = _BASE_DIR / "guardianai"
         is_present = guardian_dir.is_dir()
 
-        card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         card.grid(row=row, column=0, sticky="ew", padx=24, pady=(0, 8))
         card.grid_columnconfigure(1, weight=1)
 
@@ -202,13 +203,13 @@ class UpdateView(ctk.CTkScrollableFrame):
             desc = "Guardian AI is not installed. Run setup_guardian.bat first."
 
         ctk.CTkLabel(card, text=desc, anchor="w",
-                     font=ctk.CTkFont(size=11), text_color="#666688").grid(
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext")).grid(
             row=1, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 4))
 
         # Show current commit hash if repo exists
         self._guardian_commit_lbl = ctk.CTkLabel(
             card, text="", anchor="w",
-            font=ctk.CTkFont(size=11), text_color="#666688")
+            font=ctk.CTkFont(size=11), text_color=theme.color("subtext"))
         self._guardian_commit_lbl.grid(row=2, column=0, columnspan=2,
                                         sticky="w", padx=16, pady=(0, 4))
 
@@ -231,12 +232,12 @@ class UpdateView(ctk.CTkScrollableFrame):
             btn_row, text="—" if not is_present else "",
             width=200, corner_radius=6, fg_color="#2a2a2a",
             font=ctk.CTkFont(size=11),
-            text_color="#888888")
+            text_color=theme.color("subtext"))
         self._guardian_badge.grid(row=0, column=1, sticky="w")
 
     def _build_intel_section(self, row: int):
         """Local Intelligence Database (MalwareBazaar + NSRL) card."""
-        card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         card.grid(row=row, column=0, sticky="ew", padx=24, pady=(0, 8))
         card.grid_columnconfigure(0, weight=1)
 
@@ -253,17 +254,17 @@ class UpdateView(ctk.CTkScrollableFrame):
 
         self._intel_malicious_lbl = ctk.CTkLabel(
             stats_row, text="🛡  Known-bad hashes: —",
-            anchor="w", font=ctk.CTkFont(size=11), text_color="#666688")
+            anchor="w", font=ctk.CTkFont(size=11), text_color=theme.color("subtext"))
         self._intel_malicious_lbl.grid(row=0, column=0, sticky="w")
 
         self._intel_safe_lbl = ctk.CTkLabel(
             stats_row, text="✅  Known-safe (NSRL): —",
-            anchor="w", font=ctk.CTkFont(size=11), text_color="#666688")
+            anchor="w", font=ctk.CTkFont(size=11), text_color=theme.color("subtext"))
         self._intel_safe_lbl.grid(row=1, column=0, sticky="w")
 
         self._intel_date_lbl = ctk.CTkLabel(
             stats_row, text="🕒  Last updated: —",
-            anchor="w", font=ctk.CTkFont(size=11), text_color="#666688")
+            anchor="w", font=ctk.CTkFont(size=11), text_color=theme.color("subtext"))
         self._intel_date_lbl.grid(row=2, column=0, sticky="w", pady=(0, 4))
 
         # Buttons row
@@ -280,14 +281,14 @@ class UpdateView(ctk.CTkScrollableFrame):
 
         self._intel_full_btn = ctk.CTkButton(
             btn_row, text="↓  Full MD5 List", width=140,
-            fg_color="#2a2a2a", hover_color="#3a3a3a",
+            fg_color="#2a2a2a", hover_color=theme.color("divider"),
             font=ctk.CTkFont(size=12),
             command=self._run_intel_full)
         self._intel_full_btn.grid(row=0, column=1, padx=(0, 8))
 
         self._intel_nsrl_btn = ctk.CTkButton(
             btn_row, text="Import NSRL…", width=120,
-            fg_color="#2a2a2a", hover_color="#3a3a3a",
+            fg_color="#2a2a2a", hover_color=theme.color("divider"),
             font=ctk.CTkFont(size=11),
             command=self._run_nsrl_import)
         self._intel_nsrl_btn.grid(row=0, column=2, padx=(0, 8))
@@ -302,13 +303,13 @@ class UpdateView(ctk.CTkScrollableFrame):
         # Status badge (below buttons)
         self._intel_badge = ctk.CTkLabel(
             card, text="", anchor="w",
-            font=ctk.CTkFont(size=11), text_color="#888888")
+            font=ctk.CTkFont(size=11), text_color=theme.color("subtext"))
         self._intel_badge.grid(row=3, column=0, columnspan=3,
                                 sticky="w", padx=16, pady=(2, 10))
 
     def _build_speakeasy_section(self, row: int):
         """Speakeasy PE emulator — pip upgrade card."""
-        card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         card.grid(row=row, column=0, sticky="ew", padx=24, pady=(0, 8))
         card.grid_columnconfigure(1, weight=1)
 
@@ -322,14 +323,14 @@ class UpdateView(ctk.CTkScrollableFrame):
         info_row.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(info_row, text="Installed:",
-                     font=ctk.CTkFont(size=12), text_color="#888888").grid(
+                     font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
             row=0, column=0, sticky="w")
         self._speakeasy_version_lbl = ctk.CTkLabel(info_row, text="checking…",
                                                     font=ctk.CTkFont(size=12))
         self._speakeasy_version_lbl.grid(row=0, column=1, sticky="w", padx=8)
 
         ctk.CTkLabel(info_row, text="Latest (PyPI):",
-                     font=ctk.CTkFont(size=12), text_color="#888888").grid(
+                     font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
             row=1, column=0, sticky="w")
         self._speakeasy_latest_lbl = ctk.CTkLabel(info_row, text="—",
                                                    font=ctk.CTkFont(size=12))
@@ -337,7 +338,7 @@ class UpdateView(ctk.CTkScrollableFrame):
 
         ctk.CTkLabel(card,
                      text="Updates speakeasy-emulator in kicomav_env (the project's portable venv).",
-                     font=ctk.CTkFont(size=11), text_color="#666688", anchor="w").grid(
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"), anchor="w").grid(
             row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 4))
 
         btn_row = ctk.CTkFrame(card, fg_color="transparent")
@@ -354,7 +355,7 @@ class UpdateView(ctk.CTkScrollableFrame):
 
         _sp_pypi_btn = ctk.CTkButton(
             btn_row, text="Check PyPI", width=110,
-            fg_color="#2a2a2a", hover_color="#3a3a3a",
+            fg_color="#2a2a2a", hover_color=theme.color("divider"),
             font=ctk.CTkFont(size=12),
             command=self._check_speakeasy_latest)
         _sp_pypi_btn.grid(row=0, column=1, padx=(0, 12))
@@ -367,7 +368,7 @@ class UpdateView(ctk.CTkScrollableFrame):
 
     def _build_sandboxie_section(self, row: int):
         """Sandboxie-Plus — version check + GitHub release link card."""
-        card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         card.grid(row=row, column=0, sticky="ew", padx=24, pady=(0, 8))
         card.grid_columnconfigure(1, weight=1)
 
@@ -381,14 +382,14 @@ class UpdateView(ctk.CTkScrollableFrame):
         info_row.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(info_row, text="Installed:",
-                     font=ctk.CTkFont(size=12), text_color="#888888").grid(
+                     font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
             row=0, column=0, sticky="w")
         self._sandboxie_version_lbl = ctk.CTkLabel(info_row, text="checking…",
                                                     font=ctk.CTkFont(size=12))
         self._sandboxie_version_lbl.grid(row=0, column=1, sticky="w", padx=8)
 
         ctk.CTkLabel(info_row, text="Latest (GitHub):",
-                     font=ctk.CTkFont(size=12), text_color="#888888").grid(
+                     font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
             row=1, column=0, sticky="w")
         self._sandboxie_latest_lbl = ctk.CTkLabel(info_row, text="—",
                                                    font=ctk.CTkFont(size=12))
@@ -397,7 +398,7 @@ class UpdateView(ctk.CTkScrollableFrame):
         ctk.CTkLabel(card,
                      text="Sandboxie-Plus must be updated manually (portable build).\n"
                           "'Check Latest' queries GitHub, then opens the release page for download.",
-                     font=ctk.CTkFont(size=11), text_color="#666688",
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                      anchor="w", justify="left").grid(
             row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 4))
 
@@ -415,7 +416,7 @@ class UpdateView(ctk.CTkScrollableFrame):
 
         _sb_gh_btn = ctk.CTkButton(
             btn_row, text="↗  GitHub Releases", width=150,
-            fg_color="#2a2a2a", hover_color="#3a3a3a",
+            fg_color="#2a2a2a", hover_color=theme.color("divider"),
             font=ctk.CTkFont(size=12),
             command=lambda: __import__("webbrowser").open(
                 "https://github.com/sandboxie-plus/Sandboxie/releases"))
@@ -429,7 +430,7 @@ class UpdateView(ctk.CTkScrollableFrame):
 
     def _build_c2_section(self, row: int):
         """Feodo Tracker C2 IP Blocklist card."""
-        card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         card.grid(row=row, column=0, sticky="ew", padx=24, pady=(0, 8))
         card.grid_columnconfigure(1, weight=1)
 
@@ -443,7 +444,7 @@ class UpdateView(ctk.CTkScrollableFrame):
             text="Feodo Tracker 30-day IOC feed + ThreatFox 6-month IP feed (abuse.ch).\n"
                  "Used by the Network Monitor to flag outbound C2 connections in real time.\n"
                  "Low counts are normal during Feodo takedown gaps — ThreatFox covers the shortfall.",
-            font=ctk.CTkFont(size=11), text_color="#666688", anchor="w", justify="left",
+            font=ctk.CTkFont(size=11), text_color=theme.color("subtext"), anchor="w", justify="left",
         ).grid(row=1, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 4))
 
         # Stats row
@@ -453,12 +454,12 @@ class UpdateView(ctk.CTkScrollableFrame):
 
         self._c2_count_lbl = ctk.CTkLabel(
             stats_row, text="🌐  Blocked IPs: —",
-            anchor="w", font=ctk.CTkFont(size=11), text_color="#666688")
+            anchor="w", font=ctk.CTkFont(size=11), text_color=theme.color("subtext"))
         self._c2_count_lbl.grid(row=0, column=0, sticky="w")
 
         self._c2_date_lbl = ctk.CTkLabel(
             stats_row, text="🕒  Last updated: —",
-            anchor="w", font=ctk.CTkFont(size=11), text_color="#666688")
+            anchor="w", font=ctk.CTkFont(size=11), text_color=theme.color("subtext"))
         self._c2_date_lbl.grid(row=1, column=0, sticky="w")
 
         # Buttons row
@@ -482,7 +483,7 @@ class UpdateView(ctk.CTkScrollableFrame):
 
     def _build_yara_section(self, row: int):
         """YARA Forge community rules — download + auto-extract card."""
-        card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         card.grid(row=row, column=0, sticky="ew", padx=24, pady=(0, 8))
         card.grid_columnconfigure(1, weight=1)
 
@@ -496,14 +497,14 @@ class UpdateView(ctk.CTkScrollableFrame):
         info_row.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(info_row, text="Installed:",
-                     font=ctk.CTkFont(size=12), text_color="#888888").grid(
+                     font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
             row=0, column=0, sticky="w")
         self._yara_version_lbl = ctk.CTkLabel(info_row, text="checking…",
                                                font=ctk.CTkFont(size=12))
         self._yara_version_lbl.grid(row=0, column=1, sticky="w", padx=8)
 
         ctk.CTkLabel(info_row, text="Latest (GitHub):",
-                     font=ctk.CTkFont(size=12), text_color="#888888").grid(
+                     font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
             row=1, column=0, sticky="w")
         self._yara_latest_lbl = ctk.CTkLabel(info_row, text="—",
                                               font=ctk.CTkFont(size=12))
@@ -512,7 +513,7 @@ class UpdateView(ctk.CTkScrollableFrame):
         ctk.CTkLabel(card,
                      text="YARA Forge weekly rule set — community-maintained detections.\n"
                           "Rules saved to rules/community/ and loaded automatically alongside custom rules.",
-                     font=ctk.CTkFont(size=11), text_color="#666688",
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                      anchor="w", justify="left").grid(
             row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 4))
 
@@ -530,7 +531,7 @@ class UpdateView(ctk.CTkScrollableFrame):
 
         _ya_gh_btn = ctk.CTkButton(
             btn_row, text="↗  GitHub Releases", width=150,
-            fg_color="#2a2a2a", hover_color="#3a3a3a",
+            fg_color="#2a2a2a", hover_color=theme.color("divider"),
             font=ctk.CTkFont(size=12),
             command=lambda: __import__("webbrowser").open(
                 "https://github.com/YARAHQ/yara-forge/releases"))
@@ -544,7 +545,7 @@ class UpdateView(ctk.CTkScrollableFrame):
 
     def _build_clamav_section(self, row: int):
         """ClamAV Engine — version check + download page link card."""
-        card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a1a2e")
+        card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         card.grid(row=row, column=0, sticky="ew", padx=24, pady=(0, 8))
         card.grid_columnconfigure(1, weight=1)
 
@@ -558,14 +559,14 @@ class UpdateView(ctk.CTkScrollableFrame):
         info_row.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(info_row, text="Installed:",
-                     font=ctk.CTkFont(size=12), text_color="#888888").grid(
+                     font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
             row=0, column=0, sticky="w")
         self._clamav_version_lbl = ctk.CTkLabel(info_row, text="checking…",
                                                  font=ctk.CTkFont(size=12))
         self._clamav_version_lbl.grid(row=0, column=1, sticky="w", padx=8)
 
         ctk.CTkLabel(info_row, text="Latest (GitHub):",
-                     font=ctk.CTkFont(size=12), text_color="#888888").grid(
+                     font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
             row=1, column=0, sticky="w")
         self._clamav_latest_lbl = ctk.CTkLabel(info_row, text="—",
                                                 font=ctk.CTkFont(size=12))
@@ -574,7 +575,7 @@ class UpdateView(ctk.CTkScrollableFrame):
         ctk.CTkLabel(card,
                      text="Open-source signature engine by Cisco Talos. Download the Windows MSI\n"
                           "installer from clamav.net, then configure the path in Settings → ClamAV.",
-                     font=ctk.CTkFont(size=11), text_color="#666688",
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                      anchor="w", justify="left").grid(
             row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 4))
 
@@ -592,7 +593,7 @@ class UpdateView(ctk.CTkScrollableFrame):
 
         _cl_dl_btn = ctk.CTkButton(
             btn_row, text="↗  Download Page", width=150,
-            fg_color="#2a2a2a", hover_color="#3a3a3a",
+            fg_color="#2a2a2a", hover_color=theme.color("divider"),
             font=ctk.CTkFont(size=12),
             command=lambda: __import__("webbrowser").open(
                 "https://www.clamav.net/downloads"))
@@ -645,7 +646,7 @@ class UpdateView(ctk.CTkScrollableFrame):
             installed = "Not installed"
         if self.winfo_exists():
             self.after(0, lambda v=installed: self._yara_version_lbl.configure(
-                text=v, text_color="#cdd6f4" if v != "Not installed" else "#888888"))
+                text=v, text_color=theme.color("text") if v != "Not installed" else "#888888"))
 
         def _fetch_latest():
             import urllib.request, json as _json
@@ -659,7 +660,7 @@ class UpdateView(ctk.CTkScrollableFrame):
                 tag = "—"
             if self.winfo_exists():
                 self.after(0, lambda v=tag: self._yara_latest_lbl.configure(
-                    text=v, text_color="#cdd6f4" if v != "—" else "#888888"))
+                    text=v, text_color=theme.color("text") if v != "—" else "#888888"))
 
         threading.Thread(target=_fetch_latest, daemon=True).start()
 
@@ -673,7 +674,7 @@ class UpdateView(ctk.CTkScrollableFrame):
                 installed = "Not installed"
             if self.winfo_exists():
                 self.after(0, lambda v=installed: self._clamav_version_lbl.configure(
-                    text=v, text_color="#cdd6f4" if v != "Not installed" else "#888888"))
+                    text=v, text_color=theme.color("text") if v != "Not installed" else "#888888"))
         threading.Thread(target=_run, daemon=True).start()
 
     def _refresh_k2_info(self):
@@ -746,7 +747,7 @@ class UpdateView(ctk.CTkScrollableFrame):
             if not start_path or not Path(start_path).exists():
                 if self.winfo_exists():
                     self.after(0, lambda: self._sandboxie_version_lbl.configure(
-                        text="not configured", text_color="#888888"))
+                        text="not configured", text_color=theme.color("subtext")))
                 return
             try:
                 r = subprocess.run(
@@ -759,7 +760,7 @@ class UpdateView(ctk.CTkScrollableFrame):
                 version = "unknown"
             if self.winfo_exists():
                 self.after(0, lambda v=version: self._sandboxie_version_lbl.configure(
-                    text=v, text_color="#cdd6f4"))
+                    text=v, text_color=theme.color("text")))
         threading.Thread(target=_run, daemon=True).start()
 
     # ── K2 engine signatures update ────────────────────────────────────────────
@@ -990,7 +991,7 @@ class UpdateView(ctk.CTkScrollableFrame):
         dlg.resizable(False, False)
         dlg.grab_set()
         dlg.focus_force()
-        dlg.configure(fg_color="#12121e")
+        dlg.configure(fg_color=theme.color("card2"))
 
         # Center over parent window
         self.update_idletasks()
@@ -1012,14 +1013,14 @@ class UpdateView(ctk.CTkScrollableFrame):
             "After clearing you can fetch just the recent 24 h list for a clean start."
         )
         ctk.CTkLabel(dlg, text=body, font=ctk.CTkFont(size=12),
-                     text_color="#cdd6f4", justify="center").pack(pady=(0, 16))
+                     text_color=theme.color("text"), justify="center").pack(pady=(0, 16))
 
         btn_row = ctk.CTkFrame(dlg, fg_color="transparent")
         btn_row.pack()
 
         ctk.CTkButton(
             btn_row, text="Cancel", width=110,
-            fg_color="#2a2a3a", hover_color="#3a3a4a",
+            fg_color=theme.color("divider"), hover_color=theme.color("input_hover"),
             command=dlg.destroy,
         ).grid(row=0, column=0, padx=(0, 12))
 
@@ -1152,7 +1153,7 @@ class UpdateView(ctk.CTkScrollableFrame):
 
     def _check_speakeasy_latest(self):
         """Query PyPI for the latest speakeasy-emulator version (background)."""
-        self._speakeasy_latest_lbl.configure(text="querying PyPI…", text_color="#888888")
+        self._speakeasy_latest_lbl.configure(text="querying PyPI…", text_color=theme.color("subtext"))
 
         def _run():
             try:
@@ -1166,7 +1167,7 @@ class UpdateView(ctk.CTkScrollableFrame):
                 latest = f"error: {str(exc)[:40]}"
             if self.winfo_exists():
                 self.after(0, lambda v=latest: self._speakeasy_latest_lbl.configure(
-                    text=v, text_color="#cdd6f4" if not v.startswith("error") else "#ff5555"))
+                    text=v, text_color=theme.color("text") if not v.startswith("error") else "#ff5555"))
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -1243,7 +1244,7 @@ class UpdateView(ctk.CTkScrollableFrame):
     def _check_sandboxie_latest(self):
         """Query GitHub API for the latest Sandboxie-Plus release (background)."""
         self._sandboxie_check_btn.configure(state="disabled", text="Checking…")
-        self._sandboxie_latest_lbl.configure(text="querying GitHub…", text_color="#888888")
+        self._sandboxie_latest_lbl.configure(text="querying GitHub…", text_color=theme.color("subtext"))
         self._log_section_header("Sandboxie-Plus", _TAG_SANDBOXIE)
 
         def _run():
@@ -1270,7 +1271,7 @@ class UpdateView(ctk.CTkScrollableFrame):
                 self._sandboxie_check_btn.configure(state="normal", text="Check Latest")
                 self._sandboxie_latest_lbl.configure(
                     text=f"{tag} ({published})" if published else tag,
-                    text_color="#cdd6f4" if ok else "#ff5555")
+                    text_color=theme.color("text") if ok else "#ff5555")
                 if ok:
                     self._sandboxie_badge.configure(
                         text=f"  Latest: {name}  ", text_color="#ffb86c")
@@ -1412,7 +1413,7 @@ class UpdateView(ctk.CTkScrollableFrame):
     def _check_clamav_latest(self):
         """Query GitHub API for the latest ClamAV release (background)."""
         self._clamav_check_btn.configure(state="disabled", text="Checking…")
-        self._clamav_latest_lbl.configure(text="querying GitHub…", text_color="#888888")
+        self._clamav_latest_lbl.configure(text="querying GitHub…", text_color=theme.color("subtext"))
         self._log_section_header("ClamAV Engine", _TAG_CLAMAV)
 
         def _run():
@@ -1436,7 +1437,7 @@ class UpdateView(ctk.CTkScrollableFrame):
                 self._clamav_check_btn.configure(state="normal", text="Check Latest")
                 self._clamav_latest_lbl.configure(
                     text=f"{tag} ({published})" if published else tag,
-                    text_color="#cdd6f4" if ok else "#ff5555")
+                    text_color=theme.color("text") if ok else "#ff5555")
                 if ok:
                     self._clamav_badge.configure(
                         text=f"  Latest: {tag}  ", text_color="#50fa7b")
