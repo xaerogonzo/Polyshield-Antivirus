@@ -27,7 +27,7 @@ When the service is **not** installed, the UI falls back to the existing in-proc
 The UI and service communicate over `127.0.0.1:52614` using **newline-delimited JSON**. The UI is the client; the service is the server.
 
 ```
-KicomAV UI ──(TCP 127.0.0.1:52614)──► KicomAI Service
+PolyShield ──(TCP 127.0.0.1:52614)──► PolyShield Service
              {"cmd": "PING", "token": "..."}
              ◄── {"ok": true, "msg": "PONG"}
 
@@ -69,7 +69,7 @@ KicomAV UI ──(TCP 127.0.0.1:52614)──► KicomAI Service
 
 ### Token Authentication
 
-Port 52614 is reachable by any process on the machine — including malware. Every command carries a `"token"` field. The service generates a UUID4 token at first start and writes it to `C:\ProgramData\KicomAI\service_token.txt`. Any command with the wrong or missing token gets `{"ok": false, "error": "unauthorized"}` and the connection is dropped.
+Port 52614 is reachable by any process on the machine — including malware. Every command carries a `"token"` field. The service generates a UUID4 token at first start and writes it to `C:\ProgramData\PolyShield\service_token.txt`. Any command with the wrong or missing token gets `{"ok": false, "error": "unauthorized"}` and the connection is dropped.
 
 **Token file ACLs** (set by `setup_service.bat`):
 - `SYSTEM`: Full Control
@@ -106,19 +106,19 @@ A power cut or crash during the write leaves at worst a `.tmp` file. The origina
 
 When you use `pywin32` with a **virtual environment** on Python 3.11+, the default service binary `pythonservice.exe` **does not work**. Here's what happens:
 
-1. `python kicomai_service.py install` registers the service with the SCM
+1. `python polyshield_service.py install` registers the service with the SCM
 2. When started, the SCM launches `pythonservice.exe` — a precompiled C binary included with pywin32
 3. `pythonservice.exe` loads `python3XX.dll` and imports the service module
 4. **But it never calls `__init__`**. The class is loaded, `SvcDoRun` is never reached.
 5. After 30 seconds, Windows kills it with **Error 1053: The service did not respond to the start or control request in a timely fashion.**
 
-The Event Log shows `KicomAIService` starting then stopping with no Python error — because no Python code ran to produce an error.
+The Event Log shows `PolyShieldService` starting then stopping with no Python error — because no Python code ran to produce an error.
 
 We confirmed this by adding a trace file write at module import time (before any class definition):
 
 ```python
 # Test: does this module even load?
-with open(r"C:\ProgramData\KicomAI\trace.txt", "w") as f:
+with open(r"C:\ProgramData\PolyShield\trace.txt", "w") as f:
     f.write("module loaded\n")
 ```
 
@@ -135,16 +135,16 @@ This affects Python 3.11+ and is a known issue with pywin32 in virtualenvs.
 `pywin32`'s `ServiceFramework` has a class attribute `_exe_name_` that controls which executable the SCM is told to run. The fix is to override it with `sys.executable` — the **actual `python.exe`** from the venv:
 
 ```python
-class KicomAIService(win32serviceutil.ServiceFramework):
-    _svc_name_         = "KicomAIService"
-    _svc_display_name_ = "KicomAI Realtime Protection"
+class PolyShieldService(win32serviceutil.ServiceFramework):
+    _svc_name_         = "PolyShieldService"
+    _svc_display_name_ = "PolyShield Realtime Protection"
     _exe_name_  = sys.executable                              # ← THE FIX
     _exe_args_  = f'"{Path(__file__).resolve()}"'             # pass script path
 ```
 
 When `_exe_name_` is set, `HandleCommandLine`/`InstallService` tells the SCM:
 ```
-ImagePath = "D:\...\kicomav_env\Scripts\python.exe" "D:\...\kicomai_service.py"
+ImagePath = "D:\...\kicomav_env\Scripts\python.exe" "D:\...\polyshield_service.py"
 ```
 
 The SCM then launches `python.exe` directly — with the full venv context — rather than `pythonservice.exe`. Python executes the script from `__main__`, which reaches the `if len(sys.argv) == 1:` branch (SCM passes no args):
@@ -154,14 +154,14 @@ if __name__ == "__main__":
     if len(sys.argv) == 1:
         # Started by SCM — use modern entry point
         servicemanager.Initialize()
-        servicemanager.PrepareToHostSingle(KicomAIService)
+        servicemanager.PrepareToHostSingle(PolyShieldService)
         servicemanager.StartServiceCtrlDispatcher()
     else:
         # Started manually (install, remove, start, stop, debug)
-        win32serviceutil.HandleCommandLine(KicomAIService)
+        win32serviceutil.HandleCommandLine(PolyShieldService)
 ```
 
-This is the **modern pywin32 venv-compatible service entry point**. After this fix, `sc query KicomAIService` shows `STATE: 4 RUNNING` immediately.
+This is the **modern pywin32 venv-compatible service entry point**. After this fix, `sc query PolyShieldService` shows `STATE: 4 RUNNING` immediately.
 
 ### DLL Registration (pywin32_postinstall)
 
@@ -185,14 +185,14 @@ We need it to:
 - Read `config/ui_settings.json` (watched folders list)
 - Write `config/service_events.json` (threat event log)
 - Write to `quarantine/` (if auto-quarantine is enabled)
-- Write `C:\ProgramData\KicomAI\service.log` (service log)
-- Write `C:\ProgramData\KicomAI\service_token.txt` (token file)
+- Write `C:\ProgramData\PolyShield\service.log` (service log)
+- Write `C:\ProgramData\PolyShield\service_token.txt` (token file)
 
 `setup_service.bat` applies the following (all in one script, elevated):
 
 ```batch
 REM Shared data directory: SYSTEM+Admins = Full, LocalService = Modify, Users = Read
-icacls "C:\ProgramData\KicomAI" ^
+icacls "C:\ProgramData\PolyShield" ^
     /grant "SYSTEM:(OI)(CI)F" ^
     /grant "NT AUTHORITY\LocalService:(OI)(CI)M" ^
     /grant "Administrators:(OI)(CI)F" ^
@@ -211,7 +211,7 @@ icacls "<project root>\quarantine" ^
 ```
 
 **`(OI)(CI)`** = Object Inherit + Container Inherit — applies to the folder and all files/subfolders inside it.  
-**`/inheritance:r`** on `C:\ProgramData\KicomAI` = remove inherited permissions, use only explicit ones.
+**`/inheritance:r`** on `C:\ProgramData\PolyShield` = remove inherited permissions, use only explicit ones.
 
 ---
 
@@ -219,16 +219,16 @@ icacls "<project root>\quarantine" ^
 
 | File | Role | Category |
 |------|------|----------|
-| `kicomai_service.py` | Windows Service class, socket server, watcher + network + process monitor host | ✅ Source |
+| `polyshield_service.py` | Windows Service class, socket server, watcher + network + process monitor host | ✅ Source |
 | `ui/core/service_client.py` | IPC client (UI → service), reconnect loop | ✅ Source |
 | `ui/core/process_monitor.py` | WMI process creation monitor — `ProcessMonitor` class | ✅ Source |
 | `ui/views/service_view.py` | Service management UI (install, start, stop, live events) | ✅ Source |
 | `ui/views/process_view.py` | Process Monitor view (live event log, Start/Stop, auto-terminate toggle) | ✅ Source |
 | `scripts\service\setup_service.bat` | One-click installer for the service (8 steps, including Defender exclusions) | ✅ Source |
 | `WINDOWS_SERVICE.md` | This document | ✅ Source |
-| `C:\ProgramData\KicomAI\` | Service data dir (log, token) — created at install | 📦 Installer |
-| `C:\ProgramData\KicomAI\service_token.txt` | Shared secret token (UUID4) | 📦 Installer |
-| `C:\ProgramData\KicomAI\service.log` | Service log (created by service on first run) | 🔄 Runtime |
+| `C:\ProgramData\PolyShield\` | Service data dir (log, token) — created at install | 📦 Installer |
+| `C:\ProgramData\PolyShield\service_token.txt` | Shared secret token (UUID4) | 📦 Installer |
+| `C:\ProgramData\PolyShield\service.log` | Service log (created by service on first run) | 🔄 Runtime |
 | `config/service_events.json` | Persisted scan + process threat events (atomic writes) | 🔄 Runtime |
 
 ---
@@ -251,35 +251,35 @@ Same as the main `scripts\install.bat` requirements, plus:
    - Checks/installs `pywin32>=307`
    - Registers pywin32 DLLs in `System32` (`pywin32_postinstall`)
    - **Registers Defender exclusions** for `kicomav_env\`, `python.exe`, and `pythonw.exe` (prevents exit code 1067 crash)
-   - Creates `C:\ProgramData\KicomAI\` with correct ACLs
+   - Creates `C:\ProgramData\PolyShield\` with correct ACLs
    - Grants `NT AUTHORITY\LocalService` access to the project root and quarantine folder
    - Installs the service with the SCM
    - Starts the service
 
-3. Verify: `sc query KicomAIService` in an elevated prompt — should show `STATE: 4 RUNNING`
+3. Verify: `sc query PolyShieldService` in an elevated prompt — should show `STATE: 4 RUNNING`
 
-4. Launch KicomAV → click **Service** in the sidebar — status card should show `● RUNNING`
+4. Launch PolyShield → click **Service** in the sidebar — status card should show `● RUNNING`
 
 ### Manual Verification
 
 ```powershell
 # Check service state
-sc query KicomAIService
+sc query PolyShieldService
 
 # Probe the socket directly (Python)
 python -c "
 import socket, json
 s = socket.create_connection(('127.0.0.1', 52614), timeout=2)
-token = open(r'C:\ProgramData\KicomAI\service_token.txt').read().strip()
+token = open(r'C:\ProgramData\PolyShield\service_token.txt').read().strip()
 s.sendall(json.dumps({'cmd': 'PING', 'token': token}).encode() + b'\n')
 print(s.recv(4096))
 "
 
 # View service log
-type "C:\ProgramData\KicomAI\service.log"
+type "C:\ProgramData\PolyShield\service.log"
 
 # View Event Log entries
-eventvwr  # → Windows Logs → System, Source: KicomAIService
+eventvwr  # → Windows Logs → System, Source: PolyShieldService
 ```
 
 ### Uninstalling
@@ -332,7 +332,7 @@ The `WatcherView` automatically detects which mode is active:
 
 | Condition | Mode | Badge text |
 |-----------|------|-----------|
-| `svc.is_service_running()` returns `True` | Service mode | `● Service mode — watcher managed by KicomAI Service` |
+| `svc.is_service_running()` returns `True` | Service mode | `● Service mode — watcher managed by PolyShield Service` |
 | Service not running | In-process mode | `● In-process mode — watcher stops when UI closes` |
 
 In **service mode**:
@@ -359,13 +359,13 @@ if cfg.get("watcher_enabled") and cfg.get("watcher_folders"):
 ### Exit code 1067 — service terminates immediately, no log entry
 
 **Symptoms:**
-- `sc query KicomAIService` shows `WIN32_EXIT_CODE: 1067 (0x42b)` right after a start attempt
-- `C:\ProgramData\KicomAI\service.log` has **no new entries** since the last successful run
+- `sc query PolyShieldService` shows `WIN32_EXIT_CODE: 1067 (0x42b)` right after a start attempt
+- `C:\ProgramData\PolyShield\service.log` has **no new entries** since the last successful run
 - Windows Application Event Log shows `python.exe` crashing in `ntdll.dll` with exception code `0xc0000006` (`STATUS_IN_PAGE_ERROR`)
 - The crash record may also reference error `0xC000026E` (`STATUS_VOLUME_DISMOUNTED`)
 
 **Root cause:**  
-A Windows Defender signature update can cause Defender to intercept the memory-mapping of `python.exe` when the SCM (running as `LocalSystem`) loads it during service start. The interception occurs at the OS page-fault handler level — inside `ntdll.dll`, before any Python code runs and before logging is set up. The crash is not caused by any KicomAI code.
+A Windows Defender signature update can cause Defender to intercept the memory-mapping of `python.exe` when the SCM (running as `LocalSystem`) loads it during service start. The interception occurs at the OS page-fault handler level — inside `ntdll.dll`, before any Python code runs and before logging is set up. The crash is not caused by any PolyShield code.
 
 This does not happen in an interactive session (user launches python.exe directly) because Defender applies different trust levels to user-session vs. service/SYSTEM-context process loads.
 
@@ -398,15 +398,15 @@ Most common causes, in order:
 
 2. **Wrong service binary** — SCM is launching `pythonservice.exe` instead of `python.exe`. Check:
    ```
-   sc qc KicomAIService
+   sc qc PolyShieldService
    ```
    `BINARY_PATH_NAME` should start with `python.exe`, not `pythonservice.exe`. If it shows `pythonservice.exe`, uninstall and reinstall: the `_exe_name_ = sys.executable` attribute wasn't present.
 
-3. **Module import error inside service** — Check `C:\ProgramData\KicomAI\service.log` and Event Viewer → System for Python tracebacks.
+3. **Module import error inside service** — Check `C:\ProgramData\PolyShield\service.log` and Event Viewer → System for Python tracebacks.
 
 ### Service starts but socket won't connect
 
-- Check the log: `type "C:\ProgramData\KicomAI\service.log"` — look for "Socket bound" or any bind error
+- Check the log: `type "C:\ProgramData\PolyShield\service.log"` — look for "Socket bound" or any bind error
 - Port 52614 may be taken: `netstat -ano | findstr 52614`
 - Firewall blocking loopback (rare): Windows Firewall should allow `127.0.0.1` by default
 
@@ -422,7 +422,7 @@ LocalService doesn't have access to the folder. For watched folders added **afte
 icacls "C:\Users\you\Downloads" /grant "NT AUTHORITY\LocalService:(OI)(CI)M"
 ```
 
-### Event Viewer shows `KicomAIService` error 1064
+### Event Viewer shows `PolyShieldService` error 1064
 
 A Python exception propagated to `SvcDoRun`. Look at `service.log` for the traceback.
 
@@ -435,4 +435,4 @@ A Python exception propagated to `SvcDoRun`. Look at `service.log` for the trace
 - `NT AUTHORITY\LocalService` is the minimum required privilege level — we do not use `LocalSystem`
 - Quarantine folder grants `LocalService` write access; the UI (running as the logged-in user) retains read/list access. Do **not** add `deny Users:(RX)` — it blocks the quarantine view in the UI. Quarantined files are stored without their original extension, which prevents accidental execution.
 - Device Security fields (Secure Boot, TPM, VBS) cannot be queried via WMI from `LocalService` — it lacks admin rights. Basic on/off state is read from the registry instead, which works for both the service context and standard user sessions.
-- `C:\ProgramData\KicomAI\service_token.txt` is readable by all local users (required for the UI to authenticate) but writable only by `LocalService` and `Administrators`
+- `C:\ProgramData\PolyShield\service_token.txt` is readable by all local users (required for the UI to authenticate) but writable only by `LocalService` and `Administrators`

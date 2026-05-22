@@ -12,7 +12,7 @@ For testing procedures, see [TESTING.md](TESTING.md).
 
 ### Four Layers (Cumulative by Version)
 
-**1. KicomAV Engine (k2.exe)**
+**1. K2 Engine (k2.exe)**
 - Native Windows security scanner with proprietary signatures
 - **Configurable** (v1.6+) — toggleable in the Scan Pipeline panel; can be disabled to let secondary engines serve as primary
 - Produces JSON report: `infected_paths`, threat names, confidence
@@ -280,7 +280,7 @@ Defender:      cancel_event checked between MpCmdRun.exe invocations
 Two-tier design — monitoring requires no elevation; blocking requires UAC once.
 
 ```
-[NetworkMonitorThread]  (runs inside kicomai_service.py)
+[NetworkMonitorThread]  (runs inside polyshield_service.py)
   ↓  every 30 seconds
 psutil.net_connections(kind="inet")
   ↓  per ESTABLISHED outbound connection
@@ -409,7 +409,7 @@ _autonomous_process_action(pid, exe_path, action)
 **Files:**
 - `src/ui/core/process_monitor.py` — `ProcessMonitor` class, WMI loop, `_fast_hash()`
 - `src/ui/views/process_view.py` — Processes sidebar view (live log, Start/Stop, auto-terminate toggle)
-- `kicomai_service.py` — `_start_process_monitor()`, `_on_process_threat()`, `_autonomous_process_action()`
+- `polyshield_service.py` — `_start_process_monitor()`, `_on_process_threat()`, `_autonomous_process_action()`
 
 ---
 
@@ -530,7 +530,7 @@ CREATE TABLE ip_blocklist (
 |------|------|
 | `intelligence/threat_db.sqlite` | Main database (SQLite; 100MB+ if full MalwareBazaar imported) |
 | `guardianai/data/known_bad.txt` | Legacy fallback only (v1.8+); no longer auto-written after updates; used only if `threat_db.sqlite` is absent |
-| `C:\ProgramData\KicomAI\service.log` | Windows Service runtime log |
+| `C:\ProgramData\PolyShield\service.log` | Windows Service runtime log |
 | `config/service_events.json` | Persisted threat events from the service (atomic writes) |
 
 ### Clearing the Database
@@ -560,7 +560,7 @@ KicomAI_Project\
 │   │   │   ├── win_security.py      # Windows Security data (registry-first, PowerShell fallback)
 │   │   │   ├── network_monitor.py   # psutil TCP monitor; C2/unsigned-outbound flagging; IP+PID caches
 │   │   │   ├── process_monitor.py   # WMI __InstanceCreationEvent; ProcessMonitor class; _fast_hash()
-│   │   │   ├── shell_ext.py         # Explorer "Scan with KicomAV" context menu (HKCU, no admin)
+│   │   │   ├── shell_ext.py         # Explorer "Scan with PolyShield" context menu (HKCU, no admin)
 │   │   │   ├── quarantine.py        # Move / restore infected files
 │   │   │   ├── settings.py          # User preferences (JSON-backed flat config)
 │   │   │   ├── dispute.py           # Find k2 vs Guardian disagreements
@@ -623,7 +623,7 @@ KicomAI_Project\
 │   ├── .env.template            # Template committed to source
 │   ├── ui_settings.json         # User preferences (per-machine, not committed)
 │   └── service_events.json      # Persisted service events
-├── kicomai_service.py           # Windows Service class (pywin32, socket IPC, watcher host)
+├── polyshield_service.py           # Windows Service class (pywin32, socket IPC, watcher host)
 ├── scheduled_scan.py            # Invoked by Windows Task Scheduler
 ├── launch_ui.vbs                # No-console app launcher (rewritten by admin toggle)
 ├── launch_guardian.vbs          # Standalone Guardian AI launcher

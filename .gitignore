@@ -20,8 +20,10 @@ user_rules/
 config/.env
 # User preferences (saved by the app at runtime)
 config/ui_settings.json
-# k2 cache database (~200 MB)
+# k2 cache database (~200 MB) and SQLite WAL/SHM journal files
 config/cache.db
+config/cache.db-wal
+config/cache.db-shm
 
 # ── Python cache ─────────────────────────────────────────────────────────────
 __pycache__/

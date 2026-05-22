@@ -91,7 +91,7 @@ print("Added 8.8.8.8 to ip_blocklist")
 ```
 
 2. Open a browser and visit any website (browser will likely contact Google DNS)
-3. Navigate to **Network** sidebar in KicomAV and click **↺ Refresh**
+3. Navigate to **Network** sidebar in PolyShield and click **↺ Refresh**
 
 **What to look for:**
 - [ ] `8.8.8.8` row appears with amber/red background and "c2:test" status
@@ -100,7 +100,7 @@ print("Added 8.8.8.8 to ip_blocklist")
 - [ ] Click **Block** → UAC prompt appears
 - [ ] After approving: confirm rule exists:
   ```powershell
-  Get-NetFirewallRule | Where-Object { $_.DisplayName -like "KicomAI*" }
+  Get-NetFirewallRule | Where-Object { $_.DisplayName -like "PolyShield*" }
   ```
 
 **Clean up:**
@@ -111,7 +111,7 @@ con.execute("DELETE FROM ip_blocklist WHERE ip = '8.8.8.8'")
 con.commit()
 con.close()
 # Remove the firewall rule (elevated PowerShell):
-# Remove-NetFirewallRule -DisplayName "KicomAI-Block-8.8.8.8"
+# Remove-NetFirewallRule -DisplayName "PolyShield-Block-8.8.8.8"
 ```
 
 ---
@@ -126,7 +126,7 @@ con.close()
 1. Start the service and verify it's running in the **Service** sidebar view
 2. Open **Task Manager** → Details tab → find the `python.exe` process associated with the service
    - Tip: sort by CPU — it will be the one periodically using a small amount
-   - Or: `tasklist /fi "services eq KicomAI"` in an elevated prompt to get the PID
+   - Or: `tasklist /fi "services eq PolyShield"` in an elevated prompt to get the PID
 3. Right-click the process → **End Task** (this kills the service mid-run)
 
 **What to look for:**
@@ -189,7 +189,7 @@ Then reload signatures in the Guardian view (or restart the service / in-process
 **What to look for:**
 - [ ] Within ≤ poll_interval seconds (default: 1s), a "Threat Detected" alert banner appears in the Processes view
 - [ ] If the service is running with no UI subscriber: process is killed + file quarantined autonomously
-- [ ] `C:\ProgramData\KicomAI\service.log` shows: `THREAT PID=... name=test_malware.exe reason=known malicious hash`
+- [ ] `C:\ProgramData\PolyShield\service.log` shows: `THREAT PID=... name=test_malware.exe reason=known malicious hash`
 
 **Clean up:**
 ```python
@@ -227,10 +227,10 @@ Files that live outside the main project (you choose the locations and document 
 
 1. **Double-click `PolyShield_Sandbox.wsb`** (copy from `.template` and fill in the paths first) — sandbox opens; project mapped read-only at `C:\PolyShield_Project`
 2. **Right-click `sandbox-auto-setup.bat` → Run as administrator**
-   - Copies source files to `C:\KicomAV_Sandbox` (skips venvs, generated dirs, `.env`)
+   - Copies source files to `C:\PolyShield_Sandbox` (skips venvs, generated dirs, `.env`)
    - Builds a fresh venv with sandbox paths
    - Installs all packages (uses `C:\pip_cache` — fast after first run)
-   - Generates a clean `.env` and launches KicomAV automatically
+   - Generates a clean `.env` and launches PolyShield automatically
 3. **Test as needed** — nothing touches the host
 4. **Close sandbox** — all changes discarded, host unchanged
 
@@ -280,7 +280,7 @@ Modern Windows 11 is built for SSDs. Running it on an HDD in a VM will peg the d
 
 Tiny11 is built by a PowerShell script ([ntdevlabs/tiny11builder](https://github.com/ntdevlabs/tiny11builder)) that you run against a genuine Windows 11 ISO — it accepts **any edition** (Home, Pro, Education, Enterprise) and outputs a stripped ISO that installs in ~8 GB and runs on 2 GB RAM with minimal background HDD activity. The real Windows 11 kernel is preserved, so WMI, services, UAC, and registry all behave identically to a full install.
 
-There are two variants: **Regular** (keeps Defender + Windows Update — use this for standard KicomAV testing) and **Core** (removes Defender entirely — co-pilot tests and `defender_view.py` will not work; only use Core if you specifically want to test KicomAV as the sole scanner).
+There are two variants: **Regular** (keeps Defender + Windows Update — use this for standard PolyShield testing) and **Core** (removes Defender entirely — co-pilot tests and `defender_view.py` will not work; only use Core if you specifically want to test PolyShield as the sole scanner).
 
 **For complete setup instructions** — building the ISO, local account bypass, HDD optimizations, activation, snapshot strategy, and VM specs — see **[VM_SETUP.md](VM_SETUP.md)**.
 
@@ -296,16 +296,16 @@ After your VM is set up and you have a clean snapshot, follow the **Full Reinsta
 
 LTSC is Microsoft's official edition for industrial/embedded use — zero bloatware, no feature updates, fully activatable. Use it when you need a "real" end-user environment for final validation before distribution, or when Tiny11's community provenance is a concern. Requires a VLSC/MSDN subscription or a free evaluation ISO from Microsoft.
 
-The HDD optimizations in [VM_SETUP.md](VM_SETUP.md) apply here too and are strongly recommended before installing KicomAV.
+The HDD optimizations in [VM_SETUP.md](VM_SETUP.md) apply here too and are strongly recommended before installing PolyShield.
 
 ### Full Reinstall Field Test Checklist
 
 This is the primary test to run before declaring a build ready. The goal is to simulate a new user's first experience on a clean machine.
 
-**Starting state:** Fresh VM, no KicomAV ever installed, no Python, no venv.
+**Starting state:** Fresh VM, no PolyShield ever installed, no Python, no venv.
 
 - [ ] **Python install** — Download Python 3.11+ installer; check "Add to PATH"; install
-- [ ] **Copy project** — Copy the `KicomAI_Project` folder to the VM (USB, shared folder, or zip)
+- [ ] **Copy project** — Copy the project folder to the VM (USB, shared folder, or zip)
 - [ ] **`scripts\install.bat`** — Double-click; watch all 7 steps complete without error
 - [ ] **`launch_ui.vbs`** — App opens; no Python console flash; no import errors
 - [ ] **Getting Started card** — Dashboard shows 🚀 Getting Started card with all 3 items unchecked (no DB, no service, no scan history)
@@ -352,14 +352,14 @@ X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*
 
 ## Distribution Signing (Future — Pre-Release)
 
-When distributing KicomAV as an executable, unsigned binaries acting as Windows Services that monitor network connections and files will trigger SmartScreen and Defender false positives. Two options:
+When distributing PolyShield as an executable, unsigned binaries acting as Windows Services that monitor network connections and files will trigger SmartScreen and Defender false positives. Two options:
 
 **Option A — EV Code Signing Certificate (~$400/year)**
 - Immediately trusted by SmartScreen on all Windows machines
 - Required for kernel drivers (WFP, etc.) if we ever go that route
 - Necessary for broad public distribution
 
-**Option B — Self-signed "KicomAI Root CA" (development/personal use)**
+**Option B — Self-signed "PolyShield Root CA" (development/personal use)**
 - Add your own root certificate to `HKLM\ROOT\Certificates`
 - Sign executables with that cert
 - Stops your own machine from fighting the code, but won't help on other machines
@@ -372,11 +372,11 @@ When distributing KicomAV as an executable, unsigned binaries acting as Windows 
 
 ## Service Log Inspection
 
-The service writes to `C:\ProgramData\KicomAI\service.log`. After long UI sessions, check for:
+The service writes to `C:\ProgramData\PolyShield\service.log`. After long UI sessions, check for:
 
 ```
 # Show last 50 lines of service log (PowerShell)
-Get-Content "C:\ProgramData\KicomAI\service.log" -Tail 50
+Get-Content "C:\ProgramData\PolyShield\service.log" -Tail 50
 ```
 
 **Common entries and what they mean:**

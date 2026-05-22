@@ -30,7 +30,7 @@ Running stock Windows 11 in a VM on an HDD is painful — telemetry, Search inde
 
 Tiny11 is built by a PowerShell script ([ntdevlabs/tiny11builder](https://github.com/ntdevlabs/tiny11builder)) that you run against your own genuine Windows 11 ISO. It strips bloat and outputs a new ISO. The resulting install uses ~8 GB of disk, runs on 2 GB RAM, and has near-zero background HDD activity.
 
-**Confirmed:** tiny11builder accepts **any Windows 11 edition** as input (Home, Pro, Education, Enterprise, any language). During the build you select the output SKU — choose **Pro** for KicomAV testing (Group Policy features, Hyper-V guest support).
+**Confirmed:** tiny11builder accepts **any Windows 11 edition** as input (Home, Pro, Education, Enterprise, any language). During the build you select the output SKU — choose **Pro** for PolyShield testing (Group Policy features, Hyper-V guest support).
 
 See [Section 2](#2-building-a-tiny11-iso) for build instructions.
 
@@ -62,10 +62,10 @@ The repo has two scripts. Pick based on what you need to test:
 | **Windows Recovery (WinRE)** | ✅ Intact | ❌ Removed |
 | **Serviceable post-build** | ✅ Yes | ❌ No |
 | **Disk footprint** | ~8 GB | ~5–6 GB |
-| **KicomAV Defender tests** | ✅ Work normally | ❌ Defender absent — co-pilot tests fail |
+| **PolyShield Defender tests** | ✅ Work normally | ❌ Defender absent — co-pilot tests fail |
 | **Use for** | Standard field testing | Ultra-minimal throwaway VMs only |
 
-> **Rule of thumb:** Use Regular. Core is only useful if you specifically want to verify KicomAV operates correctly as the *sole* scanner with no Defender at all.
+> **Rule of thumb:** Use Regular. Core is only useful if you specifically want to verify PolyShield operates correctly as the *sole* scanner with no Defender at all.
 
 ### What the Regular Build Removes
 
@@ -82,7 +82,7 @@ Edge, Teams, OneDrive, Xbox/Gaming App, Microsoft News, Cortana, Feedback Hub, G
 | Edge shortcuts linger in Settings | Cosmetic — browser not installed but links remain |
 | `winget` may need updating before use | Run `winget upgrade winget` first if winget commands fail |
 | OOBE auto-creates a local account | This is a feature — see Section 3 for manual override |
-| Core: Defender removed entirely | Expected; `defender_view.py` and Windows Security posture will show errors in KicomAV |
+| Core: Defender removed entirely | Expected; `defender_view.py` and Windows Security posture will show errors in PolyShield |
 
 ### Prerequisites
 
@@ -110,7 +110,7 @@ The script will:
 2. Check prerequisites (admin, PowerShell 5.1+, scratch drive space ≥ 15 GB)
 3. Clone `ntdevlabs/tiny11builder` from GitHub (ZIP fallback if git is unavailable)
 4. Validate the ISO drive contains a Windows image
-5. Warn you if Core variant would break KicomAV Defender tests
+5. Warn you if Core variant would break PolyShield Defender tests
 6. Prompt for SKU selection — **choose Windows 11 Pro**
 7. Call `tiny11maker.ps1` or `tiny11coremaker.ps1` with your drives
 8. Print VM creation guidance when done
@@ -292,14 +292,14 @@ The cleanest method — disconnect the virtual NIC entirely:
 
 ### DNS Leak Prevention
 
-If you leave networking on (e.g., to test C2 detection in KicomAV), set the VM's DNS manually to avoid inheriting host DNS settings that could identify your network:
+If you leave networking on (e.g., to test C2 detection in PolyShield), set the VM's DNS manually to avoid inheriting host DNS settings that could identify your network:
 
 1. Settings → Network & Internet → Ethernet → DNS server assignment: **Manual**
 2. Set IPv4 DNS to `1.1.1.1` (Cloudflare) or `8.8.8.8` (Google)
 
 ### VPN Passthrough Note
 
-If the host machine is connected to a VPN when the VM uses NAT networking, VM traffic routes through the VPN by default. This is generally fine for testing but means C2 blocklist tests (KicomAV Network Monitor → Ghost Connection test) may see different IPs than expected.
+If the host machine is connected to a VPN when the VM uses NAT networking, VM traffic routes through the VPN by default. This is generally fine for testing but means C2 blocklist tests (PolyShield Network Monitor → Ghost Connection test) may see different IPs than expected.
 
 ### Audio Crackling Fix
 
@@ -323,7 +323,7 @@ Take the golden snapshot **after**:
 
 Take it **before**:
 - Any malware or suspicious file is touched
-- KicomAV is installed (so you can also have a "pre-KicomAV" baseline)
+- PolyShield is installed (so you can also have a "pre-PolyShield" baseline)
 - Any registry changes from testing
 
 ### Cold Checkpoint Rule
@@ -339,12 +339,12 @@ A live checkpoint captures the entire RAM contents to disk alongside the checkpo
 ### Recommended Snapshot Ladder
 
 ```
-[Golden Image]          ← OS + tweaks only, no KicomAV
-    └── [KicomAV Clean] ← KicomAV installed, DB populated, service running
+[Golden Image]            ← OS + tweaks only, no PolyShield
+    └── [PolyShield Clean] ← PolyShield installed, DB populated, service running
             └── [Pre-Test Run N] ← taken before each batch of tests
 ```
 
-Revert to "KicomAV Clean" between test sessions. Revert to "Golden Image" only if you need to validate a fresh install.
+Revert to "PolyShield Clean" between test sessions. Revert to "Golden Image" only if you need to validate a fresh install.
 
 ---
 
@@ -358,7 +358,7 @@ Revert to "KicomAV Clean" between test sessions. Revert to "Golden Image" only i
 
 ### Preventing Snapshot Bloat
 
-Each checkpoint you keep grows your snapshot chain. Older snapshots in the middle of the chain cannot be deleted without merging, which is slow on HDD. The two-level strategy above (Golden + KicomAV Clean as permanent anchors, then rolling pre-test snapshots that you delete after each session) keeps the chain manageable.
+Each checkpoint you keep grows your snapshot chain. Older snapshots in the middle of the chain cannot be deleted without merging, which is slow on HDD. The two-level strategy above (Golden + PolyShield Clean as permanent anchors, then rolling pre-test snapshots that you delete after each session) keeps the chain manageable.
 
 ### Windows Update in a Test VM
 
@@ -379,7 +379,7 @@ Each checkpoint you keep grows your snapshot chain. Older snapshots in the middl
 | CPU cores | 2 | 2–4 |
 | Virtualization platform | Hyper-V / VMware / VirtualBox | — |
 
-**Why 25 GB for C::** Tiny11 installs at ~8 GB. KicomAV + Python venvs + MalwareBazaar intelligence DB takes ~3–4 GB. Leave headroom for Windows temp files, pagefile, and scan artifacts. Running below 5 GB free on C: causes severe Windows slowdowns.
+**Why 25 GB for C::** Tiny11 installs at ~8 GB. PolyShield + Python venvs + MalwareBazaar intelligence DB takes ~3–4 GB. Leave headroom for Windows temp files, pagefile, and scan artifacts. Running below 5 GB free on C: causes severe Windows slowdowns.
 
 ### For Stock Windows 11 on HDD
 
@@ -405,10 +405,10 @@ For a new VM from scratch:
 7. Visual tweaks     ──→  Best performance mode, transparency off
 8. Secondary drive   ──→  Disk Management → initialize + format
 9. Golden snapshot   ──→  Shut down → checkpoint
-10. Install KicomAV  ──→  scripts/install.bat (see TESTING.md)
-11. KicomAV snapshot ──→  Shut down → checkpoint ("KicomAV Clean")
+10. Install PolyShield ──→  scripts/install.bat (see TESTING.md)
+11. PolyShield snapshot ──→  Shut down → checkpoint ("PolyShield Clean")
 ```
 
 ---
 
-*For KicomAV-specific installation steps, the field test checklist, and battlespace tests — see [TESTING.md](TESTING.md).*
+*For PolyShield-specific installation steps, the field test checklist, and battlespace tests — see [TESTING.md](TESTING.md).*
