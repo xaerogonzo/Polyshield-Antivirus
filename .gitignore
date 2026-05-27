@@ -63,3 +63,7 @@ dist/
 build/
 .venv/
 venv/
+
+# Added by TokenSave Manager
+build.ps1
+build.bat
