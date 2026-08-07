@@ -25,13 +25,13 @@ yara-python>=4.5.4
 
 # Behavioral analysis (Speakeasy PE emulation — mandiant/speakeasy)
 # speakeasy-emulator 1.5.11 requires unicorn==1.0.2, which uses distutils and pkg_resources.
-# Both were removed in Python 3.12+. setuptools==68.2.2 restores them as compatibility shims.
+# Both were removed in Python 3.12+. setuptools==83.0.0 restores them as compatibility shims.
 # unicorn must be pinned to 1.0.2 — the 2.x API is incompatible with speakeasy-emulator.
 # Note: speakeasy-emulator-refined (PyPI) is a DIFFERENT library (binref/speakeasy),
 # not an updated fork of mandiant/speakeasy — do not substitute it.
 speakeasy-emulator>=1.5.11
 unicorn==1.0.2
-setuptools==68.2.2
+setuptools==83.0.0
 
 # Cryptography
 pycryptodome>=3.23.0
