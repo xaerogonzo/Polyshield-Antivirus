@@ -1,4 +1,4 @@
-"""
+r"""
 shell_ext.py — Windows Explorer context-menu integration (HKCU, no admin required).
 
 Registers "Scan with PolyShield" on files, folders, and drives using:
@@ -79,7 +79,7 @@ def unregister() -> tuple[bool, str]:
 
 
 def is_registered() -> bool:
-    """Return True if the *\shell\PolyShield key exists in HKCU."""
+    r"""Return True if the *\shell\PolyShield key exists in HKCU."""
     try:
         with winreg.OpenKey(_HKCU, _shell_key("*")):
             return True

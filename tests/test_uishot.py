@@ -170,3 +170,38 @@ def test_cli_rejects_an_unknown_scene(tmp_path):
     proc = _run("--only", "no-such-scene", "--out", str(tmp_path))
     assert proc.returncode == 2
     assert "unknown scene" in proc.stderr
+
+# Helper program for test_session_works_without_the_cli, kept as a template so
+# the quoting stays readable.
+SCRIPT_TEMPLATE = """
+import sys
+sys.path.insert(0, r"{tools}")
+from uishot import TkSession
+
+with TkSession(out_dir=r"{out}") as session:
+    from ui.views.service_view import ServiceView
+    session.mount(ServiceView, status_callback=lambda m: None)
+    shot = session.shot("direct")
+    print("OK", shot.name, shot.size[0], shot.size[1])
+"""
+
+
+def test_session_works_without_the_cli(capture_supported, tmp_path):
+    """TkSession used directly, as its module docstring documents.
+
+    Every other test drives the CLI, which assigns session.current_scene before
+    each scene — so a missing initialiser passes the entire suite and only
+    breaks for someone importing the library. A rebase silently dropped exactly
+    that line once, and nothing caught it.
+    """
+    out = tmp_path / "out"
+    script = tmp_path / "direct.py"
+    script.write_text(
+        SCRIPT_TEMPLATE.format(tools=PROJECT_ROOT / "tools", out=out),
+        encoding="utf-8")
+
+    proc = subprocess.run([sys.executable, str(script)], capture_output=True,
+                          text=True, timeout=300, cwd=str(PROJECT_ROOT))
+    assert proc.returncode == 0, proc.stderr
+    assert "OK direct" in proc.stdout
+    assert (out / "direct.png").exists()

@@ -30,6 +30,7 @@ class Shot:
     name: str
     path: Path
     size: tuple[int, int]
+    scene: str = ""
 
 
 class TkSession:
@@ -47,6 +48,11 @@ class TkSession:
         self._root = None
         self._mounted = []
         self._warned_clamp = False
+        # Set by the CLI before each scene; initialised here so a session used
+        # directly (as the docstring above shows) still works.
+        self.current_scene = ""
+        # Set by the CLI before each scene; initialised here so a session used
+        # directly (as the docstring above shows) still works.
         self._project_root = project_root or Path(__file__).resolve().parents[2]
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -160,7 +166,8 @@ class TkSession:
         path = self.out_dir / f"{name}.png"
         path.parent.mkdir(parents=True, exist_ok=True)
         image.save(path)
-        shot = Shot(name=name, path=path, size=image.size)
+        shot = Shot(name=name, path=path, size=image.size,
+                    scene=self.current_scene)
         self.shots.append(shot)
         return shot
 
