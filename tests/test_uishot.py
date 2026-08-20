@@ -28,6 +28,21 @@ def _run(*args, cwd=PROJECT_ROOT):
                           timeout=300)
 
 
+@pytest.fixture(scope="session")
+def capture_supported():
+    """Skip capture tests where the runner cannot host a hidden desktop.
+
+    A CI box without an interactive window station is an environment limit, not
+    a defect in this code — it should read as 'skipped', not as a red build.
+    The probe runs out-of-process so it never conflicts with a Tk root this
+    session may already hold.
+    """
+    probe = _run("--probe")
+    if probe.returncode != 0:
+        pytest.skip(f"capture unsupported here: {probe.stdout.strip()}")
+    return True
+
+
 # ── Pure helpers (no Tk, no desktop) ──────────────────────────────────────────
 
 def test_compare_detects_identical_images():
@@ -89,7 +104,7 @@ def test_cli_lists_scenes():
     assert "intel-posture" in proc.stdout
 
 
-def test_cli_captures_a_scene_without_a_visible_window(tmp_path):
+def test_cli_captures_a_scene_without_a_visible_window(capture_supported, tmp_path):
     out = tmp_path / "shots"
     proc = _run("--only", "intel-posture", "--out", str(out))
     assert proc.returncode == 0, proc.stderr + proc.stdout
@@ -112,7 +127,7 @@ def test_cli_captures_a_scene_without_a_visible_window(tmp_path):
         assert white / 6000 < 0.5, f"{name} is mostly white — capture flag wrong?"
 
 
-def test_cli_check_passes_against_freshly_recorded_golden(tmp_path):
+def test_cli_check_passes_against_freshly_recorded_golden(capture_supported, tmp_path):
     out, golden = tmp_path / "shots", tmp_path / "golden"
 
     record = _run("--only", "service", "--out", str(out),
@@ -126,7 +141,7 @@ def test_cli_check_passes_against_freshly_recorded_golden(tmp_path):
     assert "match golden" in check.stdout
 
 
-def test_cli_check_reports_drift_and_writes_a_side_by_side(tmp_path):
+def test_cli_check_reports_drift_and_writes_a_side_by_side(capture_supported, tmp_path):
     out, golden = tmp_path / "shots", tmp_path / "golden"
     assert _run("--only", "service", "--out", str(out),
                 "--golden", str(golden), "--update-golden").returncode == 0
