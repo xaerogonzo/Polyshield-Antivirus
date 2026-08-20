@@ -68,7 +68,10 @@ class DashboardView(ctk.CTkFrame):
         self._navigate = navigate_callback
         self._cards: dict = {}
         self._themed: list = []          # for live theme refresh
+        self._intel_posture: dict = {}   # last get_posture() result
+        self._intel_busy = False
         self._build()
+        self._refresh_intel_card()
 
     def _refresh_theme(self) -> None:
         """Re-apply current theme colours to all registered widgets."""
@@ -76,6 +79,10 @@ class DashboardView(ctk.CTkFrame):
         # Rebuild the Getting Started card so its colours follow the theme
         if hasattr(self, "_gs_frame") and self._gs_frame.winfo_ismapped():
             self._refresh_getting_started()
+        # Same for the intelligence card — it mixes theme tokens with the
+        # semantic state colours, so it has to be redrawn, not just recoloured.
+        if hasattr(self, "_intel_frame"):
+            self._build_intel_card(self._intel_posture or {})
 
     def _build(self):
         self.grid_columnconfigure(0, weight=1)
@@ -149,14 +156,21 @@ class DashboardView(ctk.CTkFrame):
             theme.register(self._themed, qb,
                            fg_color="nav_active", hover_color="accent_hover")
 
+        # ── Threat intelligence freshness (row=4) ──
+        self._intel_frame = ctk.CTkFrame(self, corner_radius=10, border_width=1,
+                                         border_color="#2a3a6a")
+        self._intel_frame.grid(row=4, column=0, sticky="ew", padx=24, pady=(0, 8))
+        theme.register(self._themed, self._intel_frame, fg_color="card2")
+        self._intel_frame.grid_columnconfigure(0, weight=1)
+
         # ── Recent threats ──
         ctk.CTkLabel(self, text="Recent Threats",
                      font=ctk.CTkFont(size=14, weight="bold")).grid(
-            row=4, column=0, sticky="w", padx=24, pady=(4, 4))
+            row=5, column=0, sticky="w", padx=24, pady=(4, 4))
 
         self._threats_frame = ctk.CTkScrollableFrame(
             self, height=140, corner_radius=8)
-        self._threats_frame.grid(row=5, column=0, sticky="ew", padx=24, pady=(0, 16))
+        self._threats_frame.grid(row=6, column=0, sticky="ew", padx=24, pady=(0, 16))
         self._threats_frame.grid_columnconfigure(0, weight=1)
         theme.register(self._themed, self._threats_frame, fg_color="card")
 
@@ -231,13 +245,24 @@ class DashboardView(ctk.CTkFrame):
             label = score_info.get("label", "Unknown")
             top_issue = score_info.get("top_issue", "")
             color = "#50fa7b" if score >= 75 else ("#ffb86c" if score >= 55 else "#ff5555")
+            # Windows-side score stays the number it is, but the card must not
+            # read green while the intelligence layer is stale or unusable —
+            # that combination is exactly how a broken YARA publish hid behind a
+            # reassuring dashboard.
+            intel_level = (self._intel_posture or {}).get("level", "ok")
+            if intel_level == "error":
+                color = "#ff5555"
+            elif intel_level == "warn" and color == "#50fa7b":
+                color = "#ffb86c"
             rt = dfn_status.get("RealTimeProtectionEnabled", False) if dfn_status.get("available") else False
             fw_issues = score_info.get("breakdown", {}).get("Firewall", {}).get("issues", [])
             detail2 = fw_issues[0] if fw_issues else "Firewall OK"
+            intel_line = (self._intel_posture or {}).get("headline", "")
             self._update_card("defender", f"{score}/100 — {label}", color, [
                 f"Defender RT: {'ON' if rt else 'OFF'}",
                 detail2,
-                top_issue[:40] + "…" if top_issue and len(top_issue) > 40 else top_issue,
+                intel_line or (top_issue[:40] + "…" if top_issue and len(top_issue) > 40
+                               else top_issue),
             ])
         else:
             self._update_card("defender", "Loading…", "#888888", ["", "", ""])
@@ -303,6 +328,156 @@ class DashboardView(ctk.CTkFrame):
             text=f"Last refreshed: {datetime.now().strftime('%H:%M:%S')}")
         self._refresh_btn.configure(state="normal", text="Refresh")
         self._status_cb("Dashboard updated")
+
+    # ── Threat intelligence card ──────────────────────────────────────────────
+
+    _STATE_COLOURS = {          # semantic — deliberately theme-independent
+        "fresh":         "#50fa7b",
+        "aging":         "#ffb86c",
+        "stale":         "#ff5555",
+        "never":         "#ff5555",
+        "auth_required": "#ffb86c",
+        "error":         "#ff5555",
+    }
+    _LEVEL_COLOURS = {"ok": "#50fa7b", "warn": "#ffb86c", "error": "#ff5555"}
+
+    @staticmethod
+    def _age_str(hours) -> str:
+        if hours is None:
+            return "never"
+        if hours < 1:
+            return "just now"
+        if hours < 48:
+            return f"{int(hours)}h ago"
+        return f"{int(hours / 24)}d ago"
+
+    def _refresh_intel_card(self) -> None:
+        """Rebuild the Threat Intelligence card from current posture."""
+        try:
+            from ui.core import intel_updater as iu
+            posture = iu.get_posture()
+        except Exception as exc:
+            posture = {"state": "unavailable", "level": "error",
+                       "headline": "Intelligence unavailable",
+                       "detail": str(exc)[:80], "feeds": {}, "usable": {}}
+        self._intel_posture = posture
+        self._build_intel_card(posture)
+
+    def _build_intel_card(self, posture: dict) -> None:
+        for w in self._intel_frame.winfo_children():
+            w.destroy()
+
+        hdr = ctk.CTkFrame(self._intel_frame, fg_color="transparent")
+        hdr.grid(row=0, column=0, sticky="ew", padx=16, pady=(12, 2))
+        hdr.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(hdr, text="🛡  Threat Intelligence",
+                     font=ctk.CTkFont(size=13, weight="bold"),
+                     text_color=theme.color("accent"), anchor="w").grid(
+            row=0, column=0, sticky="w")
+
+        self._intel_btn = ctk.CTkButton(
+            hdr, text="Update now", width=100, height=24,
+            fg_color=theme.color("input_bg"),
+            hover_color=theme.color("input_hover"),
+            font=ctk.CTkFont(size=11),
+            command=self._run_intel_update,
+        )
+        self._intel_btn.grid(row=0, column=1, sticky="e")
+
+        # Headline — one of the four posture states, verbatim.
+        ctk.CTkLabel(self._intel_frame, text=posture.get("headline", ""),
+                     font=ctk.CTkFont(size=14, weight="bold"),
+                     text_color=self._LEVEL_COLOURS.get(posture.get("level"), "#888888"),
+                     anchor="w").grid(row=1, column=0, sticky="w", padx=16, pady=(2, 0))
+
+        ctk.CTkLabel(self._intel_frame, text=posture.get("detail", ""),
+                     font=ctk.CTkFont(size=11),
+                     text_color=theme.color("subtext"), anchor="w").grid(
+            row=2, column=0, sticky="w", padx=16, pady=(0, 6))
+
+        feeds = posture.get("feeds", {})
+        usable = posture.get("usable", {})
+        for i, (name, info) in enumerate(feeds.items()):
+            row_f = ctk.CTkFrame(self._intel_frame, fg_color="transparent")
+            row_f.grid(row=3 + i, column=0, sticky="ew", padx=16, pady=1)
+            row_f.grid_columnconfigure(1, weight=1)
+
+            use = usable.get(name, {})
+            state = info.get("state", "error")
+            # A feed can be perfectly fresh and still unusable — say so plainly
+            # rather than showing a green dot over an engine with no data.
+            broken = not use.get("usable", True)
+            dot_colour = "#ff5555" if broken else self._STATE_COLOURS.get(state, "#888888")
+
+            ctk.CTkLabel(row_f, text="●", width=18,
+                         font=ctk.CTkFont(size=13),
+                         text_color=dot_colour).grid(row=0, column=0)
+            ctk.CTkLabel(row_f, text=info.get("label", name), anchor="w",
+                         font=ctk.CTkFont(size=12),
+                         text_color=theme.color("text")).grid(row=0, column=1, sticky="w")
+
+            age = self._age_str(info.get("age_hours"))
+            if info.get("estimated"):
+                age += " (est.)"
+            ctk.CTkLabel(row_f, text=age, width=90, anchor="e",
+                         font=ctk.CTkFont(size=11),
+                         text_color=theme.color("subtext")).grid(row=0, column=2)
+
+            if broken:
+                right = "unusable"
+                right_colour = "#ff5555"
+            else:
+                count = use.get("count", 0)
+                right = f"{count:,} {use.get('unit', '')}".strip()
+                right_colour = theme.color("subtext")
+            ctk.CTkLabel(row_f, text=right, width=130, anchor="e",
+                         font=ctk.CTkFont(size=11),
+                         text_color=right_colour).grid(row=0, column=3)
+
+        ctk.CTkFrame(self._intel_frame, fg_color="transparent", height=10).grid(
+            row=3 + len(feeds), column=0)
+
+    def _run_intel_update(self) -> None:
+        """Refresh intelligence via the shared owner-aware router."""
+        if self._intel_busy:
+            return
+        self._intel_busy = True
+        self._intel_btn.configure(state="disabled", text="Updating…")
+        self._status_cb("Updating threat intelligence…")
+
+        def _work():
+            try:
+                from ui.core import intel_updater as iu
+                # request_update() decides service-vs-local, so every surface
+                # agrees about who owns the write.
+                result = iu.request_update(force=True)
+            except Exception as exc:
+                result = {"status": "failed", "error": str(exc), "feeds": {}}
+            if self.winfo_exists():
+                self.after(0, self._on_intel_update_done, result)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_intel_update_done(self, result: dict) -> None:
+        self._intel_busy = False
+        status = result.get("status", "")
+        if result.get("via") == "service" or status == "started":
+            # The service runs it asynchronously; poll once shortly after.
+            self._status_cb("Update started by the PolyShield service…")
+            self.after(4000, self._refresh_intel_card)
+        else:
+            failures = [n for n, i in (result.get("feeds") or {}).items()
+                        if i.get("status") == "failed"]
+            if failures:
+                self._status_cb(f"Intelligence update — failed: {', '.join(failures)}")
+            elif result.get("error"):
+                self._status_cb(f"Intelligence update: {result['error']}")
+            else:
+                self._status_cb(f"Intelligence update: {status}")
+        self._refresh_intel_card()
+        if hasattr(self, "_intel_btn") and self._intel_btn.winfo_exists():
+            self._intel_btn.configure(state="normal", text="Update now")
 
     # ── Getting Started card ──────────────────────────────────────────────────
 
@@ -400,4 +575,5 @@ class DashboardView(ctk.CTkFrame):
     def on_show(self):
         """Called by App when this view becomes visible."""
         self._refresh_getting_started()
+        self._refresh_intel_card()
         self.refresh()

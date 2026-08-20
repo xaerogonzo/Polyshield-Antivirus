@@ -42,8 +42,10 @@ from __future__ import annotations
 
 import argparse
 import io
+import logging
 import sqlite3
 import sys
+import time
 import urllib.request
 import zipfile
 from datetime import datetime
@@ -52,10 +54,22 @@ from typing import Callable
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
+_LOG = logging.getLogger(__name__)
+
 _ROOT         = Path(__file__).resolve().parents[2]
 _DB_PATH      = _ROOT / "intelligence" / "threat_db.sqlite"
 _KNOWN_BAD    = _ROOT / "guardianai" / "data" / "known_bad.txt"
 _BLOOM_PATH   = _ROOT / "intelligence" / "nsrl_bloom.bin"
+
+# Running this file directly (python src/tools/update_intelligence.py) puts
+# src/tools/ on sys.path but not src/, so the ui.core re-export shim further
+# down would raise ModuleNotFoundError before main() ever runs.  Bootstrap the
+# path here instead — a no-op when imported as tools.update_intelligence from a
+# host process that already configured sys.path.
+if __package__ in (None, ""):
+    for _p in (_ROOT / "src", _ROOT):
+        if str(_p) not in sys.path:
+            sys.path.insert(0, str(_p))
 
 _MB_RECENT_URL    = "https://bazaar.abuse.ch/export/txt/md5/recent/"
 _MB_FULL_URL      = "https://bazaar.abuse.ch/export/txt/md5/full/"
@@ -103,9 +117,51 @@ CREATE TABLE IF NOT EXISTS meta (
 """
 
 
+def _open_db_readonly() -> sqlite3.Connection | None:
+    """Open the intelligence DB for reading without creating or converting it.
+
+    _open_db() runs the schema script and sets WAL, which is wrong for a pure
+    status read on a machine that has never run an update.
+    """
+    try:
+        if not _DB_PATH.exists():
+            return None
+        con = sqlite3.connect(str(_DB_PATH), timeout=3)
+        con.execute("PRAGMA busy_timeout=5000")
+        return con
+    except Exception:
+        return None
+
+
 def _open_db() -> sqlite3.Connection:
+    """Open the intelligence DB for writing, in WAL mode.
+
+    WAL is set here (the writer side) because journal_mode is a persistent
+    property of the database file — one write connection converts it once and
+    every later reader inherits it.
+
+    Why it matters, measured rather than assumed: under the old rollback
+    journal a COMMIT needs an EXCLUSIVE lock, so a *reader* holding an open
+    read transaction blocks the writer — an update commit fails with "database
+    is locked" once busy_timeout expires.  That is precisely the v1.12
+    scenario: the service updating in the background while the UI holds one of
+    intel_db's long-lived per-thread connections.  Under WAL the same commit
+    lands in about a millisecond.  (The reverse direction was never the
+    problem: a write transaction only holds RESERVED, which readers may
+    cross.)
+
+    busy_timeout is a backstop for a genuine write/write race, not the
+    mechanism — the single-writer lock is what prevents concurrent writers.
+    """
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
     con = sqlite3.connect(str(_DB_PATH))
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA busy_timeout=5000")
+    except sqlite3.Error as exc:
+        # Non-fatal: a filesystem that cannot support WAL (network share) keeps
+        # the previous journal mode and simply serialises as it did before.
+        _LOG.warning("Could not set WAL journal mode: %s", exc)
     con.executescript(_SCHEMA)
     con.commit()
     return con
@@ -116,6 +172,7 @@ def _open_db() -> sqlite3.Connection:
 def fetch_malwarebazaar(
     mode: str = "recent",
     on_progress: Callable[[str], None] | None = None,
+    notify: bool = True,
 ) -> dict:
     """
     Download MalwareBazaar hash list and insert into the SQLite malicious table.
@@ -123,7 +180,12 @@ def fetch_malwarebazaar(
     v1.8+: hashes are loaded directly from SQLite by guardian_engine and
     process_monitor; known_bad.txt is no longer written automatically.
 
-    mode: "recent" (24h, fast) | "full" (all, slow ~100MB+ download)
+    mode:   "recent" (24h, fast) | "full" (all, slow ~100MB+ download)
+    notify: fire the "hashes" post-update hooks after a successful commit.
+            Direct callers (Update Center button, CLI) want this.  The batch
+            updater passes notify=False and fires ONE notification phase for
+            the union of domains it changed, after every feed has committed.
+
     Returns stats dict: {added, skipped, total_db}
     """
     log = on_progress or (lambda _: None)
@@ -139,8 +201,12 @@ def fetch_malwarebazaar(
         with urllib.request.urlopen(req, timeout=60) as resp:
             raw_bytes = resp.read()
     except Exception as exc:
+        # getattr for the status: urllib raises HTTPError (which carries .code)
+        # for 4xx/5xx and URLError (which does not) for transport failures.  The
+        # updater needs the distinction — a 401/403 means "stop retrying on a
+        # schedule", a timeout means "back off and try again".
         log(f"[ERROR] Download failed: {exc}")
-        return {"error": str(exc)}
+        return {"error": str(exc), "http_status": int(getattr(exc, "code", 0) or 0)}
 
     log(f"Downloaded {len(raw_bytes):,} bytes.  Parsing…")
 
@@ -187,6 +253,11 @@ def fetch_malwarebazaar(
 
     log(f"Done.  Added {added:,} new  |  {skipped:,} already known  |  "
         f"DB total: {total_db:,}")
+
+    # Committed — only now may in-memory consumers be told to refresh.
+    if notify:
+        _fire_post_update_hooks(("hashes",))
+
     return {"added": added, "skipped": skipped, "total_db": total_db}
 
 
@@ -195,6 +266,7 @@ def fetch_malwarebazaar(
 def import_nsrl(
     nsrl_path: str,
     on_progress: Callable[[str], None] | None = None,
+    notify: bool = True,
 ) -> dict:
     """
     Import NIST NSRL known-safe hash file into the safe table.
@@ -250,6 +322,11 @@ def import_nsrl(
 
     _rebuild_nsrl_bloom(con, progress_cb=_bloom_progress)
     con.close()
+
+    # Committed — the safe table feeds the same hash-domain consumers.
+    if notify:
+        _fire_post_update_hooks(("hashes",))
+
     return {"added": added, "total": total}
 
 
@@ -368,27 +445,90 @@ from ui.core.intel_db import (   # noqa: F401 — re-exported for backward compa
 )
 
 
+# ── Meta table helpers ────────────────────────────────────────────────────────
+
+def get_meta(key: str, default: str = "") -> str:
+    """Read one value from the meta table.  Never creates or converts the DB."""
+    con = _open_db_readonly()
+    if con is None:
+        return default
+    try:
+        row = con.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        return row[0] if row and row[0] is not None else default
+    except Exception:
+        return default
+    finally:
+        con.close()
+
+
+def set_meta(key: str, value: str) -> None:
+    """Write one value to the meta table."""
+    con = _open_db()
+    try:
+        con.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (key, value))
+        con.commit()
+    finally:
+        con.close()
+
+
 # ── Post-update hook registry ─────────────────────────────────────────────────
-# Registered callbacks are invoked after every intelligence DB write completes.
-# guardian_engine registers reload_signatures() here at first-scan time so it
-# can refresh its in-RAM hash set without this module importing guardian_engine
-# (which would re-create the circular dependency we just broke).
+# Registered callbacks are invoked after an intelligence write completes, scoped
+# to the *domain* of intelligence that changed:
+#
+#   "hashes" — malicious / safe hash tables  (MalwareBazaar, NSRL)
+#   "ips"    — ip_blocklist table            (Feodo Tracker, ThreatFox)
+#   "rules"  — on-disk YARA rule sets
+#
+# A hook means "local intelligence in domain D may have changed; refresh your
+# in-memory copy" — NOT "the feed update succeeded".  The scoping matters: a
+# YARA archive changing must not force Guardian to rebuild its MD5 set.
+#
+# guardian_engine registers reload_signatures() here so it can refresh its
+# in-RAM hash set without this module importing guardian_engine (which would
+# re-create the circular dependency we just broke).
 
-_post_update_hooks: list = []
+_KNOWN_DOMAINS = ("hashes", "ips", "rules")
+
+_post_update_hooks: list[tuple[Callable[[], None], frozenset]] = []
 
 
-def register_post_update_hook(fn) -> None:
-    """Register a zero-argument callable to invoke after every DB update."""
-    if fn not in _post_update_hooks:
-        _post_update_hooks.append(fn)
+def register_post_update_hook(fn, domains=("hashes",)) -> None:
+    """Register a zero-argument callable, invoked when *domains* change.
+
+    Re-registering the same callable updates its domain set in place rather
+    than queueing a second call, so repeated (idempotent) registration from
+    both an eager start-up path and a lazy first-use path is safe.
+    """
+    doms = frozenset(domains)
+    unknown = doms - set(_KNOWN_DOMAINS)
+    if unknown:
+        raise ValueError("unknown post-update domain(s): %s" % sorted(unknown))
+    for i, (existing, _) in enumerate(_post_update_hooks):
+        if existing == fn:
+            _post_update_hooks[i] = (fn, doms)
+            return
+    _post_update_hooks.append((fn, doms))
 
 
-def _fire_post_update_hooks() -> None:
-    for fn in list(_post_update_hooks):
+def _fire_post_update_hooks(domains=("hashes",)) -> None:
+    """Invoke every hook whose domains intersect *domains*.
+
+    Each hook is isolated — one failing reload can never suppress the others.
+    Failures are logged rather than swallowed silently.
+    """
+    doms = frozenset(domains)
+    if not doms:
+        return
+    for fn, hook_doms in list(_post_update_hooks):
+        if not (hook_doms & doms):
+            continue
         try:
             fn()
-        except Exception:
-            pass
+        except Exception as exc:
+            _LOG.warning(
+                "post-update hook %s failed: %s",
+                getattr(fn, "__qualname__", repr(fn)), exc,
+            )
 
 
 # ── Clear / reset helpers ─────────────────────────────────────────────────────
@@ -487,6 +627,7 @@ def _parse_threatfox(raw: str) -> list[tuple[str, str, int, str]]:
 
 def import_c2_blocklist(
     on_progress: Callable[[str], None] | None = None,
+    notify: bool = True,
 ) -> dict:
     """
     Download C2 IP blocklist from two sources and merge into ip_blocklist table.
@@ -587,6 +728,11 @@ def import_c2_blocklist(
     log(f"Done.  Added {added:,} new  |  {updated:,} refreshed  |  "
         f"Blocklist total: {total_db:,} IPs  "
         f"(Feodo: {feodo_count:,}, ThreatFox: {threatfox_count:,})")
+
+    # Committed — only now may in-memory consumers be told to refresh.
+    if notify:
+        _fire_post_update_hooks(("ips",))
+
     return {
         "added":          added,
         "updated":        updated,
@@ -611,6 +757,343 @@ def get_c2_blocklist_stats() -> dict:
         return {"total": total, "last_update": last, "db_exists": True}
     except Exception:
         return {"total": 0, "last_update": "Error", "db_exists": True}
+
+
+# ── YARA community rules (YARA Forge) ─────────────────────────────────────────
+#
+# Publishing model — the "complete-or-previous" invariant
+# ───────────────────────────────────────────────────────
+# yara_engine._compile() re-reads the rule directory on EVERY scan, so a scan
+# that starts while an archive is being extracted would compile a half-written
+# ruleset.  The previous in-view implementation made this worse: it deleted the
+# live *.yar files first and then extracted one file at a time, leaving a window
+# where the ruleset was empty.
+#
+# Instead, each download is published as an immutable generation directory:
+#
+#   rules/community/
+#       .active                     <- text file naming the live generation
+#       yara-forge-v1.2.3/*.yar     <- generations, never mutated in place
+#
+# The switch is a single os.replace() of the .active pointer file, which is
+# atomic on Windows (MoveFileEx REPLACE_EXISTING).  A scan therefore sees either
+# the whole previous generation or the whole new one.  Directory renames are
+# only used for staging -> generation, where the target does not exist yet, so
+# they never hit Windows' "cannot replace an existing directory" behaviour.
+#
+# Old generations are removed best-effort AFTER the flip; a scan still reading
+# one keeps working, and a leftover directory is inert because nothing points
+# at it.
+
+_YARA_DIR         = _ROOT / "rules" / "community"
+_YARA_ACTIVE_FILE = _YARA_DIR / ".active"
+_YARA_RELEASE_URL = "https://api.github.com/repos/YARAHQ/yara-forge/releases/latest"
+_YARA_UA          = "PolyShield-Intelligence/1.0"
+
+
+def get_active_yara_generation() -> Path | None:
+    """Resolve the live generation directory, or None if there is no pointer.
+
+    Callers must fall back to the legacy flat layout (loose *.yar directly in
+    rules/community/) when this returns None — installs that predate the
+    generation layout still have their rules there.
+    """
+    try:
+        if not _YARA_ACTIVE_FILE.is_file():
+            return None
+        name = _YARA_ACTIVE_FILE.read_text(encoding="utf-8").strip()
+        if not name:
+            return None
+        gen = _YARA_DIR / name
+        return gen if gen.is_dir() else None
+    except Exception:
+        return None
+
+
+def get_yara_info() -> dict:
+    """Return {version, last_update, rule_count} for the installed rule set."""
+    info = {"version": "", "last_update": "", "rule_count": 0}
+    try:
+        if _DB_PATH.exists():
+            con = _open_db_readonly()
+            if con is not None:
+                for key, field in (("yara_version", "version"),
+                                   ("yara_last_update", "last_update")):
+                    row = con.execute(
+                        "SELECT value FROM meta WHERE key=?", (key,)
+                    ).fetchone()
+                    if row and row[0]:
+                        info[field] = row[0]
+                con.close()
+    except Exception:
+        pass
+
+    gen = get_active_yara_generation()
+    if gen is not None:
+        info["rule_count"] = len(list(gen.glob("*.yar"))) + len(list(gen.glob("*.yara")))
+        if not info["version"]:
+            info["version"] = gen.name
+    elif _YARA_DIR.is_dir():
+        # Legacy flat layout
+        info["rule_count"] = len(list(_YARA_DIR.glob("*.yar"))) + \
+                             len(list(_YARA_DIR.glob("*.yara")))
+        legacy_ver = _YARA_DIR / ".version"
+        if not info["version"] and legacy_ver.is_file():
+            try:
+                info["version"] = legacy_ver.read_text(encoding="utf-8").strip()
+            except Exception:
+                pass
+    return info
+
+
+def _dacl_is_protected(path: Path):
+    """True if `path`'s DACL blocks inheritance, False if it inherits, None if unknown.
+
+    A protected DACL is the signature of the bug this guard exists for: a
+    directory created by tempfile.mkdtemp() carries an explicit
+    SYSTEM/Administrators/OWNER RIGHTS ACL and inherits nothing, so publishing
+    it hands the machine a rule set only the publishing account can read.
+    """
+    try:
+        import win32security
+    except Exception:
+        return None                      # not Windows, or pywin32 absent
+    try:
+        SE_DACL_PROTECTED = 0x1000
+        sd = win32security.GetFileSecurity(
+            str(path), win32security.DACL_SECURITY_INFORMATION)
+        control, _revision = sd.GetSecurityDescriptorControl()
+        return bool(control & SE_DACL_PROTECTED)
+    except Exception:
+        return None
+
+
+def _make_staging_dir(parent: Path) -> Path:
+    """Create a staging directory that INHERITS the parent's ACL.
+
+    Deliberately not tempfile.mkdtemp(): that hardens the directory it creates
+    (measured here: zero inherited ACEs vs nine from os.mkdir), which is right
+    for a scratch file and wrong for one that gets promoted to shared
+    application data.
+    """
+    import os as _os
+    for attempt in range(100):
+        candidate = parent / f".staging-{_os.getpid()}-{int(time.time())}-{attempt}"
+        try:
+            _os.mkdir(candidate)         # inherits parent ACEs on Windows
+            return candidate
+        except FileExistsError:
+            continue
+    raise RuntimeError("could not create a staging directory")
+
+
+def _safe_generation_name(tag: str) -> str:
+    """Turn a release tag into a directory name safe on Windows."""
+    cleaned = "".join(c if (c.isalnum() or c in "._-") else "-" for c in tag).strip("-.")
+    return ("yara-forge-" + cleaned)[:80] or "yara-forge-unknown"
+
+
+def download_yara_community(
+    on_progress: Callable[[str], None] | None = None,
+    notify: bool = True,
+    force: bool = False,
+    timeout: int = 60,
+) -> dict:
+    """Download the latest YARA Forge core rule set and publish it atomically.
+
+    Returns {status, version, previous_version, extracted, error, http_status}
+    with status one of:
+      "updated"   — a new generation was published
+      "unchanged" — the installed version already matches the latest release
+      "failed"    — nothing was touched; the previous rule set is still live
+    """
+    import json as _json
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile      # zip download only — never for staging
+    import urllib.error as _urlerr
+
+    log = on_progress or (lambda _: None)
+    result = {"status": "failed", "version": "", "previous_version": "",
+              "extracted": 0, "error": "", "http_status": 0}
+
+    current = get_yara_info().get("version", "")
+    result["previous_version"] = current
+
+    # 1. Latest release metadata
+    log(f"Querying YARA Forge releases…  {_YARA_RELEASE_URL}")
+    try:
+        req = urllib.request.Request(_YARA_RELEASE_URL, headers={"User-Agent": _YARA_UA})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            release = _json.loads(resp.read().decode("utf-8"))
+    except _urlerr.HTTPError as exc:
+        result["error"] = f"HTTP {exc.code} from GitHub"
+        result["http_status"] = int(exc.code)
+        log(f"[ERROR] {result['error']}")
+        return result
+    except Exception as exc:
+        result["error"] = str(exc)
+        log(f"[ERROR] Release query failed: {exc}")
+        return result
+
+    tag = str(release.get("tag_name") or "").strip()
+    if not tag:
+        result["error"] = "release has no tag_name"
+        return result
+    result["version"] = tag
+
+    gen_name = _safe_generation_name(tag)
+    gen_dir  = _YARA_DIR / gen_name
+
+    # 2. Already current?  (An existing generation dir is the real evidence —
+    #    a metadata row without its files would be a lie.)
+    if not force and current == tag and gen_dir.is_dir():
+        log(f"Already up to date ({tag}).")
+        result["status"] = "unchanged"
+        result["extracted"] = len(list(gen_dir.glob("*.yar")))
+        return result
+
+    # 3. Pick the core ZIP asset
+    assets = release.get("assets") or []
+    asset = next((a for a in assets
+                  if str(a.get("name", "")).lower().endswith(".zip")
+                  and "core" in str(a.get("name", "")).lower()), None)
+    if asset is None:
+        asset = next((a for a in assets
+                      if str(a.get("name", "")).lower().endswith(".zip")), None)
+    if asset is None:
+        result["error"] = "no ZIP asset in release"
+        log(f"[ERROR] {result['error']}")
+        return result
+
+    # 4. Download to a temp file
+    tmp_zip = None
+    staging = None
+    try:
+        log(f"  Downloading {asset.get('name')}…")
+        req = urllib.request.Request(str(asset["browser_download_url"]),
+                                     headers={"User-Agent": _YARA_UA})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = resp.read()
+        with _tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as fh:
+            tmp_zip = Path(fh.name)
+            fh.write(payload)
+        log(f"  Downloaded {len(payload):,} bytes.")
+
+        # 5. Validate the archive BEFORE anything live is touched
+        if not zipfile.is_zipfile(tmp_zip):
+            result["error"] = "downloaded file is not a ZIP archive"
+            log(f"[ERROR] {result['error']}")
+            return result
+
+        _YARA_DIR.mkdir(parents=True, exist_ok=True)
+        staging = _make_staging_dir(_YARA_DIR)
+
+        extracted = 0
+        with zipfile.ZipFile(tmp_zip) as zf:
+            bad = zf.testzip()          # CRC check — catches truncated downloads
+            if bad is not None:
+                result["error"] = f"corrupt archive member: {bad}"
+                log(f"[ERROR] {result['error']}")
+                return result
+            for name in zf.namelist():
+                low = name.lower()
+                if not (low.endswith(".yar") or low.endswith(".yara")):
+                    continue
+                # Flatten, and never trust an archive path (zip-slip guard)
+                target = staging / Path(name).name
+                if target.parent.resolve() != staging.resolve():
+                    continue
+                target.write_bytes(zf.read(name))
+                extracted += 1
+
+        # 6. Validate the extracted tree
+        if extracted == 0:
+            result["error"] = "archive contained no .yar/.yara files"
+            log(f"[ERROR] {result['error']}")
+            return result
+        result["extracted"] = extracted
+
+        # 6b. Refuse to publish a directory nobody else can read.  os.replace
+        #     carries the ACL along with the directory, so a protected DACL here
+        #     becomes a live rule set only the publishing account can open —
+        #     which yara_engine reports as simply "no rules", with no error.
+        if _dacl_is_protected(staging) is True:
+            result["error"] = ("staging directory does not inherit the rules "
+                               "directory ACL; refusing to publish an unreadable "
+                               "rule set")
+            log(f"[ERROR] {result['error']}")
+            return result
+
+        # 7. Publish: staging -> generation (target must not exist), then flip
+        #    the pointer with an atomic single-file replace.
+        if gen_dir.exists():
+            _shutil.rmtree(gen_dir, ignore_errors=True)
+        _os.replace(str(staging), str(gen_dir))
+        staging = None
+
+        # Sanity: the move must have landed the files.  Cheap, and it catches a
+        # publish that produced an empty generation for any reason.
+        published = list(gen_dir.glob("*.yar")) + list(gen_dir.glob("*.yara"))
+        if not published:
+            result["error"] = "published generation is empty after publish"
+            log(f"[ERROR] {result['error']}")
+            _shutil.rmtree(gen_dir, ignore_errors=True)
+            return result
+
+        ptr_tmp = _YARA_DIR / f".active.{_os.getpid()}.tmp"
+        ptr_tmp.write_text(gen_name, encoding="utf-8")
+        _os.replace(str(ptr_tmp), str(_YARA_ACTIVE_FILE))
+        log(f"  Published {extracted} rule file(s) as {gen_name}.")
+
+        # 8. Freshness metadata — WHAT was installed and WHEN we installed it
+        #    are different facts, so they are stored separately.
+        now = datetime.utcnow().isoformat()
+        con = _open_db()
+        con.execute("INSERT OR REPLACE INTO meta VALUES ('yara_version', ?)", (tag,))
+        con.execute("INSERT OR REPLACE INTO meta VALUES ('yara_last_update', ?)", (now,))
+        con.commit()
+        con.close()
+
+        # Legacy .version file — still read by older UI code paths.
+        try:
+            (_YARA_DIR / ".version").write_text(tag, encoding="utf-8")
+        except Exception:
+            pass
+
+        # 9. Best-effort cleanup AFTER the flip.  A scan still reading an old
+        #    generation keeps working; anything we cannot delete is inert.
+        for child in _YARA_DIR.iterdir():
+            try:
+                if child.is_dir() and child != gen_dir:
+                    if child.name.startswith("yara-forge-") or child.name.startswith(".staging-"):
+                        _shutil.rmtree(child, ignore_errors=True)
+                elif child.is_file() and child.suffix.lower() in (".yar", ".yara"):
+                    # Legacy flat layout — inert now that .active resolves.
+                    child.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        result["status"] = "updated"
+        log(f"Done.  YARA rules updated to {tag}.")
+
+        if notify:
+            _fire_post_update_hooks(("rules",))
+
+        return result
+
+    except Exception as exc:
+        result["error"] = str(exc)
+        log(f"[ERROR] YARA update failed: {exc}")
+        return result
+    finally:
+        if tmp_zip is not None:
+            try:
+                tmp_zip.unlink(missing_ok=True)
+            except Exception:
+                pass
+        if staging is not None:
+            _shutil.rmtree(staging, ignore_errors=True)
 
 
 # ── run_update (callable from guardian_view) ──────────────────────────────────
@@ -666,15 +1149,12 @@ def main():
         import_nsrl(args.nsrl, on_progress=log)
 
     mode = "full" if args.full else "recent"
-    fetch_malwarebazaar(mode=mode, on_progress=log)
-
-    # Fire registered post-update hooks (e.g. guardian_engine.reload_signatures).
+    # The importers fire their own domain-scoped post-update hooks on success.
     # Using the callback registry avoids importing ui.core.guardian_engine from
     # a tools module, which was the root cause of the circular import.
-    _fire_post_update_hooks()
+    fetch_malwarebazaar(mode=mode, on_progress=log)
 
 
 if __name__ == "__main__":
-    # Allow running from project root without installing package
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    # sys.path is bootstrapped at the top of this module (see _BLOOM_PATH block)
     main()

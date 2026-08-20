@@ -413,6 +413,144 @@ _autonomous_process_action(pid, exe_path, action)
 
 ---
 
+## Intelligence Refresh (v1.12)
+
+Three consumers hold intelligence in RAM and would otherwise serve stale data
+until their process restarts. `tools/update_intelligence` owns a **domain-scoped**
+post-update hook registry; `ui/core/intel_hooks.register_intel_consumers()` wires
+them up, eagerly, once per process.
+
+| Consumer | Domain | Refresh call | What staleness actually costs |
+|---|---|---|---|
+| `guardian_engine._scanner` (module singleton) | `hashes` | `reload_signatures()` → `_scanner.reload()` | No missed detections — `scan_file()` tier 3 falls back to a live `intel_db.lookup_hash()`. Cost is a SQLite round-trip per file instead of the O(1) RAM-set hit. |
+| every live `ProcessMonitor` | `hashes` | `process_monitor.reload_all_known_bad()` (weak registry of live instances) | **Real blind spot.** The WMI thread opens its SQLite connection once at start-up and only if the DB already exists, so on a fresh install `con` stays `None` for the thread's life. With an empty RAM set that monitor detects nothing until the service restarts. |
+| `network_monitor._ip_check_cache` | `ips` | `network_monitor.clear_ip_cache()` | **Real ~10-minute miss window.** Negative per-IP verdicts are memoised with no fallback and only swept every `_CACHE_RESET_POLLS` polls. |
+
+YARA needs no hook — `yara_engine._compile()` re-reads the rule files on every
+scan. `intel_db` queries live and caches no rows.
+
+**Hook semantics.** A fired hook means *"local intelligence in domain D may have
+changed; refresh your in-memory copy"* — never *"the feed update succeeded"*.
+Each hook is isolated in its own `try/except`, so one failing reload cannot
+suppress the others. Importers take `notify=`: a direct caller (Update Center
+button, CLI) fires its own domain after committing; a batch updater passes
+`notify=False` and fires exactly one notification phase for the union of domains
+that actually changed.
+
+### Scheduled updates (v1.12)
+
+`ui/core/intel_updater.py` owns the refresh cycle. Three feeds are automated —
+`malwarebazaar` (hashes), `c2` (ips), `yara` (rules); NSRL, ClamAV, K2 and
+Speakeasy stay manual by design.
+
+**One execution path.** `run_updates(feeds, force, owner)` holds all selection,
+locking and backoff semantics. The scheduler thread, the service's
+`RUN_INTEL_UPDATE` command and every UI button reach it — the UI through
+`request_update()`, which decides service-vs-local so two surfaces can never
+disagree about who writes.
+
+**One writer, enforced inside the updater.** `intelligence/.update.lock` is
+created `O_CREAT|O_EXCL` carrying the owner's PID *and* process creation time.
+A lock is never stolen on age alone — an import can legitimately outrun any
+timeout, and stealing from a live owner produces exactly the two-writer state
+the design forbids:
+
+| Lock state | Result |
+|---|---|
+| acquired | proceed |
+| owner demonstrably alive | `already_running` |
+| owner demonstrably dead (or PID recycled — creation time differs) | reclaim, retry once |
+| ownership cannot be established | `already_running` (conservative) |
+
+A maximum lock age exists only as a crash-recovery backstop for the last row.
+The updater also re-checks service ownership immediately before the first write:
+a caller that probed at start-up cannot close the race, because the service may
+have started in between.
+
+**Per-feed status, never a single verdict.** Each feed reports `updated`,
+`unchanged`, `skipped`, `failed` or `backoff`; the batch derives
+`updated`/`unchanged`/`partial`/`failed`/`skipped` from them. A feed that raises
+is caught and marked failed without killing the batch.
+
+**Freshness never advances on failure.** Both importers write their meta row in
+the same transaction as the data and return before that write on every failure
+path, so a timestamp means "refreshed or positively confirmed current". Backoff
+state (`fail_count`, `next_retry`, `last_error`, `last_status`) lives in the
+`meta` table so a service restart cannot reset the counter and hammer a failing
+feed. HTTP 401/403 is classified `auth_required` and backs off further than a
+transient timeout.
+
+**Time frame.** All freshness arithmetic uses naive UTC (`_utcnow()`), matching
+what the importers stamp. Mixing local time in makes ages wrong by the UTC
+offset — west of UTC every fresh stamp reads as a future timestamp and clamps to
+"age 0" permanently.
+
+**YARA generations.** `download_yara_community()` publishes each download as an
+immutable `rules/community/<generation>/` directory and switches to it by
+replacing the `.active` pointer file — a single atomic operation on Windows.
+`yara_engine.active_community_dir()` resolves it, falling back to the flat
+legacy layout. This matters because `_compile()` re-reads the rule directory on
+every scan: the previous implementation deleted the live rules first and
+extracted one file at a time, so a scan starting in that window compiled a
+partial or empty rule set. A failed or corrupt download now leaves the previous
+generation live and untouched.
+
+The staging directory is created with `os.mkdir()` (never `tempfile.mkdtemp()`,
+which produces a DACL with no inherited ACEs) and its DACL is checked before the
+pointer flip — otherwise a generation published by LocalService is readable only
+by LocalService, and `yara_engine` reports it as "no rules" with no error. See
+docs/WINDOWS_SERVICE.md for the measured ACL comparison.
+
+---
+
+### Intelligence posture (v1.12)
+
+`intel_updater.get_posture()` is the single source of truth for the Dashboard
+headline. It deliberately combines two different questions:
+
+- **Freshness** — when did this feed last successfully refresh? (`get_staleness`)
+- **Usability** — can the engine actually load what is on disk? (`get_usability`)
+
+| State | Condition |
+|---|---|
+| `current` | every enabled feed usable and within its thresholds |
+| `stale` | data exists and is usable, but a feed is past `intel_stale_days` |
+| `update_required` | an enabled feed never populated, **or** has no usable data despite what its metadata says |
+| `unavailable` | the intelligence store itself cannot be read |
+
+The second half of `update_required` is the important one. Freshness metadata
+describes the *download*: a YARA generation published with a non-inheriting ACL
+reads as perfectly fresh while `yara_engine` reports zero rules and silently
+stops contributing to scans. Usability evidence is per feed — malicious row
+count, blocklist row count, compiled rule-file count — so a feed cannot report
+healthy while the engine behind it has nothing to work with.
+
+Stale intelligence degrades the headline but never claims zero protection: the
+hash tiers keep working on what is already stored. The Windows security score is
+left as the number it is, but the posture card's colour is clamped so a green
+"92/100" cannot sit above a degraded intelligence layer.
+
+---
+
+### Journaling: WAL (v1.12)
+
+`threat_db.sqlite` is opened `journal_mode=WAL` by `update_intelligence._open_db()`
+(the writer side — journal mode is a persistent property of the file, so one write
+connection converts it and every later reader inherits it).
+
+Measured, not assumed: under the previous rollback journal a COMMIT needs an
+EXCLUSIVE lock, so a *reader* holding an open read transaction blocks the writer —
+the commit fails with `database is locked` once `busy_timeout` expires. That is
+exactly the v1.12 access pattern (service updating in the background while the UI
+holds one of `intel_db`'s long-lived per-thread connections). Under WAL the same
+commit lands in ~1 ms. The reverse direction was never the problem: a write
+transaction only holds RESERVED, which readers may cross.
+
+Trade-off accepted: under WAL every process that *reads* the DB also needs write
+permission on `intelligence/` for the `-wal`/`-shm` sidecars.
+
+---
+
 ## Behavioral Analysis Architecture
 
 ### Speakeasy (Stage 4) — Subprocess Design

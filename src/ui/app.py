@@ -136,6 +136,18 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
         self._build()
         self._apply_bg_image()   # apply stored background image if any
 
+        # Wire in-memory intelligence consumers to the post-update hooks so an
+        # Update Center run refreshes them without restarting the app.
+        try:
+            from ui.core.intel_hooks import register_intel_consumers
+            register_intel_consumers()
+        except Exception:
+            pass   # non-fatal: updates still work, they just need a restart
+
+        # Fallback scheduler for installs with no Windows Service.  Deferred so
+        # it never delays first paint.
+        self.after(5000, self._maybe_auto_update_intel)
+
         if initial_scan_path and Path(initial_scan_path).exists():
             self._navigate("scan")
             self._views["scan"].load_paths([initial_scan_path])
@@ -420,6 +432,43 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
                 pass
 
         _walk(self)
+
+    def _maybe_auto_update_intel(self):
+        """Refresh stale intelligence at launch when no service is running.
+
+        The service is the designated writer whenever it exists, so this only
+        covers source installs that never registered it.  The ownership test is
+        repeated inside intel_updater immediately before any write — checking
+        here as well just avoids spawning a thread we know will stand down.
+        """
+        from ui.core import settings as _cfg
+        if not (_cfg.get("intel_auto_update") and _cfg.get("intel_update_on_launch")):
+            return
+
+        import threading as _th
+
+        def _work():
+            try:
+                from ui.core import service_client as _svc
+                if _svc.is_service_running():
+                    return                      # the service owns updates
+                from ui.core import intel_updater as _iu
+                if not _iu.is_anything_due():
+                    return
+                result = _iu.run_updates(owner="ui")
+                status = result.get("status", "")
+                if status in ("skipped", "already_running"):
+                    return
+                failed = [n for n, i in (result.get("feeds") or {}).items()
+                          if i.get("status") == "failed"]
+                msg = (f"Intelligence update — failed: {', '.join(failed)}"
+                       if failed else f"Intelligence update: {status}")
+                if self.winfo_exists():
+                    self.after(0, lambda m=msg: self._set_status(m))
+            except Exception:
+                pass    # never let a background refresh break the UI
+
+        _th.Thread(target=_work, daemon=True, name="IntelLaunchUpdate").start()
 
     def _set_status(self, text: str):
         self.after(0, lambda t=text: self._status_lbl.configure(text=t))

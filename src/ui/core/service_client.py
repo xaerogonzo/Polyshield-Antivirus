@@ -96,6 +96,27 @@ def block_ip(ip: str) -> tuple[bool, str]:
     return bool(result.get("ok")), result.get("error", "")
 
 
+def get_intel_status() -> dict | None:
+    """Return the service's intelligence freshness + updater state, or None."""
+    return _send_cmd("GET_INTEL_STATUS")
+
+
+def run_intel_update(feeds: list[str] | None = None, force: bool = True) -> tuple[bool, str]:
+    """Ask the service to refresh intelligence now.
+
+    The service starts the run on a worker thread and answers immediately, so
+    this returns as soon as the run is accepted — not when it finishes.  Watch
+    for the intel_update event (or poll GET_INTEL_STATUS) for the outcome.
+    Returns (accepted, status_or_error).
+    """
+    result = _send_cmd("RUN_INTEL_UPDATE", feeds=feeds, force=force)
+    if result is None:
+        return False, "Service not reachable"
+    if not result.get("ok"):
+        return False, result.get("error", "Service rejected the request")
+    return True, result.get("status", "started")
+
+
 def subscribe_events(callback, stop_flag: threading.Event | None = None):
     """
     Open a persistent SUBSCRIBE connection and call callback(event_dict) for each

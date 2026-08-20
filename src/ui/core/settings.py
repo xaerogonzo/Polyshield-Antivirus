@@ -112,6 +112,22 @@ _DEFAULTS: dict = {
     "display_log_monospace":      True,   # use Consolas for log/output text
     # Widget scale — requires restart to apply
     "display_widget_scale":       1.0,    # float; passed to ctk.set_widget_scaling()
+
+    # ── Threat intelligence auto-update (v1.12) ───────────────────────────────
+    "intel_auto_update":          True,   # master switch for the scheduler
+    # Cadence: how often the scheduler considers a feed due for a refresh.
+    "intel_update_interval_hours": 12,
+    # Freshness thresholds are SEPARATE from cadence — they drive UI warnings,
+    # not scheduling.  aging = amber, stale = red.
+    "intel_aging_days":           3,
+    "intel_stale_days":           7,
+    # Which feeds the scheduler is allowed to touch.  NSRL, ClamAV, K2 and
+    # Speakeasy stay manual by design (huge local imports, privileged paths,
+    # or package installs) — see docs/USAGE.md.
+    "intel_auto_feeds":           ["malwarebazaar", "c2", "yara"],
+    # Fallback for installs with no Windows Service: update once at launch.
+    "intel_update_on_launch":     True,
+    "intel_last_auto_run":        "",     # ISO timestamp of the last scheduler run
 }
 
 _cache: dict | None = None

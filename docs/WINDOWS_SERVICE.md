@@ -56,6 +56,8 @@ PolyShield ──(TCP 127.0.0.1:52614)──► PolyShield Service
 | `ALLOW_HASH` | UI → Service | Add an MD5 to the session process-monitor allow-list (user restored a file) |
 | `START_PROCESS_MONITOR` | UI → Service | Start the WMI process creation monitor (if stopped) |
 | `STOP_PROCESS_MONITOR` | UI → Service | Stop the WMI process creation monitor |
+| `GET_INTEL_STATUS` | UI → Service | Per-feed intelligence freshness, updater state, last run result (v1.12) |
+| `RUN_INTEL_UPDATE` | UI → Service | Refresh intelligence now; answers immediately with `started` or `already_running` (v1.12) |
 
 **Push events (server → all SUBSCRIBE clients):**
 
@@ -66,6 +68,7 @@ PolyShield ──(TCP 127.0.0.1:52614)──► PolyShield Service
 | `network_event` | New C2 / unsigned-outbound connection | `connections, alerts` |
 | `heartbeat` | Every 30 s (keepalive) | — |
 | `process_threat` | WMI process creation monitor found a threat | `pid, name, path, reason, level, time, killed, quarantined` |
+| `intel_update` | An intelligence refresh finished (scheduled or on-demand) | `status, summary, feeds, error, time` |
 
 ### Token Authentication
 
@@ -289,6 +292,81 @@ scripts\service\setup_service.bat /remove
 ```
 
 Or from `scripts\manage.bat` → option [6] Windows Service → Uninstall.
+
+---
+
+## Intelligence Updater (v1.12)
+
+The service hosts `IntelUpdaterThread` (started in `SvcDoRun` alongside the
+network and process monitors, stopped in `_shutdown`). **Whenever the service is
+running it is the designated intelligence writer** — a UI-side run checks
+ownership and stands down, so feeds are never fetched twice.
+
+`RUN_INTEL_UPDATE` hands off to a worker thread and answers immediately, because
+a full refresh takes far longer than the client's socket timeout. The worker
+enters the *same* `intel_updater.run_updates()` the scheduler uses — there is no
+separate code path for manual runs — and both emit the same `intel_update`
+event via `build_update_event()`.
+
+Two guards, doing different jobs:
+
+- `_intel_run_lock` (service-local) lets the service answer `already_running`
+  immediately instead of spawning a thread that would only discover the lock.
+- `intelligence/.update.lock` (cross-process, PID + process creation time) is
+  the actual single-writer guarantee, and covers the UI and CLI as well.
+
+Shutdown is bounded: `stop()` sets an event, the scheduler loop sleeps in ≤5 s
+slices, and every feed's HTTP call carries its own timeout, so a stop during a
+download cannot stall the SCM.
+
+Verify a live install with:
+
+```powershell
+# after starting the service
+kicomav_env\Scripts\python.exe -c "import sys; sys.path.insert(0,'src'); from ui.core import service_client as s; print(s.get_intel_status())"
+Get-Content C:\ProgramData\PolyShield\service.log -Tail 30
+```
+
+This is also the LocalService write-permission test — it is the first time the
+service writes `intelligence/threat_db.sqlite`. If it fails with a permission
+error, extend the `icacls` block in `scripts/service/setup_service.bat`.
+
+---
+
+## Gotcha: `tempfile.mkdtemp()` Publishes Unreadable Directories (v1.12)
+
+Found during the first live service run of the intelligence updater, and worth
+knowing for **any** file the service creates for the UI to read.
+
+`tempfile.mkdtemp()` deliberately hardens the directory it creates. Measured on
+`rules/community/`:
+
+| Created by | Inherited ACEs | Effective access |
+|---|---|---|
+| `tempfile.mkdtemp()` | **0** | `SYSTEM`, `Administrators`, `OWNER RIGHTS` only |
+| `os.mkdir()` | **9** | inherits, incl. `BUILTIN\Users:(RX)` |
+
+Under LocalService the owner *is* LocalService. The YARA updater staged its
+download with `mkdtemp()` and then `os.replace()`d that directory into place as
+the live rule generation — carrying the hardened ACL with it. Result: the
+service published rules that **only the service could read**.
+
+It failed silently, which is the dangerous part. `yara_engine.is_available()`
+simply returned `False` and YARA stopped contributing to scans; nothing logged an
+error, and `GET_INTEL_STATUS` still reported the feed `fresh`, because freshness
+metadata describes the *download*, not readability.
+
+**Rules of thumb:**
+
+- Never stage with `tempfile.mkdtemp()` anything that will be promoted into
+  shared application data. Use `os.mkdir()` so the parent's ACL is inherited by
+  construction (`update_intelligence._make_staging_dir`).
+- Before publishing, assert the DACL is not protected
+  (`update_intelligence._dacl_is_protected` → `SE_DACL_PROTECTED`). A protected
+  DACL aborts the publish and leaves the previous generation live.
+- When a service-written artefact "just isn't found" by the UI, check the ACL
+  before you check the code — `icacls <path>` from the user account, not from an
+  elevated prompt, which will happily read it either way.
 
 ---
 

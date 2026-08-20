@@ -43,6 +43,7 @@ Commercial AV products have telemetry, ad-ware components, and they replace Defe
 - ⚖️ **Dispute resolution** — per-engine false-positive tracking + manual override system
 - 🎚️ **Sensitivity profiles for Guardian AI** — Conservative / Balanced / Power, plus per-pattern toggles
 - 🐉 **Behavioral analysis** — optional Speakeasy PE emulation for unknown executables
+- 🔄 **Self-updating threat intelligence** — MalwareBazaar hashes, C2 blocklists and YARA rules refresh on a schedule; the Dashboard tells you when they are going stale, and says so plainly if a feed downloaded but isn't usable
 - 🔐 **Quarantine kept under Defender's watch** — second line of defense by design (not by accident)
 - 🚀 **No telemetry, no cloud-by-default, no API keys required**
 

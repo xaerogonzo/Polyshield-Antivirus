@@ -640,11 +640,16 @@ class SettingsView(ctk.CTkScrollableFrame):
             text_color="#50fa7b" if _sx.is_registered() else "#888888")
         self._ctx_status_lbl.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 10))
 
-        # ── About ──
+        # ── Threat Intelligence Updates ──
         self._divider(row=n + 21)
-        self._section("About", row=n + 22)
+        self._section("Threat Intelligence Updates", row=n + 22)
+        self._build_intel_update_section(row=n + 23)
+
+        # ── About ──
+        self._divider(row=n + 24)
+        self._section("About", row=n + 25)
         about = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
-        about.grid(row=n + 23, column=0, sticky="ew", padx=24, pady=(4, 20))
+        about.grid(row=n + 26, column=0, sticky="ew", padx=24, pady=(4, 20))
         about.grid_columnconfigure(0, weight=1)
         for i, text in enumerate([
             "PolyShield Security Suite",
@@ -655,6 +660,247 @@ class SettingsView(ctk.CTkScrollableFrame):
                          text_color=theme.color("dim"), anchor="w").grid(
                 row=i, column=0, sticky="w", padx=16,
                 pady=(10 if i == 0 else 2, 10 if i == 2 else 2))
+
+    # ── Threat Intelligence Updates ───────────────────────────────────────────
+
+    _INTEL_FEED_LABELS = {
+        "malwarebazaar": ("MalwareBazaar hashes",
+                          "Recent malware MD5s from abuse.ch (the 'recent' list only)"),
+        "c2":            ("C2 IP blocklist",
+                          "Feodo Tracker + ThreatFox command-and-control addresses"),
+        "yara":          ("YARA community rules",
+                          "YARA Forge core rule package from GitHub releases"),
+    }
+
+    _INTEL_INTERVALS = ["6", "12", "24", "48"]
+
+    def _build_intel_update_section(self, row: int):
+        card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
+        card.grid(row=row, column=0, sticky="ew", padx=24, pady=4)
+        card.grid_columnconfigure(0, weight=1)
+
+        # Master switch
+        top = ctk.CTkFrame(card, fg_color="transparent")
+        top.grid(row=0, column=0, sticky="ew", padx=16, pady=(14, 2))
+        top.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(top, text="Update intelligence automatically", anchor="w",
+                     font=ctk.CTkFont(size=13, weight="bold")).grid(
+            row=0, column=0, sticky="w")
+        self._intel_auto_switch = ctk.CTkSwitch(
+            top, text="", width=46,
+            command=lambda: self._toggle_intel_auto())
+        self._intel_auto_switch.grid(row=0, column=1, sticky="e")
+        if cfg.get("intel_auto_update"):
+            self._intel_auto_switch.select()
+        else:
+            self._intel_auto_switch.deselect()
+
+        ctk.CTkLabel(card,
+                     text=("The Windows Service refreshes feeds on a schedule when it is "
+                           "running; otherwise PolyShield checks once at launch. "
+                           "NSRL, ClamAV, K2 and Speakeasy stay manual."),
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
+                     anchor="w", justify="left", wraplength=580).grid(
+            row=1, column=0, sticky="w", padx=16, pady=(0, 8))
+
+        # Cadence + thresholds
+        knobs = ctk.CTkFrame(card, fg_color="transparent")
+        knobs.grid(row=2, column=0, sticky="ew", padx=16, pady=(0, 8))
+
+        ctk.CTkLabel(knobs, text="Check every", font=ctk.CTkFont(size=12)).grid(
+            row=0, column=0, sticky="w")
+        self._intel_interval = ctk.CTkOptionMenu(
+            knobs, values=self._INTEL_INTERVALS, width=70,
+            command=self._save_intel_interval)
+        self._intel_interval.set(str(int(cfg.get("intel_update_interval_hours") or 12)))
+        self._intel_interval.grid(row=0, column=1, padx=(8, 4))
+        ctk.CTkLabel(knobs, text="hours", font=ctk.CTkFont(size=12),
+                     text_color=theme.color("subtext")).grid(row=0, column=2, padx=(0, 20))
+
+        # Warning thresholds are a separate concept from cadence: how often we
+        # CHECK is not the same question as when the UI should start worrying.
+        ctk.CTkLabel(knobs, text="Warn after", font=ctk.CTkFont(size=12)).grid(
+            row=0, column=3, sticky="w")
+        self._intel_aging = ctk.CTkEntry(knobs, width=44,
+                                         font=ctk.CTkFont(size=12))
+        self._intel_aging.insert(0, str(int(cfg.get("intel_aging_days") or 3)))
+        self._intel_aging.grid(row=0, column=4, padx=(8, 4))
+        ctk.CTkLabel(knobs, text="days,  stale after", font=ctk.CTkFont(size=12),
+                     text_color=theme.color("subtext")).grid(row=0, column=5)
+        self._intel_stale = ctk.CTkEntry(knobs, width=44,
+                                         font=ctk.CTkFont(size=12))
+        self._intel_stale.insert(0, str(int(cfg.get("intel_stale_days") or 7)))
+        self._intel_stale.grid(row=0, column=6, padx=(8, 4))
+        ctk.CTkLabel(knobs, text="days", font=ctk.CTkFont(size=12),
+                     text_color=theme.color("subtext")).grid(row=0, column=7, padx=(0, 8))
+        ctk.CTkButton(knobs, text="Save", width=60, height=26,
+                      font=ctk.CTkFont(size=11),
+                      fg_color=theme.color("input_bg"),
+                      hover_color=theme.color("input_hover"),
+                      command=self._save_intel_thresholds).grid(row=0, column=8)
+
+        # Per-feed toggles + live status
+        self._intel_feed_vars = {}
+        self._intel_feed_status = {}
+        enabled = set(cfg.get("intel_auto_feeds") or [])
+
+        feeds_frame = ctk.CTkFrame(card, fg_color="transparent")
+        feeds_frame.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 6))
+        feeds_frame.grid_columnconfigure(1, weight=1)
+
+        for i, (key, (label, desc)) in enumerate(self._INTEL_FEED_LABELS.items()):
+            var = ctk.StringVar(value="1" if key in enabled else "0")
+            self._intel_feed_vars[key] = var
+            ctk.CTkCheckBox(feeds_frame, text="", width=24, variable=var,
+                            onvalue="1", offvalue="0",
+                            command=self._save_intel_feeds).grid(
+                row=i * 2, column=0, sticky="w", pady=(4, 0))
+            ctk.CTkLabel(feeds_frame, text=label, anchor="w",
+                         font=ctk.CTkFont(size=12, weight="bold")).grid(
+                row=i * 2, column=1, sticky="w", pady=(4, 0))
+            status = ctk.CTkLabel(feeds_frame, text="—", anchor="e",
+                                  font=ctk.CTkFont(size=11),
+                                  text_color=theme.color("subtext"))
+            status.grid(row=i * 2, column=2, sticky="e", padx=(8, 0))
+            self._intel_feed_status[key] = status
+            ctk.CTkLabel(feeds_frame, text=desc, anchor="w",
+                         font=ctk.CTkFont(size=11),
+                         text_color=theme.color("subtext")).grid(
+                row=i * 2 + 1, column=1, columnspan=2, sticky="w", pady=(0, 2))
+
+        # Run now + last run
+        foot = ctk.CTkFrame(card, fg_color="transparent")
+        foot.grid(row=4, column=0, sticky="ew", padx=16, pady=(2, 14))
+        foot.grid_columnconfigure(1, weight=1)
+
+        self._intel_run_btn = ctk.CTkButton(
+            foot, text="Run now", width=110, height=30,
+            fg_color=theme.color("accent"), hover_color=theme.color("accent_hover"),
+            command=self._run_intel_now)
+        self._intel_run_btn.grid(row=0, column=0, sticky="w")
+
+        self._intel_last_lbl = ctk.CTkLabel(
+            foot, text="", anchor="w", font=ctk.CTkFont(size=11),
+            text_color=theme.color("subtext"))
+        self._intel_last_lbl.grid(row=0, column=1, sticky="w", padx=(12, 0))
+
+        # SettingsView has no status callback — the house convention is a
+        # per-section feedback label (see _vt_feedback / _clam_feedback).
+        self._intel_feedback = ctk.CTkLabel(
+            card, text="", anchor="w", font=ctk.CTkFont(size=11),
+            wraplength=580, justify="left")
+        self._intel_feedback.grid(row=5, column=0, sticky="w", padx=16, pady=(0, 12))
+
+        self._refresh_intel_settings_status()
+
+    def _intel_say(self, msg: str, colour: str = "") -> None:
+        try:
+            self._intel_feedback.configure(
+                text=msg, text_color=colour or theme.color("subtext"))
+        except Exception:
+            pass
+
+    def _refresh_intel_settings_status(self):
+        """Repaint the per-feed status labels from current freshness."""
+        try:
+            from ui.core import intel_updater as iu
+            state = iu.get_staleness()
+        except Exception:
+            return
+        colours = {"fresh": "#50fa7b", "aging": "#ffb86c", "stale": "#ff5555",
+                   "never": "#ff5555", "auth_required": "#ffb86c"}
+        for key, lbl in getattr(self, "_intel_feed_status", {}).items():
+            info = state.get(key, {})
+            st = info.get("state", "")
+            age = info.get("age_hours")
+            when = ("never" if age is None
+                    else ("just now" if age < 1
+                          else (f"{int(age)}h ago" if age < 48 else f"{int(age / 24)}d ago")))
+            text = f"{st}  ·  {when}"
+            if info.get("last_error"):
+                text += f"  ·  {info['last_error'][:34]}"
+            try:
+                lbl.configure(text=text, text_color=colours.get(st, theme.color("subtext")))
+            except Exception:
+                pass
+        last = cfg.get("intel_last_auto_run") or ""
+        if hasattr(self, "_intel_last_lbl"):
+            try:
+                self._intel_last_lbl.configure(
+                    text=f"Last run: {last.replace('T', ' ')} UTC" if last else "Never run")
+            except Exception:
+                pass
+
+    def _toggle_intel_auto(self):
+        cfg.set_value("intel_auto_update", bool(self._intel_auto_switch.get()))
+        on = bool(self._intel_auto_switch.get())
+        self._intel_say(
+            f"Automatic updates {'enabled' if on else 'disabled'}"
+            + (" — restart the service for it to take effect" if on else ""),
+            "#50fa7b" if on else "#ffb86c")
+
+    def _save_intel_interval(self, value: str):
+        try:
+            cfg.set_value("intel_update_interval_hours", int(value))
+            self._intel_say(f"Checking every {value} hours.", "#50fa7b")
+        except ValueError:
+            pass
+
+    def _save_intel_thresholds(self):
+        try:
+            aging = int(self._intel_aging.get().strip())
+            stale = int(self._intel_stale.get().strip())
+        except ValueError:
+            self._intel_say("Thresholds must be whole numbers of days.", "#ff5555")
+            return
+        if aging < 1 or stale < 1:
+            self._intel_say("Thresholds must be at least 1 day.", "#ff5555")
+            return
+        if stale < aging:
+            # Silently reordering would hide a mistake; say what is wrong.
+            self._intel_say("'Stale after' must be at least as many days as "
+                            "'warn after'.", "#ff5555")
+            return
+        cfg.set_value("intel_aging_days", aging)
+        cfg.set_value("intel_stale_days", stale)
+        self._intel_say(f"Saved — warn after {aging}d, stale after {stale}d.", "#50fa7b")
+        self._refresh_intel_settings_status()
+
+    def _save_intel_feeds(self):
+        feeds = [k for k, v in self._intel_feed_vars.items() if v.get() == "1"]
+        cfg.set_value("intel_auto_feeds", feeds)
+        self._intel_say("Auto-updated feeds: " + (", ".join(feeds) if feeds else "none"),
+                        "#50fa7b" if feeds else "#ffb86c")
+
+    def _run_intel_now(self):
+        self._intel_run_btn.configure(state="disabled", text="Running…")
+        self._intel_say("Updating threat intelligence…")
+
+        def _work():
+            try:
+                from ui.core import intel_updater as iu
+                result = iu.request_update(force=True)
+            except Exception as exc:
+                result = {"status": "failed", "error": str(exc), "feeds": {}}
+            if self.winfo_exists():
+                self.after(0, self._on_intel_now_done, result)
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _on_intel_now_done(self, result: dict):
+        self._intel_run_btn.configure(state="normal", text="Run now")
+        feeds = result.get("feeds") or {}
+        if result.get("via") == "service" or result.get("status") == "started":
+            self._intel_say("Update started by the PolyShield service…", "#8be9fd")
+            self.after(4000, self._refresh_intel_settings_status)
+            return
+        # Report per feed — an overall "done" hides a feed that returned 403.
+        parts = [f"{n}: {i.get('status')}" for n, i in feeds.items()]
+        summary = "; ".join(parts) if parts else result.get("error", "nothing to do")
+        failed = [n for n, i in feeds.items() if i.get("status") == "failed"]
+        self._intel_say(summary, "#ff5555" if failed else "#50fa7b")
+        self._refresh_intel_settings_status()
 
     def _section(self, title: str, row: int):
         ctk.CTkLabel(self, text=title,

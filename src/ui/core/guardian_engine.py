@@ -634,6 +634,29 @@ def reload_signatures():
         _scanner = _EnhancedScanner()
 
 
+def register_intel_hooks() -> bool:
+    """Register reload_signatures() as this process's "hashes" post-update hook.
+
+    Idempotent, and safe to call from both the eager start-up paths (App
+    __init__, the service's SvcDoRun) and the lazy first-scan path in
+    scan_async().  Eager registration matters for the service: it can run for
+    days without ever entering scan_async(), and an unregistered hook means
+    intelligence updates never reach its in-RAM hash set.
+
+    Returns True once registration has succeeded in this process.
+    """
+    global _post_update_hook_registered
+    if _post_update_hook_registered:
+        return True
+    try:
+        from tools.update_intelligence import register_post_update_hook
+        register_post_update_hook(reload_signatures, domains=("hashes",))
+        _post_update_hook_registered = True
+    except Exception:
+        pass   # update_intelligence not on path (standalone guardian env)
+    return _post_update_hook_registered
+
+
 # ── Async scan ────────────────────────────────────────────────────────────────
 
 def scan_async(
@@ -662,16 +685,9 @@ def scan_async(
                             patterns by default).
     """
     def _run():
-        # Lazily register reload_signatures as a post-update hook so that
-        # update_intelligence can notify us without importing this module.
-        global _post_update_hook_registered
-        if not _post_update_hook_registered:
-            try:
-                from tools.update_intelligence import register_post_update_hook
-                register_post_update_hook(reload_signatures)
-                _post_update_hook_registered = True
-            except Exception:
-                pass   # update_intelligence not on path (standalone guardian env)
+        # Fallback registration for hosts that never called register_intel_hooks()
+        # at start-up.  Idempotent — a no-op once the eager path has run.
+        register_intel_hooks()
 
         if not is_available():
             on_done(0)

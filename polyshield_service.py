@@ -136,6 +136,15 @@ class PolyShieldService(win32serviceutil.ServiceFramework):
         # Process monitor
         self._proc_monitor      = None
 
+        # Intelligence updater (scheduler thread + on-demand runs)
+        self._intel_updater     = None
+        self._intel_last_result: dict = {}
+        # Guards the on-demand worker thread.  Not the real concurrency
+        # guarantee — intel_updater's own process/file locks are — but it lets
+        # the service answer "already_running" immediately instead of spawning a
+        # thread that would only discover the lock and exit.
+        self._intel_run_lock    = threading.Lock()
+
         # Server socket
         self._server_sock: socket.socket | None = None
 
@@ -170,6 +179,8 @@ class PolyShieldService(win32serviceutil.ServiceFramework):
             self._maybe_start_watcher()
             self._start_network_monitor()
             self._start_process_monitor()
+            self._register_intel_hooks()
+            self._start_intel_updater()
 
             servicemanager.LogMsg(
                 servicemanager.EVENTLOG_INFORMATION_TYPE,
@@ -307,6 +318,19 @@ class PolyShieldService(win32serviceutil.ServiceFramework):
                     self._send(conn, {"ok": True, "process_monitor_running": True})
                 else:
                     self._send(conn, {"ok": False, "error": "Process monitor not available"})
+
+            elif cmd == "GET_INTEL_STATUS":
+                self._send(conn, self._build_intel_status())
+
+            elif cmd == "RUN_INTEL_UPDATE":
+                feeds = msg.get("feeds") or None
+                force = bool(msg.get("force", True))
+                started, reason = self._start_intel_update(feeds, force)
+                self._send(conn, {
+                    "ok": True,
+                    "status": "started" if started else "already_running",
+                    "error": "" if started else reason,
+                })
 
             elif cmd == "STOP_PROCESS_MONITOR":
                 if self._proc_monitor is not None:
@@ -473,6 +497,9 @@ class PolyShieldService(win32serviceutil.ServiceFramework):
             "folders_watched":        folders,
             "events_count":           len(self._events),
             "uptime_seconds":         int(time.time() - self._start_time),
+            "intel_updater_running":  (self._intel_updater is not None
+                                       and self._intel_updater.is_running()),
+            "intel_last_run":         cfg.get("intel_last_auto_run") or "",
         }
 
     # ── Network monitor ───────────────────────────────────────────────────────
@@ -485,6 +512,89 @@ class PolyShieldService(win32serviceutil.ServiceFramework):
             log.info("Network monitor started.")
         except Exception as exc:
             log.warning(f"Network monitor unavailable: {exc}")
+
+    # ── Intelligence updater ──────────────────────────────────────────────────
+
+    def _start_intel_updater(self):
+        """Host the scheduled intelligence refresh.
+
+        The service is the designated writer whenever it is running: a UI-side
+        run checks ownership and stands down, so this thread is normally the
+        only thing refreshing feeds on the machine.
+        """
+        try:
+            from ui.core.intel_updater import IntelUpdaterThread
+            self._intel_updater = IntelUpdaterThread(
+                push_event=self._push_event, owner="service",
+            )
+            if self._intel_updater.start():
+                log.info("Intelligence updater started.")
+            else:
+                log.info("Intelligence updater idle (disabled in settings).")
+        except Exception as exc:
+            log.warning(f"Intelligence updater unavailable: {exc}")
+
+    def _start_intel_update(self, feeds, force: bool) -> tuple[bool, str]:
+        """Kick off an on-demand update on a worker thread.
+
+        Enters the same run_updates() the scheduler uses — there is deliberately
+        no second code path for manual runs.  Returns (started, reason).
+        """
+        if not self._intel_run_lock.acquire(blocking=False):
+            return False, "an intelligence update is already running"
+
+        def _work():
+            try:
+                from ui.core.intel_updater import run_updates, build_update_event
+                result = run_updates(
+                    feeds=feeds, force=force, owner="service",
+                    on_progress=lambda m: log.info("  %s", m),
+                )
+                self._intel_last_result = result
+                log.info(f"Intelligence update finished: {result.get('status')}")
+                self._push_event(build_update_event(result))
+            except Exception as exc:
+                log.exception(f"On-demand intelligence update failed: {exc}")
+            finally:
+                self._intel_run_lock.release()
+
+        threading.Thread(target=_work, daemon=True, name="IntelUpdateOnDemand").start()
+        return True, ""
+
+    def _build_intel_status(self) -> dict:
+        try:
+            from ui.core import intel_updater as iu
+            last = self._intel_last_result
+            if not last and self._intel_updater is not None:
+                last = self._intel_updater.last_result
+            return {
+                "ok": True,
+                "updater_running": (self._intel_updater is not None
+                                    and self._intel_updater.is_running()),
+                "running_now":     self._intel_run_lock.locked(),
+                "feeds":           iu.get_staleness(),
+                "last_result":     last or {},
+            }
+        except Exception as exc:
+            log.warning(f"Could not build intel status: {exc}")
+            return {"ok": False, "error": str(exc)}
+
+    # ── Intelligence post-update hooks ────────────────────────────────────────
+
+    def _register_intel_hooks(self):
+        """Wire this process's in-memory intelligence consumers to the hook registry.
+
+        Must be eager.  The service can run for days without entering
+        guardian_engine.scan_async(), which is the only other place the
+        Guardian hook gets registered — so without this, a service that never
+        scanned a watched file would never see an intelligence update.
+        """
+        try:
+            from ui.core.intel_hooks import register_intel_consumers
+            wired = register_intel_consumers()
+            log.info(f"Intelligence hooks wired: {', '.join(wired) or 'none'}")
+        except Exception as exc:
+            log.warning(f"Intelligence hooks not registered: {exc}")
 
     # ── Process monitor ───────────────────────────────────────────────────────
 
@@ -693,6 +803,14 @@ class PolyShieldService(win32serviceutil.ServiceFramework):
         if self._proc_monitor is not None:
             try:
                 self._proc_monitor.stop()
+            except Exception:
+                pass
+        if self._intel_updater is not None:
+            try:
+                # stop() sets the event and joins; the loop sleeps in short
+                # slices and every feed HTTP call carries a bounded timeout, so
+                # this cannot hold up SCM shutdown indefinitely.
+                self._intel_updater.stop()
             except Exception:
                 pass
         with self._subs_lock:

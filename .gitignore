@@ -67,3 +67,6 @@ venv/
 # Added by TokenSave Manager
 build.ps1
 build.bat
+
+# UI capture output (goldens in tests/golden/ui are tracked)
+artifacts/

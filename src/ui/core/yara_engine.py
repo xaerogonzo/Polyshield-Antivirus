@@ -1,9 +1,10 @@
 """
 YARA rules engine for PolyShield.
 
-Scans files against .yar rule files in two directories:
+Scans files against .yar rule files in two places:
   - rules/user_rules/   — user-supplied custom rules
-  - rules/community/    — YARA Forge community rules (downloaded from Update Center)
+  - the live community generation — YARA Forge rules, resolved through the
+    rules/community/.active pointer (see active_community_dir below)
 
 yara-python is already in requirements.txt — no extra install needed.
 """
@@ -13,16 +14,48 @@ from pathlib import Path
 
 _USER_DIR      = Path(__file__).resolve().parents[3] / "rules" / "user_rules"
 _COMMUNITY_DIR = Path(__file__).resolve().parents[3] / "rules" / "community"
+_ACTIVE_PTR    = _COMMUNITY_DIR / ".active"
 _MAX_FILE_MB   = 50    # skip files larger than this to prevent hangs on huge binaries
 _SCAN_TIMEOUT  = 10    # seconds per file before yara raises a TimeoutError
 
 
+def active_community_dir() -> Path | None:
+    """Resolve the live community rule generation, or None if there is none.
+
+    tools.update_intelligence.download_yara_community() publishes each download
+    as an immutable generation directory and then flips the `.active` pointer
+    with a single atomic file replace.  Reading the pointer here is what makes
+    a rules update all-or-nothing for a scan: _compile() re-reads the directory
+    on every scan, so resolving to a whole generation (never a directory being
+    written into) is the invariant that matters.
+
+    Installs predating the generation layout keep loose *.yar files directly in
+    rules/community/ — that flat directory is the fallback.
+    """
+    try:
+        if _ACTIVE_PTR.is_file():
+            name = _ACTIVE_PTR.read_text(encoding="utf-8").strip()
+            if name:
+                gen = _COMMUNITY_DIR / name
+                if gen.is_dir():
+                    return gen
+    except Exception:
+        pass
+    return _COMMUNITY_DIR if _COMMUNITY_DIR.is_dir() else None
+
+
 def _all_yar_files() -> list[Path]:
-    """Collect .yar files from both user and community rule directories."""
+    """Collect .yar files from the user rules and the live community generation.
+
+    Only the resolved generation is globbed — never rules/community/ itself
+    while a pointer is in use, or superseded generations would be compiled too.
+    """
     files: list[Path] = []
-    for d in (_USER_DIR, _COMMUNITY_DIR):
-        if d.is_dir():
-            files.extend(d.rglob("*.yar"))
+    if _USER_DIR.is_dir():
+        files.extend(_USER_DIR.rglob("*.yar"))
+    community = active_community_dir()
+    if community is not None:
+        files.extend(community.rglob("*.yar"))
     return files
 
 

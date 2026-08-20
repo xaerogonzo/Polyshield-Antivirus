@@ -203,9 +203,11 @@ class ServiceView(ctk.CTkFrame):
 
             self._state_lbl.configure(
                 text="● RUNNING", text_color=_GREEN)
+            updater = "On" if status.get("intel_updater_running") else "Off"
             self._stats_lbl.configure(
                 text=f"Uptime: {h}h {m}m {s}s  |  Watcher: {watcher}  |  "
-                     f"Folders: {folders}  |  Events: {events}")
+                     f"Folders: {folders}  |  Events: {events}  |  "
+                     f"Intel updater: {updater}")
             self._crash_banner.grid_remove()
 
             self._install_btn.configure(state="disabled")
@@ -273,6 +275,41 @@ class ServiceView(ctk.CTkFrame):
                 self._add_event_row(event)
         elif ev_type == "watcher_status":
             self._update_status_async()
+        elif ev_type == "intel_update":
+            self._add_intel_row(event)
+
+    def _add_intel_row(self, event: dict):
+        """Render an intelligence refresh in the event feed.
+
+        Per-feed, not a single verdict: a run where MalwareBazaar succeeded and
+        ThreatFox returned 403 must not read as a plain success.
+        """
+        for w in self._log_scroll.winfo_children():
+            if isinstance(w, ctk.CTkLabel) and "No events" in str(w.cget("text")):
+                w.destroy()
+
+        row_idx = len(self._log_scroll.winfo_children())
+        status = str(event.get("status", ""))
+        colour = (_GREEN if status in ("updated", "unchanged")
+                  else _RED if status == "failed"
+                  else _AMBER)
+        bg = _ROW0 if row_idx % 2 == 0 else _ROW1
+
+        row_f = ctk.CTkFrame(self._log_scroll, fg_color=bg)
+        row_f.grid(row=row_idx, column=0, sticky="ew", pady=1)
+        row_f.grid_columnconfigure(0, weight=1)
+
+        summary = event.get("summary") or event.get("error") or "no feeds run"
+        ctk.CTkLabel(row_f, text=f"Intelligence — {summary}",
+                     anchor="w", font=ctk.CTkFont(size=12),
+                     text_color=colour).grid(row=0, column=0, sticky="w",
+                                             padx=10, pady=4)
+        ctk.CTkLabel(row_f, text=event.get("time", ""),
+                     font=ctk.CTkFont(size=11),
+                     text_color=theme.color("subtext")).grid(row=0, column=1, padx=8)
+        ctk.CTkLabel(row_f, text=status.upper(),
+                     font=ctk.CTkFont(size=11),
+                     text_color=colour).grid(row=0, column=2, padx=8)
 
     def _add_event_row(self, entry: dict):
         # Remove placeholder if present

@@ -1,0 +1,9 @@
+# Development / test dependencies for PolyShield.
+#
+#   kicomav_env\Scripts\pip.exe install -r requirements-dev.txt
+#   kicomav_env\Scripts\python.exe -m pytest
+#
+# Runtime dependencies live in requirements.txt — the test suite assumes those
+# are already installed in kicomav_env.
+
+pytest>=8.0

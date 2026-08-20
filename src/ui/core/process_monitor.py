@@ -21,7 +21,8 @@ invisible to this monitor. See docs/ARCHITECTURE.md — Known Limitations.
 THREAD SAFETY
 -------------
 ProcessMonitor is safe to call from any thread:
-  • start() / stop() / allow_hash() / reload_known_bad() are guarded by a Lock
+  • start() / stop() / reload_known_bad() serialise state changes on _lock;
+    allow_hash() relies on set.add() being atomic under the GIL
   • The WMI loop runs in its own daemon thread
   • alert_callback is invoked from the WMI thread — callers must marshal
     UI updates back to the main thread (use widget.after(0, ...) in CTk views)
@@ -36,6 +37,7 @@ main thread for this object.
 import hashlib
 import logging
 import threading
+import weakref
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -47,6 +49,29 @@ _KNOWN_BAD_PATH = _ROOT / "guardianai" / "data" / "known_bad.txt"  # legacy fall
 # If the malicious table exceeds this count, skip RAM loading entirely.
 # _check_process() already has a per-lookup SQLite fallback that covers all hashes.
 _KNOWN_BAD_RAM_LIMIT = 500_000
+
+# Every live ProcessMonitor in this process.  Weak, so a monitor that has been
+# stopped and dropped (the Processes view recreates one on every toggle) never
+# keeps a dead instance alive or gets reloaded pointlessly.
+_live_monitors: "weakref.WeakSet" = weakref.WeakSet()
+
+
+def reload_all_known_bad() -> int:
+    """Reload the known-bad set of every live ProcessMonitor in this process.
+
+    This is the callable to register as the "hashes" post-update hook — one
+    stable module-level function, rather than a bound method of whichever
+    monitor instance happened to exist at start-up.  Returns the number of
+    monitors refreshed.
+    """
+    done = 0
+    for mon in list(_live_monitors):
+        try:
+            mon.reload_known_bad()
+            done += 1
+        except Exception as exc:
+            log.warning("ProcessMonitor reload failed: %s", exc)
+    return done
 
 
 def _load_known_bad() -> set:
@@ -119,6 +144,7 @@ class ProcessMonitor:
         self._thread: threading.Thread | None = None
         self._lock          = threading.Lock()
         self._session_allowlist: set[str] = set()
+        _live_monitors.add(self)
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -159,8 +185,16 @@ class ProcessMonitor:
         self._session_allowlist.add(md5.lower())
 
     def reload_known_bad(self) -> None:
-        """Reload MalwareBazaar MD5s from SQLite (called after an intelligence update)."""
-        self._known_bad = _load_known_bad()
+        """Reload MalwareBazaar MD5s from SQLite (called after an intelligence update).
+
+        The new set is built OUTSIDE the lock — it can hold hundreds of
+        thousands of hashes and rebuilding it under _lock would stall
+        start()/stop() for the duration.  Only the rebind is serialised, which
+        is what readers of self._known_bad actually depend on.
+        """
+        fresh = _load_known_bad()
+        with self._lock:
+            self._known_bad = fresh
 
     # ── Internal ───────────────────────────────────────────────────────────────
 

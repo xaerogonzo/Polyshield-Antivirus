@@ -38,6 +38,10 @@ def _get_conn() -> sqlite3.Connection | None:
     if conn is None:
         try:
             conn = sqlite3.connect(str(_DB_PATH), check_same_thread=False)
+            # Reader-side backstop for the moment a writer is mid-commit.  The
+            # journal mode itself is set once by the writer (WAL — see
+            # update_intelligence._open_db), so readers inherit it.
+            conn.execute("PRAGMA busy_timeout=5000")
             _thread_local.conn = conn
         except Exception:
             return None

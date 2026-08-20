@@ -27,6 +27,81 @@ After install or any significant code change, run these before anything else:
 
 ---
 
+## Automated Test Suite (pytest)
+
+```powershell
+kicomav_env\Scripts\pip.exe install -r requirements-dev.txt
+kicomav_env\Scripts\python.exe -m pytest
+```
+
+Tests live in `tests/` and are hermetic: `conftest.py` redirects every consumer's
+`_DB_PATH` at a temp `threat_db.sqlite` built from the real `_SCHEMA`, so no test
+touches the live ~146 MB intelligence database, and the post-update hook registry
+is emptied between tests.
+
+The v1.12 suite is split by concern:
+
+| File | Covers |
+|---|---|
+| `test_intel_hooks.py` | New intelligence reaching *already running* consumers without reconstructing them |
+| `test_intel_updater.py` | The updater core — cross-process lock ownership, per-feed status, backoff, freshness, YARA publishing, posture |
+| `test_service_intel.py` | Service IPC dispatch, the worker handoff, client wrappers, and the UI launch-time fallback |
+| `test_dashboard_intel_card.py` | What the Dashboard actually renders (see *GUI tests without a screen* below) |
+
+**Rule for live-reload tests:** assert through the same public path production
+uses — `scanner.scan_file()`, `monitor._check_process()`, `is_known_bad_ip()` —
+never by inspecting `virus_db`, `_known_bad`, or the IP cache directly. Internal
+state can look right while the real decision path still returns "clean". Each
+test also asserts the *stale* state before firing the hook, so it fails if the
+scenario stops being a genuine regression.
+
+Guardian's tier-3 SQLite fallback masks a stale RAM set, so its test disables
+that fallback (`lookup_hash` → `None`) to isolate the tier-2 RAM path.
+
+### GUI tests without a screen
+
+`test_dashboard_intel_card.py` builds a **withdrawn** Tk root and reads the
+rendered widgets back — label text, colours, grid rows. No visible window, no
+mouse, no focus stealing, and nothing on the developer's desktop. It checks what
+a screenshot would show, but deterministically.
+
+Two things to know before adding more:
+
+- The Tk root fixture is **session-scoped on purpose**. Creating and destroying
+  a CTk root per test tears down Tcl's library state, and the next root then
+  fails with `invalid command name "tcl_findLibrary"` — which shows up as an
+  intermittent *skip*, i.e. a test quietly protecting nothing. Build a fresh
+  *view* per test on the shared root instead.
+- Drive widgets through Tk, not the mouse: `button.invoke()`,
+  `widget.event_generate(...)`, or call the handler directly. That is how the
+  `_status_cb` crash and the blank auto-update label were caught before either
+  reached a running app.
+
+### Time frame in tests
+
+All freshness arithmetic runs in **naive UTC** (`intel_updater._utcnow()`),
+matching what the importers stamp. Using `datetime.now()` in a test passes on a
+UTC machine and fails everywhere else — that mismatch was a real bug, not a
+hypothetical one.
+
+### What still needs a live service
+
+Three things the suite cannot prove on its own, because they depend on the
+LocalService account and the real filesystem:
+
+1. That the service can write `intelligence/threat_db.sqlite` at all.
+2. That artefacts it publishes are readable by the interactive user — see the
+   `tempfile.mkdtemp` ACL gotcha in [WINDOWS_SERVICE.md](WINDOWS_SERVICE.md).
+3. That `SvcStop` completes promptly while an update is in flight.
+
+Run them by starting the service, sending `RUN_INTEL_UPDATE` through
+`service_client`, and reading `C:\ProgramData\PolyShield\service.log`. Take a
+copy of `intelligence/` and `rules/community/` first — the first live run of
+this feature is what surfaced the ACL bug, and having a byte-exact backup is
+what made recovery trivial.
+
+---
+
 ## Battlespace Tests
 
 These tests verify the *plumbing* — IPC concurrency, network detection logic, and service recovery — not just whether the scanners work. Run these before declaring a build stable.

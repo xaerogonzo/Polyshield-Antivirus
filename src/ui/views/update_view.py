@@ -79,6 +79,15 @@ class UpdateView(ctk.CTkScrollableFrame):
             command=self._run_update_all)
         self._update_all_btn.grid(row=0, column=1, padx=(0, 0))
 
+        # Auto-update status — so the manual buttons below read as a supplement
+        # to the schedule rather than the only way to stay current.
+        self._auto_status_lbl = ctk.CTkLabel(
+            header, text="", anchor="w", font=ctk.CTkFont(size=11),
+            text_color=theme.color("subtext"))
+        self._auto_status_lbl.grid(row=1, column=0, columnspan=2, sticky="w",
+                                   pady=(2, 0))
+        self._refresh_auto_status()
+
         # ── Section 1: K2 Engine Signatures ──
         self._build_k2_section(row=1)
 
@@ -617,6 +626,71 @@ class UpdateView(ctk.CTkScrollableFrame):
         self._refresh_yara_info()
         self._refresh_clamav_info()
 
+    @staticmethod
+    def _age_suffix(state: str, age_hours) -> tuple[str, str]:
+        """Return (suffix, colour) describing how old a feed's data is."""
+        colours = {"fresh": "#50fa7b", "aging": "#ffb86c", "stale": "#ff5555",
+                   "never": "#ff5555", "auth_required": "#ffb86c"}
+        if age_hours is None:
+            return ("  —  never updated" if state == "never" else ""), \
+                   colours.get(state, "")
+        if age_hours < 1:
+            age = "just now"
+        elif age_hours < 48:
+            age = f"{int(age_hours)}h ago"
+        else:
+            age = f"{int(age_hours / 24)}d ago"
+        return f"  ({age})", colours.get(state, "")
+
+    def _feed_state(self, feed: str) -> dict:
+        try:
+            from ui.core import intel_updater as iu
+            return iu.get_staleness().get(feed, {})
+        except Exception:
+            return {}
+
+    def _apply_age(self, lbl, feed: str, base_text: str) -> None:
+        """Append the freshness age (and colour) to a 'Last updated' label."""
+        info = self._feed_state(feed)
+        suffix, colour = self._age_suffix(info.get("state", ""), info.get("age_hours"))
+        try:
+            lbl.configure(text=base_text + suffix,
+                          text_color=colour or theme.color("subtext"))
+        except Exception:
+            pass
+
+    def _refresh_auto_status(self) -> None:
+        try:
+            from ui.core import service_client as svc
+            from ui.core import settings as _cfg      # this module has no cfg alias
+            enabled = bool(_cfg.get("intel_auto_update"))
+            hours = int(_cfg.get("intel_update_interval_hours") or 12)
+            last = _cfg.get("intel_last_auto_run") or ""
+            feeds = _cfg.get("intel_auto_feeds") or []
+            if not enabled:
+                text = "Automatic updates: OFF — these feeds only refresh when you click."
+                colour = "#ffb86c"
+            else:
+                if svc.is_service_running():
+                    when = f"every {hours}h via the PolyShield service"
+                else:
+                    when = ("at launch only — start the service for scheduled "
+                            "refreshes")
+                text = (f"Automatic updates: {when}  ·  "
+                        f"{', '.join(feeds) if feeds else 'no feeds selected'}")
+                if last:
+                    text += f"  ·  last run {last.replace('T', ' ')} UTC"
+                colour = theme.color("subtext") if feeds else "#ffb86c"
+            self._auto_status_lbl.configure(text=text, text_color=colour)
+        except Exception as exc:
+            # Never blank: a silent failure here reads as "no schedule exists".
+            try:
+                self._auto_status_lbl.configure(
+                    text=f"Automatic updates: status unavailable ({exc})",
+                    text_color="#ffb86c")
+            except Exception:
+                pass
+
     def _refresh_c2_info(self):
         try:
             import sys
@@ -630,7 +704,7 @@ class UpdateView(ctk.CTkScrollableFrame):
             self._c2_count_lbl.configure(
                 text=f"🌐  Blocked IPs: {count:,}" if count else
                      "🌐  Blocked IPs: none yet — click Update to import")
-            self._c2_date_lbl.configure(text=f"🕒  Last updated: {updated}")
+            self._apply_age(self._c2_date_lbl, "c2", f"🕒  Last updated: {updated}")
         except Exception:
             pass
 
@@ -715,7 +789,8 @@ class UpdateView(ctk.CTkScrollableFrame):
             self._intel_safe_lbl.configure(
                 text=f"✅  Known-safe (NSRL): {safe:,}" if safe else
                      "✅  Known-safe (NSRL): none yet — import NSRL CSV to enable allow-listing")
-            self._intel_date_lbl.configure(text=f"🕒  Last updated: {updated}")
+            self._apply_age(self._intel_date_lbl, "malwarebazaar",
+                            f"🕒  Last updated: {updated}")
         except Exception:
             pass
 
@@ -1478,6 +1553,7 @@ class UpdateView(ctk.CTkScrollableFrame):
     def on_show(self):
         """Refresh all info cards when the user navigates to this view."""
         self._refresh_all_info()
+        self._refresh_auto_status()
 
     # ── Log helpers ────────────────────────────────────────────────────────────
 

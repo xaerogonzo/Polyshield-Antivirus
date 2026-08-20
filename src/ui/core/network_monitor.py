@@ -12,8 +12,9 @@ Performance design
 ──────────────────
   • IP check cache   — is_known_bad_ip() results are memoised per-IP so the
                        SQLite query only fires once per unique remote address
-                       seen.  Cache is cleared every _CACHE_RESET_POLLS polls
-                       to pick up newly imported blocklist entries.
+                       seen.  Cache is cleared every _CACHE_RESET_POLLS polls,
+                       and immediately by clear_ip_cache() after a C2 blocklist
+                       import (the "ips" post-update hook).
   • PID process cache — process name/path resolved once per PID and cached in
                        memory.  Dead PIDs are evicted automatically.
 
@@ -63,6 +64,22 @@ _poll_count     = 0
 
 # pid → (name: str, path: str)
 _pid_proc_cache: dict[int, tuple[str, str]] = {}
+
+
+def clear_ip_cache() -> None:
+    """Drop memoised IP verdicts so the next poll re-reads ip_blocklist.
+
+    Registered as the "ips" post-update hook.  After a C2 blocklist import the
+    cached "clean" verdicts are stale, and waiting out the periodic reset
+    (_CACHE_RESET_POLLS x POLL_INTERVAL, about 10 minutes) would leave
+    freshly-imported C2 addresses unflagged in the meantime.  _poll_count is
+    reset as well so the periodic sweep stays a predictable interval away
+    after a manual clear.
+    """
+    global _poll_count
+    with _ip_cache_lock:
+        _ip_check_cache.clear()
+        _poll_count = 0
 
 
 # ── IP blocklist lookup ────────────────────────────────────────────────────────

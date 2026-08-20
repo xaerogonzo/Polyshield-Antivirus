@@ -789,6 +789,9 @@ Key directories at a glance:
 - [x] **v1.10 — Watcher pattern tier OFF by default** (`watcher_guardian_patterns=False`; real-time scanning runs Guardian signatures only. Hash detection still fires; patterns are opt-in for those who want them at real-time cadence.)
 - [x] **v1.10 — Suspicious display modes** (Hidden by default / Collapsible "Heuristic Findings ▸" sub-section / Inline with CONFIRMED|SUSPICIOUS badges). User-selectable via Advanced Guardian Settings.
 - [x] **v1.10 — Reusable collapsible + modal-popup settings helpers** (`_collapsible_section()` + `_modal_settings_dialog()` in `settings_view.py`) — exercised by the Advanced Guardian Settings modal; available for future settings refactors.
+- [x] **v1.12 — Automatic intelligence updates** (MalwareBazaar `recent`, C2 blocklist and YARA community rules refresh on a schedule — hosted by the Windows Service when it is running, otherwise checked once at launch. One execution path for scheduled, manual and IPC runs; per-feed status rather than a single verdict; persistent failure backoff that distinguishes an auth wall from a timeout. NSRL, ClamAV, K2 and Speakeasy stay manual by design.)
+- [x] **v1.12 — Honest intelligence posture** (the Dashboard's Threat Intelligence card reports one of four states — *intelligence current* / *intelligence stale* / *update required* / *unavailable* — and checks that each feed's data is actually **usable**, not merely that it downloaded. A feed can be perfectly fresh and still have nothing the engine can load.)
+- [x] **v1.12 — Atomic YARA rule publishing** (each download lands as an immutable generation directory, switched by an atomic pointer file. A scan sees the whole previous rule set or the whole new one — never a half-extracted tree — and a failed or corrupt download leaves the working rules untouched.)
 - [ ] Nuitka compiled build (Python → C++ for distribution) — see Roadmap
 
 ---
@@ -845,6 +848,21 @@ WMI `__InstanceCreationEvent` fires *after* launch. PolyShield detects the proce
 Processes running as SYSTEM or under Protected Process Light (lsass.exe, MsMpEng.exe, DRM services) deny read access to their executable — the MD5 hash cannot be computed. These are silently skipped. See [ARCHITECTURE.md — Known Limitations](ARCHITECTURE.md).
 
 **For deeper isolation:** Use Sandboxie-Plus detonation in the Behavioral Analysis view before execution.
+
+### Why NSRL, ClamAV, K2 and Speakeasy are not auto-updated
+
+The scheduler only touches feeds that are small, headless-safe and need no
+elevation. The rest stay manual on purpose:
+
+| Source | Why it stays manual |
+|---|---|
+| **NSRL** | A multi-GB local file the user supplies; there is nothing to download unattended |
+| **ClamAV (`freshclam`)** | Writes into `C:\Program Files\ClamAV`, which needs administrator rights |
+| **K2 signatures** | Writes inside `kicomav_env\`, which the LocalService account may not own |
+| **Speakeasy** | A `pip install --upgrade` — never something a background service should run |
+
+Automating any of these would mean either running the service elevated or
+silently failing, so the Update Center keeps them as explicit buttons.
 
 ### Nuitka Compiled Build (Planned, Post Feature-Freeze)
 
@@ -913,6 +931,12 @@ nuitka --standalone --onefile --windows-disable-console
 | Speakeasy (pipeline) | False | Emulate flagged PE files after all engines complete |
 | Pipeline order | k2→defender→guardian→yara→clamav | Execution order; drag ⠿ handles or ↑/↓ to reorder; persisted as `pipeline_order` |
 | Scan path presets | [] | User-saved named folder sets; up to 20; accessible from the "My presets" row in the Scan view |
+| Update intelligence automatically | True | Master switch for scheduled feed refreshes (`intel_auto_update`) |
+| Check every N hours | 12 | How often a feed becomes due (`intel_update_interval_hours`). Separate from the warning thresholds below |
+| Warn after N days | 3 | Amber "ageing" threshold in the UI (`intel_aging_days`) |
+| Stale after N days | 7 | Red "stale" threshold in the UI (`intel_stale_days`) |
+| Auto-updated feeds | malwarebazaar, c2, yara | Which feeds the scheduler may refresh (`intel_auto_feeds`). NSRL / ClamAV / K2 / Speakeasy are never in this list — see below |
+| Update at launch | True | Fallback check when no Windows Service is running (`intel_update_on_launch`) |
 | Guardian NSRL allow-list | True | Skip SQLite per-file NSRL check to save time |
 | Guardian heuristic patterns | True | 7 regex patterns for zero-days |
 | Sandboxie-Plus path | (empty) | Path to portable `Start.exe` |
