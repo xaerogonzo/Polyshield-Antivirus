@@ -12,17 +12,36 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 _SCENES: dict[str, callable] = {}
+_GOLDEN: set[str] = set()
 
 
-def scene(name: str):
+def scene(name: str, golden: bool = True):
+    """Register a scene.
+
+    `golden=False` marks a scene whose content depends on live data — feed ages
+    tick over, row counts change after an update. Those shots are documentary:
+    useful to look at, useless as a regression baseline, because they drift for
+    reasons that have nothing to do with the code. A baseline that depends on
+    the wall clock is worse than no baseline, so --check skips them.
+
+    Making a live scene comparable means pinning its inputs (freeze the clock,
+    fix the counts) rather than lowering the tolerance.
+    """
     def register(fn):
         _SCENES[name] = fn
+        if golden:
+            _GOLDEN.add(name)
         return fn
     return register
 
 
 def all_scenes() -> dict[str, callable]:
     return dict(_SCENES)
+
+
+def golden_scenes() -> set[str]:
+    """Scene names whose shots are stable enough to compare against goldens."""
+    return set(_GOLDEN)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -66,7 +85,7 @@ def _dashboard(session):
 
 # ── Scenes ────────────────────────────────────────────────────────────────────
 
-@scene("dashboard")
+@scene("dashboard", golden=False)
 def dashboard_live(session):
     """The Dashboard exactly as it is right now, against live data."""
     _dashboard(session)
@@ -114,7 +133,7 @@ def intel_posture_states(session):
     session.shot("intel_unavailable")
 
 
-@scene("settings")
+@scene("settings", golden=False)
 def settings_view(session):
     from ui.views.settings_view import SettingsView
     view = session.mount(SettingsView)
@@ -128,7 +147,7 @@ def settings_view(session):
     session.shot("settings_intel")
 
 
-@scene("update-center")
+@scene("update-center", golden=False)
 def update_center(session):
     from ui.views.update_view import UpdateView
     session.mount(UpdateView, status_callback=lambda m: None)

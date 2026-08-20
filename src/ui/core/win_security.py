@@ -257,7 +257,7 @@ def get_network_connections(limit: int = 30) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_device_security() -> dict:
-    """
+    r"""
     Queries Secure Boot, TPM, and Virtualization-Based Security.
 
     Registry reads run first for basic on/off state — they work without

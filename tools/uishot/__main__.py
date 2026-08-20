@@ -18,7 +18,7 @@ if str(_HERE.parents[1]) not in sys.path:
     sys.path.insert(0, str(_HERE.parents[1]))
 
 from uishot.capture import compare, write_diff          # noqa: E402
-from uishot.scenes import all_scenes                    # noqa: E402
+from uishot.scenes import all_scenes, golden_scenes     # noqa: E402
 from uishot.session import TkSession, is_supported      # noqa: E402
 
 
@@ -68,17 +68,24 @@ def main(argv: list[str] | None = None) -> int:
     with TkSession(out_dir=out_dir, project_root=_PROJECT_ROOT) as session:
         for name in selected:
             before = len(session.shots)
+            session.current_scene = name
             scenes[name](session)
             new = session.shots[before:]
             print(f"  {name:<16} {len(new)} shot(s): "
                   f"{', '.join(s.name for s in new)}")
             captured.extend(new)
 
+    comparable = golden_scenes()
+    skipped_live = [n for n in selected if n not in comparable]
+
     if args.update_golden:
         golden_dir.mkdir(parents=True, exist_ok=True)
-        for shot in captured:
+        recorded = [s for s in captured if s.scene in comparable]
+        for shot in recorded:
             (golden_dir / shot.path.name).write_bytes(shot.path.read_bytes())
-        print(f"uishot: recorded {len(captured)} golden image(s) in {golden_dir}")
+        print(f"uishot: recorded {len(recorded)} golden image(s) in {golden_dir}")
+        if skipped_live:
+            print(f"uishot: live scenes not recorded: {', '.join(skipped_live)}")
         return 0
 
     if args.check:
@@ -86,6 +93,8 @@ def main(argv: list[str] | None = None) -> int:
 
         drift, missing = [], []
         for shot in captured:
+            if shot.scene not in comparable:
+                continue          # live data — see scenes.scene(golden=False)
             reference = golden_dir / shot.path.name
             if not reference.exists():
                 missing.append(shot.name)
@@ -114,7 +123,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"uishot: {len(missing)} scene(s) have no golden — "
                   f"run --update-golden to record them")
             return 1
-        print(f"uishot: all {len(captured)} shot(s) match golden")
+        compared = [s for s in captured if s.scene in comparable]
+        print(f"uishot: all {len(compared)} comparable shot(s) match golden")
+        if skipped_live:
+            print(f"uishot: live scenes not compared: {', '.join(skipped_live)}")
 
     return 0
 

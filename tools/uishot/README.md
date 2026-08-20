@@ -16,6 +16,21 @@ Shots land in `artifacts/ui/` (gitignored); goldens live in `tests/golden/ui/`
 (tracked). `--check` exits 1 on drift and writes a side-by-side with the changed
 region boxed in red to `artifacts/ui/diff/`.
 
+### Golden scenes vs live scenes
+
+Only scenes registered with `@scene(name)` are compared. Scenes registered
+`@scene(name, golden=False)` read **live** data — feed ages tick over hourly,
+row counts change after an update — so their shots drift for reasons that have
+nothing to do with the code. They are documentary: worth looking at, useless as
+a baseline. `--check` and `--update-golden` both skip them and say which.
+
+This was learned the hard way: the first golden set included them, and an hour
+later three scenes "drifted" purely because `just now` had become `11h ago`.
+
+Currently live: `dashboard`, `settings`, `update-center`. Currently comparable:
+`intel-posture`, `service`. Making a live scene comparable means pinning its
+inputs — freeze the clock, fix the counts — not widening `--tolerance`.
+
 ## How it works, and why it works that way
 
 Two decisions carry the whole design, and both were measured rather than assumed.

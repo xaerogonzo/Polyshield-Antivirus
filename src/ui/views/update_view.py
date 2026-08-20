@@ -709,18 +709,40 @@ class UpdateView(ctk.CTkScrollableFrame):
             pass
 
     def _refresh_yara_info(self):
-        """Show installed version from rules/community/.version; query GitHub for latest."""
-        community_ver_file = _BASE_DIR / "rules" / "community" / ".version"
-        if community_ver_file.exists():
-            try:
-                installed = community_ver_file.read_text(encoding="utf-8").strip() or "Not installed"
-            except Exception:
-                installed = "Not installed"
-        else:
-            installed = "Not installed"
+        """Installed version, age and readable rule count; query GitHub for latest.
+
+        Reads the intelligence metadata rather than rules/community/.version.
+        The version file records WHAT is installed but not WHEN, and it stays
+        put even when the rules beside it cannot be read — so on its own it can
+        report a healthy-looking version over a rule set the engine cannot load.
+        get_yara_info() carries the install timestamp and the count of rules
+        actually visible, which is the pair worth showing.
+        """
+        try:
+            from tools.update_intelligence import get_yara_info
+            info = get_yara_info()
+        except Exception:
+            info = {"version": "", "last_update": "", "rule_count": 0}
+
+        version = info.get("version") or "Not installed"
+        count = int(info.get("rule_count") or 0)
+
+        def _apply():
+            if version == "Not installed":
+                self._yara_version_lbl.configure(text=version, text_color="#888888")
+                return
+            if count:
+                base = f"{version}   ·   {count} rule file{'' if count == 1 else 's'}"
+            else:
+                base = f"{version}   ·   no readable rules"
+            self._apply_age(self._yara_version_lbl, "yara", base)
+            if not count:
+                # Published, dated, and still unusable. This is the state a
+                # freshness-only reading calls healthy.
+                self._yara_version_lbl.configure(text_color="#ff5555")
+
         if self.winfo_exists():
-            self.after(0, lambda v=installed: self._yara_version_lbl.configure(
-                text=v, text_color=theme.color("text") if v != "Not installed" else "#888888"))
+            self.after(0, _apply)
 
         def _fetch_latest():
             import urllib.request, json as _json

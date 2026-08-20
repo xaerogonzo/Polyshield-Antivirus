@@ -30,6 +30,7 @@ class Shot:
     name: str
     path: Path
     size: tuple[int, int]
+    scene: str = ""
 
 
 class TkSession:
@@ -160,7 +161,8 @@ class TkSession:
         path = self.out_dir / f"{name}.png"
         path.parent.mkdir(parents=True, exist_ok=True)
         image.save(path)
-        shot = Shot(name=name, path=path, size=image.size)
+        shot = Shot(name=name, path=path, size=image.size,
+                    scene=self.current_scene)
         self.shots.append(shot)
         return shot
 
