@@ -110,3 +110,162 @@ def add_c2_ip(db: Path, ip: str, tags: str = "test-c2") -> None:
     )
     con.commit()
     con.close()
+
+
+# ── Process-global state ──────────────────────────────────────────────────────
+
+# A suite can leave every production *file* untouched and still be non-hermetic
+# through Python globals.  The detection path keeps more than the DB paths:
+# a scanner singleton, a hook registry, and a lazily-populated hash cache.
+#
+# The leak that makes this autouse rather than opt-in: scan_async()'s worker
+# calls register_intel_hooks() as a fallback, so *any* test touching the async
+# Guardian path registers reload_signatures into the real hook registry. A
+# later test that never asked for the `hooks` fixture then inherits a live
+# callback pointing at an earlier test's scanner.
+#
+# Restore, not clear: test_intel_hooks.py registers hooks on purpose, and
+# blanket-clearing would break it.
+
+@pytest.fixture(autouse=True)
+def _restore_global_state():
+    """Snapshot and restore every module global the detection path mutates."""
+    from tools import update_intelligence as upd
+    from ui.core import guardian_engine, ignore_list, intel_hooks
+
+    saved_hooks = list(upd._post_update_hooks)
+    saved_registered = intel_hooks._registered
+    saved_ge_registered = guardian_engine._post_update_hook_registered
+    saved_scanner = guardian_engine._scanner
+    saved_cache = ignore_list._cache
+
+    yield
+
+    # Slice-assign so anything holding a reference to the same list object
+    # sees the restoration too.
+    upd._post_update_hooks[:] = saved_hooks
+    intel_hooks._registered = saved_registered
+    guardian_engine._post_update_hook_registered = saved_ge_registered
+    guardian_engine._scanner = saved_scanner
+    ignore_list._cache = saved_cache
+
+
+# ── Detection-path sandboxes ──────────────────────────────────────────────────
+
+@pytest.fixture
+def guardian_sandbox(tmp_path, monkeypatch):
+    """Point _EnhancedScanner's construction-time reads at empty temp paths.
+
+    _load_sigs() walks _DATA_DIR and falls back to _KNOWN_BAD_TXT;
+    _load_nsrl_bloom() reads _BLOOM_PATH.  None of those are covered by the
+    intel_db fixture, so without this a developer with guardianai/ cloned gets
+    a different virus_db than CI does — the test outcome would depend on
+    machine state rather than on the code.
+    """
+    from ui.core import guardian_engine as ge
+
+    empty = tmp_path / "no_guardian_data"
+    monkeypatch.setattr(ge, "_DATA_DIR", empty)
+    monkeypatch.setattr(ge, "_KNOWN_BAD_TXT", empty / "known_bad.txt")
+    monkeypatch.setattr(ge, "_BLOOM_PATH", empty / "nsrl_bloom.bin")
+    return empty
+
+
+@pytest.fixture
+def ignore_db(tmp_path, monkeypatch, pattern_db):
+    """Temp ignore_list.sqlite, with the in-process cache invalidated.
+
+    _cache is a module global populated lazily on first contains(); without the
+    reset, test order decides the verdict.
+
+    Depends on pattern_db deliberately. add() forwards a "Suspicious pattern:"
+    reason to pattern_stats.record_ignore(), so whether an ignore test touches
+    telemetry depends on a *string argument* rather than on anything visible in
+    the fixture list. Chaining them here means a test cannot leak into the real
+    stats DB by passing the wrong reason -- which is exactly how this leaked
+    the first time.
+    """
+    from ui.core import ignore_list
+
+    db = tmp_path / "ignore_list.sqlite"
+    monkeypatch.setattr(ignore_list, "_DB_PATH", db)
+    monkeypatch.setattr(ignore_list, "_cache", None)
+    return db
+
+
+@pytest.fixture
+def pattern_db(tmp_path, monkeypatch):
+    """Temp pattern_stats.sqlite.
+
+    That is the whole job — pattern_stats holds no cache, only _lock and
+    _DB_PATH, so there is nothing else to reset.
+    """
+    from ui.core import pattern_stats
+
+    db = tmp_path / "pattern_stats.sqlite"
+    monkeypatch.setattr(pattern_stats, "_DB_PATH", db)
+    return db
+
+
+@pytest.fixture
+def quarantine_sandbox(tmp_path, monkeypatch):
+    """Redirect the quarantine folder.
+
+    quarantine.py mkdirs QUARANTINE_DIR at *import* time, so the real folder
+    exists regardless; this fixture's job is to guarantee nothing ever writes
+    into it.
+    """
+    from ui.core import quarantine
+
+    qdir = tmp_path / "quarantine"
+    qdir.mkdir()
+    monkeypatch.setattr(quarantine, "QUARANTINE_DIR", qdir)
+    return qdir
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _assert_session_leaves_no_trace():
+    """Fail the run if the suite ends holding state it did not start with.
+
+    The per-test fixtures above restore state; this asserts they actually did.
+    Without it a restoration bug is invisible -- every test passes, and the
+    damage only shows up as an unrelated failure somewhere down the line, or
+    in the next process to import these modules.
+
+    Deliberately about *process* state. A suite can leave every production file
+    untouched and still be thoroughly non-hermetic through Python globals.
+    """
+    from tools import update_intelligence as upd
+    from ui.core import guardian_engine, ignore_list, intel_hooks
+
+    before = {
+        "hooks": list(upd._post_update_hooks),
+        "intel_registered": intel_hooks._registered,
+        "ge_registered": guardian_engine._post_update_hook_registered,
+        "scanner": guardian_engine._scanner,
+        "ignore_cache": ignore_list._cache,
+    }
+
+    yield
+
+    assert list(upd._post_update_hooks) == before["hooks"], (
+        "a post-update hook outlived the test that registered it")
+    assert intel_hooks._registered == before["intel_registered"]
+    assert guardian_engine._post_update_hook_registered == before["ge_registered"]
+    assert guardian_engine._scanner is before["scanner"], (
+        "a test left its scanner installed as the production singleton")
+    assert ignore_list._cache == before["ignore_cache"], (
+        "the ignore-list cache survived the test that populated it")
+
+    stragglers = [t.name for t in threading.enumerate()
+                  if t is not threading.main_thread() and not t.daemon]
+    assert not stragglers, f"non-daemon threads outlived the suite: {stragglers}"
+
+
+def make_sample_file(tmp_path, content: bytes, name: str = "sample.txt"):
+    """Write a file and return (path, md5). A plain helper, like add_malicious."""
+    import hashlib
+
+    path = tmp_path / name
+    path.write_bytes(content)
+    return path, hashlib.md5(content).hexdigest()
