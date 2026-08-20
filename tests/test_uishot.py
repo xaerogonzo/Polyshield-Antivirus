@@ -117,7 +117,12 @@ def test_cli_captures_a_scene_without_a_visible_window(capture_supported, tmp_pa
     from PIL import Image
     for name in produced:
         img = Image.open(out / name)
-        assert img.size == (1200, 760)
+        # NOT an exact size: a hidden desktop inherits the session's screen
+        # metrics, and a CI runner's is smaller than a developer's. Measured on
+        # windows-latest the window clamps to 1028x749 against a requested
+        # 1200x760. Assert it is a real render, not a specific resolution.
+        width, height = img.size
+        assert width >= 800 and height >= 600, f"{name} captured at {img.size}"
         colours = img.getcolors(maxcolors=1_000_000) or []
         # A blank or all-white capture is the classic PrintWindow failure —
         # it returns success and hands back nothing useful.

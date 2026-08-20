@@ -552,8 +552,16 @@ def test_published_generation_inherits_the_parent_acl(yara_sandbox, monkeypatch)
     assert protected is False, "published rules must inherit the rules-dir ACL"
 
 
-def test_staging_dir_inherits_where_mkdtemp_does_not(yara_sandbox):
-    """Pins the actual root cause, so nobody 'tidies' os.mkdir back to mkdtemp."""
+def test_staging_dir_inherits_the_parent_acl(yara_sandbox):
+    """The staging directory must inherit — that is the whole fix.
+
+    An earlier version of this test also asserted that tempfile.mkdtemp does
+    NOT inherit, to pin the contrast. That failed on a GitHub runner, where
+    mkdtemp inherits: the hardening is CPython- and environment-dependent, so
+    asserting it pins somebody else's behaviour rather than ours. The contrast
+    is still reported when it exists, because it is the reason os.mkdir is used
+    here, but only our own guarantee is enforced.
+    """
     import tempfile
 
     upd, ydir = yara_sandbox
@@ -561,10 +569,12 @@ def test_staging_dir_inherits_where_mkdtemp_does_not(yara_sandbox):
         pytest.skip("DACL inspection unavailable")
 
     staged = upd._make_staging_dir(ydir)
-    hardened = Path(tempfile.mkdtemp(prefix=".mkdtemp-", dir=str(ydir)))
+    assert upd._dacl_is_protected(staged) is False,         "staged rules must inherit the rules-dir ACL or nobody else can read them"
 
-    assert upd._dacl_is_protected(staged) is False
-    assert upd._dacl_is_protected(hardened) is True,         "if mkdtemp ever starts inheriting, this guard can be relaxed"
+    hardened = Path(tempfile.mkdtemp(prefix=".mkdtemp-", dir=str(ydir)))
+    if upd._dacl_is_protected(hardened) is not True:
+        pytest.skip("tempfile.mkdtemp inherits on this machine — no contrast "
+                    "to draw, but our own guarantee above still holds")
 
 
 def test_unreadable_staging_is_never_published(yara_sandbox, monkeypatch):

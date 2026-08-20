@@ -46,6 +46,7 @@ class TkSession:
         self._desktop_cm = None
         self._root = None
         self._mounted = []
+        self._warned_clamp = False
         self._project_root = project_root or Path(__file__).resolve().parents[2]
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -143,6 +144,19 @@ class TkSession:
     def shot(self, name: str) -> Shot:
         self.settle()
         image = capture_window(self.root.winfo_id(), PW_RENDERFULLCONTENT)
+
+        # A hidden desktop inherits the session's screen metrics, so a window
+        # larger than the desktop is silently clamped — the shot then shows a
+        # cropped layout rather than the one that was asked for. Measured on a
+        # GitHub windows-latest runner: 1200x760 requested, 1028x749 delivered.
+        # Say so once, because it is also why golden images do not travel.
+        if image.size != self.size and not self._warned_clamp:
+            self._warned_clamp = True
+            print(f"uishot: window clamped to {image.size[0]}x{image.size[1]} "
+                  f"(requested {self.size[0]}x{self.size[1]}) — the desktop is "
+                  f"smaller than the window; shots will not match goldens "
+                  f"recorded elsewhere", file=sys.stderr)
+
         path = self.out_dir / f"{name}.png"
         path.parent.mkdir(parents=True, exist_ok=True)
         image.save(path)
