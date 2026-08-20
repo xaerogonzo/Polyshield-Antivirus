@@ -48,6 +48,11 @@ class TkSession:
         self._root = None
         self._mounted = []
         self._warned_clamp = False
+        # Set by the CLI before each scene; initialised here so a session used
+        # directly (as the docstring above shows) still works.
+        self.current_scene = ""
+        # Set by the CLI before each scene; initialised here so a session used
+        # directly (as the docstring above shows) still works.
         self._project_root = project_root or Path(__file__).resolve().parents[2]
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
