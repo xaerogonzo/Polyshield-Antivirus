@@ -1,0 +1,82 @@
+name: tests
+
+# push and pull_request run the SAME job with the SAME conditions, on purpose.
+# Splitting them (a lenient job on push, a strict one on PRs, or `if:` guards on
+# either) is how a repo ends up with a green push run sitting on top of a red
+# pull_request run. If it is worth gating, gate it everywhere.
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    # Windows only, and not a portability compromise: the product is Windows
+    # only. The suite touches pywin32, DACL inspection, Win32 desktops and Tk.
+    runs-on: windows-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Both ends of the supported range (requirements.txt says 3.11+), so a
+        # 3.13-only idiom or a 3.11 incompatibility surfaces here rather than on
+        # a user's machine.
+        python-version: ["3.11", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-ci.txt
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-ci.txt
+
+      - name: Report the environment
+        # Cheap, and it is the first thing worth knowing when a Windows-only
+        # suite behaves differently here than it does locally.
+        run: |
+          python -c "import sys; print(sys.version)"
+          python -c "import platform; print(platform.platform())"
+          python tools\uishot\__main__.py --probe
+        continue-on-error: true
+
+      - name: Run tests
+        env:
+          PYTHONIOENCODING: utf-8
+        # Golden-image drift is deliberately NOT gated here. The reference
+        # PNGs embed this developer's font rasterisation and DPI; a runner will
+        # differ for reasons that say nothing about the code. The suite's own
+        # capture tests record and compare goldens inside a temp directory,
+        # which is the portable half.
+        run: python -m pytest -v --tb=short -rs
+
+      # On a failure, capture the views from the runner itself. The suite's own
+      # shots go to a temp directory, so without this there is nothing to look
+      # at when a GUI test fails on a machine you cannot open.
+      - name: Capture views for diagnosis
+        if: failure()
+        run: python tools\uishot\__main__.py
+        continue-on-error: true
+
+      - name: Upload captures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-captures-py${{ matrix.python-version }}
+          path: artifacts/ui/
+          if-no-files-found: ignore
+          retention-days: 7

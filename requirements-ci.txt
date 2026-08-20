@@ -1,0 +1,29 @@
+# Minimal dependency set for running the test suite.
+#
+# Deliberately NOT requirements.txt. The full runtime set drags in
+# speakeasy-emulator, which pins unicorn==1.0.2 and setuptools==68.2.2 to
+# restore distutils/pkg_resources on Python 3.12+ — a fragile combination that
+# has nothing to do with what the tests exercise. The engines that are genuinely
+# optional at import time (yara, ClamAV, Speakeasy, kicomav) stay out.
+#
+# Verified empirically rather than reasoned about: a clean venv with exactly
+# these six packages runs all 95 tests green. If a test starts needing more,
+# that is a signal worth reading — something moved an optional import to module
+# scope.
+#
+#   python -m venv .civenv
+#   .civenv\Scripts\pip install -r requirements-ci.txt
+#   .civenv\Scripts\python -m pytest
+
+pytest>=8.0
+
+# Pillow    — image capture and comparison in tools/uishot
+# psutil    — process liveness for the intelligence update lock; network monitor
+# pywin32   — service tests (win32serviceutil) and DACL checks (win32security)
+# watchdog  — imported at module scope by ui.core.watcher, pulled in via ui.app
+# customtkinter — the views under test
+pillow>=10.0
+psutil>=7.0
+pywin32>=307
+watchdog>=6.0
+customtkinter>=5.2.2

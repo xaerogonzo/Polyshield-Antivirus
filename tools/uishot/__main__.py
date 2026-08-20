@@ -35,6 +35,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--tolerance", type=int, default=8,
                         help="per-channel difference treated as unchanged")
     parser.add_argument("--list", action="store_true", help="list scenes and exit")
+    parser.add_argument("--probe", action="store_true",
+                        help="exit 0 if hidden-desktop capture works here, 2 if not")
     args = parser.parse_args(argv)
 
     scenes = all_scenes()
@@ -44,6 +46,9 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     ok, reason = is_supported()
+    if args.probe:
+        print("uishot: capture supported" if ok else f"uishot: unsupported — {reason}")
+        return 0 if ok else 2
     if not ok:
         print(f"uishot: cannot capture here — {reason}", file=sys.stderr)
         return 2
