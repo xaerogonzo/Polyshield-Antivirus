@@ -24,14 +24,28 @@ pefile>=2024.8.26
 yara-python>=4.5.4
 
 # Behavioral analysis (Speakeasy PE emulation — mandiant/speakeasy)
-# speakeasy-emulator 1.5.11 requires unicorn==1.0.2, which uses distutils and pkg_resources.
-# Both were removed in Python 3.12+. setuptools==68.2.2 restores them as compatibility shims.
-# unicorn must be pinned to 1.0.2 — the 2.x API is incompatible with speakeasy-emulator.
+# speakeasy-emulator 1.5.11 requires unicorn==1.0.2, whose unicorn.py imports
+# distutils.sysconfig and pkg_resources at module scope and uses
+# pkg_resources.resource_filename() to locate its native libraries. Both were
+# removed from the stdlib in Python 3.12+, so setuptools supplies them.
+# unicorn must stay at 1.0.2 — the 2.x API is incompatible with speakeasy-emulator.
 # Note: speakeasy-emulator-refined (PyPI) is a DIFFERENT library (binref/speakeasy),
 # not an updated fork of mandiant/speakeasy — do not substitute it.
+#
+# The setuptools range is bounded on both sides, and both bounds are measured:
+#   >= 78.1.1  clears two HIGH advisories that applied to the previous 68.2.2
+#              pin — command injection via package URL (fixed 70.0.0) and path
+#              traversal in PackageIndex.download (fixed 78.1.1).
+#   <  82      setuptools 82.0.0 REMOVED pkg_resources; verified that unicorn
+#              1.0.2 then fails to import. 81.x still ships it (with a
+#              deprecation warning) and emulates correctly.
+# One MEDIUM advisory remains open by necessity: the MANIFEST.in sdist bypass
+# needs >= 83.0.0, which is past the pkg_resources removal. It is not reachable
+# here — it affects sdist building on macOS APFS/HFS+, and this is a
+# Windows-only application that builds no sdists.
 speakeasy-emulator>=1.5.11
 unicorn==1.0.2
-setuptools==68.2.2
+setuptools>=78.1.1,<82
 
 # Cryptography
 pycryptodome>=3.23.0
