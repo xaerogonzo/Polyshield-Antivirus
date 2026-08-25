@@ -169,3 +169,120 @@ def service_view(session):
     ):
         view._handle_event(event)
     session.shot("service_events")
+
+
+# ── Threat Actions ────────────────────────────────────────────────────────────
+
+def _scan(session):
+    from ui.views.scan_view import ScanView
+    view = session.mount(ScanView, status_callback=lambda m: None,
+                         navigate_callback=lambda *a: None)
+    # Collapse the pipeline panel — expanded it fills the window and pushes
+    # Threat Actions, the subject of these scenes, below the fold. Collapsing
+    # is also what a user does once the pipeline is configured.
+    view._toggle_pipeline_panel()
+    session.settle()
+    return view
+
+
+def _threats(view, *, k2=(), guardian=None, tier=None, severity=None,
+             disputes=(), resolved=()):
+    """Load a ScanView with engine results, the way a finished scan leaves it.
+
+    Constructed rather than scanned, for the same reason the intel-posture
+    scenes are: these are the states that matter and the ones nobody sees on
+    demand. A real scan would also make the shot depend on whatever happens to
+    be on this machine.
+    """
+    view._k2_infected_paths = list(k2)
+    view._g_infected = dict(guardian or {})
+    view._g_tier = dict(tier or {})
+    view._threat_severity = dict(severity or {})
+    view._disputes = list(disputes)
+    view._threat_resolved = set(resolved)
+    view._threat_filter_reason = "all"
+    view._threat_filter_text = ""
+    view._threat_page = 0
+    # Clear the selection between scenes. Left set, a later scene renders the
+    # previous scene's file in the detail pane beside its own results — a
+    # screen that cannot occur in use, which is the worst thing a golden can
+    # record.
+    view._threat_selected_path = None
+    view._build_threat_actions()
+
+
+_CONFIRMED = {
+    r"C:\Users\Test\Downloads\invoice_scan.exe": "Emotet  [61 engines]",
+    r"C:\Users\Test\AppData\Local\Temp\svhost.exe": "TrickBot  [54 engines]",
+}
+_SUSPICIOUS = {
+    r"C:\Users\Test\Documents\backup_helper.js":
+        "Suspicious pattern: Script dropper (WScript.Shell.Run)",
+    r"C:\Users\Test\Desktop\notes\recovery.txt":
+        "Suspicious pattern: Ransomware note (files encrypted)",
+}
+
+
+@scene("scan-threats")
+def scan_threat_states(session):
+    """The Threat Actions panel across the states a scan can leave it in."""
+    from ui.core import settings as cfg
+
+    view = _scan(session)
+
+    # Confirmed detections only — the unambiguous case.
+    _threats(view,
+             k2=list(_CONFIRMED),
+             guardian=_CONFIRMED,
+             tier={p: "hash" for p in _CONFIRMED},
+             severity={p: "confirmed" for p in _CONFIRMED})
+    session.shot("threats_confirmed")
+
+    # Confirmed plus heuristic, grouped rather than interleaved. This is the
+    # display mode where the distinction is visible at a glance.
+    cfg.set_value("guardian_suspicious_display", "collapsible")
+    merged = {**_CONFIRMED, **_SUSPICIOUS}
+    _threats(view,
+             k2=list(_CONFIRMED),
+             guardian=merged,
+             tier={**{p: "hash" for p in _CONFIRMED},
+                   **{p: "pattern" for p in _SUSPICIOUS}},
+             severity={**{p: "confirmed" for p in _CONFIRMED},
+                       **{p: "suspicious" for p in _SUSPICIOUS}})
+    session.shot("threats_mixed_collapsible")
+
+    # One engine says infected, the other says clean — the case the user is
+    # asked to adjudicate.
+    disputed = r"C:\Users\Test\Downloads\installer.exe"
+    cfg.set_value("guardian_suspicious_display", "inline")
+    _threats(view,
+             k2=[disputed],
+             guardian={},
+             disputes=[{"path": disputed,
+                        "filename": "installer.exe",
+                        "k2_verdict": "Infected",
+                        "guardian_verdict": "Clean",
+                        "guardian_reason": ""}])
+    # Pin the hashes. The detail pane computes them on a background thread and
+    # renders "computing…" until they land, so without this the shot records
+    # whichever side of a race the capture happened to catch — a golden that
+    # depends on thread timing is worse than no golden.
+    view._hash_cache[disputed] = {
+        "md5": "5d41402abc4b2a76b9719d911017c592",
+        "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e"
+                  "1b161e5c1fa7425e73043362938b9824",
+    }
+    view._threat_selected_path = disputed
+    view._render_threat_detail()
+    session.shot("threats_dispute")
+
+    # The pattern tier gave up partway through the scan.
+    _threats(view,
+             k2=list(_CONFIRMED),
+             guardian=_CONFIRMED,
+             tier={p: "hash" for p in _CONFIRMED},
+             severity={p: "confirmed" for p in _CONFIRMED})
+    view._circuit_state = {"tripped": True, "hit_count": 200, "threshold": 200}
+    view._circuit_banner_dismissed = False
+    view._render_circuit_banner()
+    session.shot("threats_circuit_tripped")
