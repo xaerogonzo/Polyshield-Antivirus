@@ -70,3 +70,6 @@ build.bat
 
 # UI capture output (goldens in tests/golden/ui are tracked)
 artifacts/
+
+# tokensave MCP binding (TokenSave Manager) — machine-local by choice
+.mcp.json
