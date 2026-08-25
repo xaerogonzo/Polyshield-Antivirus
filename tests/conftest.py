@@ -262,6 +262,55 @@ def _assert_session_leaves_no_trace():
     assert not stragglers, f"non-daemon threads outlived the suite: {stragglers}"
 
 
+# ── Headless Tk ───────────────────────────────────────────────────────────────
+
+@pytest.fixture(scope="session")
+def tk_root():
+    """One Tk root for the whole session.
+
+    Deliberately session-scoped: creating and destroying a CTk root per test
+    tears down Tcl's library state, and the *next* root then fails with
+    'invalid command name "tcl_findLibrary"'. That surfaced once as an
+    intermittent skip — a test quietly protecting nothing.
+
+    Lives here rather than in one test module because only one such root can
+    exist per session; every GUI test file shares this one.
+
+    The root class mirrors app.py's own choice: App subclasses TkinterDnD.Tk
+    when tkinterdnd2 imports, and plain CTk otherwise. That is not a detail —
+    ScanView registers a drop target during _build(), and the tkdnd Tcl
+    extension is loaded by the root, not by the import. On a plain CTk root the
+    whole view fails to construct, so testing there would mean testing a
+    configuration that never ships.
+    """
+    ctk = pytest.importorskip("customtkinter")
+    import tkinter
+
+    try:
+        from tkinterdnd2 import TkinterDnD
+        root_cls = TkinterDnD.Tk
+    except ImportError:
+        root_cls = ctk.CTk
+
+    try:
+        root = root_cls()
+    except tkinter.TclError as exc:                      # no display
+        pytest.skip(f"Tk unavailable: {exc}")
+    root.withdraw()
+
+    import ui.theme as theme
+    from ui.core import settings as cfg
+    theme.init(cfg)
+    theme.init_colors(cfg)
+
+    yield root
+
+    try:
+        root.destroy()
+    except Exception:
+        pass
+
+
 def make_sample_file(tmp_path, content: bytes, name: str = "sample.txt"):
     """Write a file and return (path, md5). A plain helper, like add_malicious."""
     import hashlib

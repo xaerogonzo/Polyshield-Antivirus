@@ -52,6 +52,7 @@ The suite is split by concern:
 | `test_ignore_list.py` | The false-positive whitelist and its in-process cache (v1.13) |
 | `test_pattern_stats.py` | Per-pattern telemetry and the FP-rate arithmetic behind the Settings display (v1.13) |
 | `test_dispute.py` | K2-vs-Guardian disagreement detection (v1.13) |
+| `test_scan_pipeline.py` | Engine queue construction and ordering, cancellation, finalize idempotence, pause/stop coordination, and the module-level log/ETA/path helpers (v1.13) |
 
 ### Isolating module-global state (v1.13)
 
@@ -76,12 +77,26 @@ Two autouse fixtures in `conftest.py` handle this:
   the above came back, and that no non-daemon thread outlived the run. The
   per-test fixture is the mechanism; this is the proof it worked.
 
+What the session guard does **not** check is pending Tk `after` callbacks.
+CustomTkinter schedules its own internally, so an assertion of "none pending"
+would fail for reasons unrelated to any test. Thread leaks are checked;
+scheduled callbacks are not.
+
 The opt-in sandboxes are `guardian_sandbox` (the scanner's construction-time
 reads: `_DATA_DIR`, `_KNOWN_BAD_TXT`, `_BLOOM_PATH`), `ignore_db`,
 `pattern_db`, and `quarantine_sandbox`. Note `ignore_db` depends on
 `pattern_db`: `ignore_list.add()` forwards a `"Suspicious pattern:"` reason to
 telemetry, so whether a test touches the stats DB depends on a string argument
 rather than on anything visible in its fixture list.
+
+### The session Tk root mirrors production's
+
+`tk_root` in `conftest.py` builds a `TkinterDnD.Tk` when `tkinterdnd2` imports
+and a plain `CTk` otherwise — the same choice `app.py` makes for `App`. This is
+load-bearing rather than cosmetic: `ScanView._build()` registers a drop target,
+and the tkdnd Tcl extension is loaded by the *root*, not by the import. On a
+plain `CTk` root the whole view raises `TclError` during construction, so
+testing there would exercise a configuration that never ships.
 
 ### Detection payloads are assembled at runtime
 
