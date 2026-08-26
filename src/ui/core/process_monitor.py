@@ -50,6 +50,11 @@ _KNOWN_BAD_PATH = _ROOT / "guardianai" / "data" / "known_bad.txt"  # legacy fall
 # _check_process() already has a per-lookup SQLite fallback that covers all hashes.
 _KNOWN_BAD_RAM_LIMIT = 500_000
 
+# How long stop() waits for the watch thread. A constant rather than a literal
+# so a test can shrink it -- the failure this guards against takes the whole
+# timeout to reproduce.
+_STOP_JOIN_TIMEOUT_S = 5
+
 # Every live ProcessMonitor in this process.  Weak, so a monitor that has been
 # stopped and dropped (the Processes view recreates one on every toggle) never
 # keeps a dead instance alive or gets reloaded pointlessly.
@@ -163,11 +168,28 @@ class ProcessMonitor:
         log.info("ProcessMonitor started (poll_interval=%ds).", self._poll_interval)
 
     def stop(self) -> None:
-        """Signal the monitor thread to stop and wait up to 5 s for it."""
+        """Signal the monitor thread to stop and wait for it to actually die.
+
+        The handle is dropped only on a successful join.  Clearing it after a
+        timed-out join made is_running() report False while the thread was
+        still alive and still able to fire alert_callback -- and for the one
+        component that kills processes, "I turned it off" must not be able to
+        lie.  A hung GetObject("winmgmts:") is the way that happens.
+        """
         self._stop_evt.set()
-        if self._thread:
-            self._thread.join(timeout=5)
-            self._thread = None
+        thread = self._thread
+        if thread is None:
+            return
+
+        thread.join(timeout=_STOP_JOIN_TIMEOUT_S)
+        if thread.is_alive():
+            log.error(
+                "ProcessMonitor: watch thread did not stop within %ss; keeping "
+                "the handle so is_running() keeps telling the truth.",
+                _STOP_JOIN_TIMEOUT_S)
+            return
+
+        self._thread = None
         log.info("ProcessMonitor stopped.")
 
     def is_running(self) -> bool:

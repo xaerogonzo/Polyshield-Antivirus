@@ -7,6 +7,7 @@ intelligence), and no test may leave a post-update hook registered behind it.
 """
 from __future__ import annotations
 
+import gc
 import importlib
 import sqlite3
 import sys
@@ -265,6 +266,26 @@ def quarantine_sandbox(tmp_path, monkeypatch):
     return qdir
 
 
+@pytest.fixture
+def net_sandbox(monkeypatch):
+    """Empty the network monitor's module-level caches for one test.
+
+    Both are process-global and both decide verdicts: _ip_check_cache memoises
+    "this address is clean" with no expiry, and _pid_proc_cache decides which
+    process a connection is attributed to. A test that inherits either one is
+    reading a previous test's conclusions.
+
+    test_intel_hooks.py already calls is_known_bad_ip(), so the IP cache was
+    being populated with nothing resetting it before v1.13.
+    """
+    from ui.core import network_monitor as nm
+
+    monkeypatch.setattr(nm, "_ip_check_cache", {})
+    monkeypatch.setattr(nm, "_pid_proc_cache", {})
+    monkeypatch.setattr(nm, "_poll_count", 0)
+    return nm
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _assert_session_leaves_no_trace():
     """Fail the run if the suite ends holding state it did not start with.
@@ -279,7 +300,7 @@ def _assert_session_leaves_no_trace():
     """
     from tools import update_intelligence as upd
     from ui.core import (guardian_engine, ignore_list, intel_hooks,
-                         network_monitor, watcher)
+                         network_monitor, process_monitor, watcher)
 
     before = {
         "hooks": list(upd._post_update_hooks),
@@ -290,6 +311,7 @@ def _assert_session_leaves_no_trace():
         "net_ip": dict(network_monitor._ip_check_cache),
         "net_pid": dict(network_monitor._pid_proc_cache),
         "watch_cbs": list(watcher._on_detection_callbacks),
+        "live_monitors": len(process_monitor._live_monitors),
     }
 
     yield
@@ -314,6 +336,14 @@ def _assert_session_leaves_no_trace():
         "a PID attribution outlived the test that cached it")
     assert watcher._on_detection_callbacks == before["watch_cbs"], (
         "a watcher detection callback outlived the test that registered it")
+
+    # _live_monitors is a WeakSet, so a monitor a test merely constructed is
+    # collected on its own. One that is still reachable is a real leak:
+    # reload_all_known_bad() would walk into it from a later test. gc first so
+    # this measures reachability rather than collection timing.
+    gc.collect()
+    assert len(process_monitor._live_monitors) == before["live_monitors"], (
+        "a ProcessMonitor is still reachable after the test that built it")
 
     stragglers = [t.name for t in threading.enumerate()
                   if t is not threading.main_thread() and not t.daemon]

@@ -16,7 +16,10 @@ Performance design
                        and immediately by clear_ip_cache() after a C2 blocklist
                        import (the "ips" post-update hook).
   • PID process cache — process name/path resolved once per PID and cached in
-                       memory.  Dead PIDs are evicted automatically.
+                       memory, keyed on the process's create_time so a recycled
+                       PID cannot inherit the previous process's identity.
+                       Entries are evicted when the PID is gone or its identity
+                       cannot be verified.
 
 Flagging tiers (in order)
 ─────────────────────────
@@ -33,6 +36,7 @@ Key exports
 """
 from __future__ import annotations
 
+import ipaddress as _ip
 import sqlite3
 import threading
 from datetime import datetime
@@ -52,8 +56,27 @@ POLL_INTERVAL      = 30    # seconds between connection sweeps
 _CACHE_RESET_POLLS = 20    # clear ip cache after this many polls (~10 min)
 _PID_CACHE_MAX     = 500   # max entries in the PID cache before full eviction
 
-# Private / loopback prefixes — connections to these are never flagged
-_PRIVATE = ("127.", "::1", "10.", "192.168.", "169.254.", "fe80:", "fc", "fd")
+# Ranges PolyShield does not monitor.
+#
+# Deliberately an explicit list rather than ipaddress.is_private(): that would
+# also skip 100.64.0.0/10 (CGNAT -- what Tailscale runs on), and whether
+# PolyShield should stop watching that traffic is a product decision, not a
+# side effect of a refactor.  Add to this list on purpose, never by delegation.
+#
+# The prefix-string version this replaces could not express 172.16.0.0/12 at
+# all, so every Docker / WSL2 / Hyper-V bridge address was treated as public
+# and every container process with an unresolvable exe path was flagged
+# "unsigned" on every poll.
+_SKIP_NETWORKS = tuple(_ip.ip_network(_c) for _c in (
+    "10.0.0.0/8",
+    "172.16.0.0/12",
+    "192.168.0.0/16",
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+    "::1/128",
+    "fe80::/10",       # IPv6 link-local
+    "fc00::/7",        # IPv6 unique-local
+))
 
 # ── Module-level caches ───────────────────────────────────────────────────────
 
@@ -62,8 +85,13 @@ _ip_check_cache: dict[str, tuple[bool, str]] = {}
 _ip_cache_lock  = threading.Lock()
 _poll_count     = 0
 
-# pid → (name: str, path: str)
-_pid_proc_cache: dict[int, tuple[str, str]] = {}
+# pid → (create_time: float, name: str, path: str)
+#
+# create_time is the identity half.  Windows recycles PIDs aggressively, and
+# without it a recycled PID served the dead process's name and path -- which
+# _is_unsigned() then keys off, so a new process could inherit a stale clean
+# verdict or collect a bogus "unsigned" flag.
+_pid_proc_cache: dict[int, tuple[float, str, str]] = {}
 
 
 def clear_ip_cache() -> None:
@@ -117,7 +145,20 @@ def is_known_bad_ip(ip: str) -> tuple[bool, str]:
 
 
 def _is_private(ip: str) -> bool:
-    return any(ip.startswith(p) for p in _PRIVATE)
+    """True when *ip* is in a range PolyShield does not monitor.
+
+    A malformed address returns False -- matching the old prefix behaviour, and
+    deliberately so: an address we cannot parse is surfaced rather than silently
+    dropped.  What it must never do is raise, because the only caller is the
+    polling loop and psutil hands it whatever the OS reported.
+    """
+    try:
+        addr = _ip.ip_address(ip)
+    except ValueError:
+        return False
+    # Mismatched-version containment is False, not an error, so v4 addresses
+    # simply miss the v6 networks.
+    return any(addr in net for net in _SKIP_NETWORKS)
 
 
 # ── Process resolution (with PID cache) ───────────────────────────────────────
@@ -130,11 +171,30 @@ def _resolve_process(pid: int) -> tuple[str, str]:
     if not _PSUTIL_OK or not pid:
         return "Unknown", ""
 
-    if pid in _pid_proc_cache:
-        return _pid_proc_cache[pid]
-
     try:
-        proc = psutil.Process(pid)
+        proc        = psutil.Process(pid)
+        create_time = proc.create_time()
+    except psutil.NoSuchProcess:
+        _pid_proc_cache.pop(pid, None)      # the PID is gone; so is its entry
+        return f"PID {pid}", ""
+    except psutil.AccessDenied:
+        # Identity is unverifiable, so a cached entry cannot be trusted either
+        # -- it may belong to a different process that recycled this PID.
+        # Drop it and report the connection as unattributed rather than
+        # guessing.
+        _pid_proc_cache.pop(pid, None)
+        return f"PID {pid}", ""
+    except Exception:
+        return f"PID {pid}", ""
+
+    cached = _pid_proc_cache.get(pid)
+    if cached is not None and cached[0] == create_time:
+        return cached[1], cached[2]         # same PID, same process
+
+    # Either a miss or a recycled PID.  name()/exe() are the expensive calls
+    # the cache exists to avoid; create_time() above is the cheap identity
+    # check that decides whether we can skip them.
+    try:
         name = proc.name()
         path = proc.exe()
     except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -143,7 +203,7 @@ def _resolve_process(pid: int) -> tuple[str, str]:
 
     if len(_pid_proc_cache) >= _PID_CACHE_MAX:
         _pid_proc_cache.clear()
-    _pid_proc_cache[pid] = (name, path)
+    _pid_proc_cache[pid] = (create_time, name, path)
     return name, path
 
 
