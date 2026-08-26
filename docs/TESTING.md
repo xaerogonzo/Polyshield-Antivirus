@@ -54,6 +54,10 @@ The suite is split by concern:
 | `test_dispute.py` | K2-vs-Guardian disagreement detection (v1.13) |
 | `test_scan_pipeline.py` | Engine queue construction and ordering, cancellation, finalize idempotence, pause/stop coordination, and the module-level log/ETA/path helpers (v1.13) |
 | `test_threat_actions.py` | What the panel shows after a scan — result collection, severity, reason buckets, every filter chip and display mode, plus one end-to-end Guardian→UI contract test (v1.13) |
+| `test_settings.py` | Settings persistence — the locked read-merge-replace, cross-process key preservation, the failure contract, and corruption recovery (v1.13) |
+| `test_scan_control.py` | `ScanController`'s state machine, intent recorded before the k2 process exists, the two cancellation races, and the shared pause/resume helper (v1.13) |
+| `test_scan_presets.py` | What a Smart/Quick/Full scan actually resolves to on disk (v1.13) |
+| `test_display_persist.py` | That slider drags coalesce into one settings write instead of ~60 (v1.13) |
 
 ### Isolating module-global state (v1.13)
 
@@ -85,10 +89,48 @@ scheduled callbacks are not.
 
 The opt-in sandboxes are `guardian_sandbox` (the scanner's construction-time
 reads: `_DATA_DIR`, `_KNOWN_BAD_TXT`, `_BLOOM_PATH`), `ignore_db`,
-`pattern_db`, and `quarantine_sandbox`. Note `ignore_db` depends on
+`pattern_db`, and `quarantine_sandbox`. `settings_file` is the odd one
+out: `settings_sandbox` replaces `set_value()` outright, which is what most
+tests want, so the tests *of* `set_value()` need the real functions pointed at
+a temp file instead. It redirects the lock sidecar too — left at the real path,
+a test would contend with a running PolyShield for the user's settings lock. Note `ignore_db` depends on
 `pattern_db`: `ignore_list.add()` forwards a `"Suspicious pattern:"` reason to
 telemetry, so whether a test touches the stats DB depends on a string argument
 rather than on anything visible in its fixture list.
+
+### The settings concurrency contract (v1.13)
+
+`config/ui_settings.json` is written by two processes: the UI, and the service
+via `SET_CONFIG` and `watcher.start()/stop()`. `set_value()` is the persistence
+primitive and performs, under an OS-owned cross-process lock:
+
+    re-read the file  ->  merge the one changed key  ->  atomic replace
+
+Re-reading inside the lock is what makes concurrent writers preserve each
+other's keys. **Atomic replacement alone does not** — it protects the file from
+a torn write, not the read-merge-replace transaction. Without the lock this
+interleaving silently loses `a=2`, which is what the code did before v1.13:
+
+    A: read {a:1,b:1}            B: read {a:1,b:1}
+    A: write {a:2,b:1}           B: write {a:1,b:2}
+
+The lock is a byte-range lock on a **sidecar** (`ui_settings.json.lock`), for
+two reasons that are both load-bearing: it is owned by the OS handle so a
+crashed process releases it automatically (a PID-in-a-lockfile convention
+leaves settings permanently locked after one crash), and it is not on the
+target file because Windows refuses `os.replace()` over a file with an open
+handle.
+
+`set_value()` returns `SAVE_OK` / `SAVE_DEGRADED` / `SAVE_FAILED` rather than
+raising. All 73 call sites are bare calls inside Tk event handlers — including
+slider `command=` callbacks that fire on every drag tick — so an exception would
+land in Tk's dispatcher per tick. **`SAVE_DEGRADED` is a named exception to the
+guarantee:** the bounded lock wait timed out and a single best-effort write was
+made, outside the lost-update contract. A test must never treat it as `SAVE_OK`.
+
+What the suite cannot prove: that this holds across a real process boundary.
+That needs two processes — change a setting in the UI, send `SET_CONFIG` for a
+different key through `service_client`, and confirm both survive.
 
 ### The Tk root has to load tkdnd, but must stay a CTk
 
@@ -124,6 +166,20 @@ scenario stops being a genuine regression.
 
 Guardian's tier-3 SQLite fallback masks a stale RAM set, so its test disables
 that fallback (`lookup_hash` → `None`) to isolate the tier-2 RAM path.
+
+### Synthetic button events do not reach a withdrawn root
+
+`button.invoke()` works because it calls the command directly. There is no
+equivalent for a `bind()`: Tk will not dispatch a synthetic `<ButtonRelease-1>`
+to a widget whose toplevel is withdrawn -- not with `when="now"`, and not after
+`pack()` plus `update()`. The event is accepted and silently goes nowhere,
+which means a test written that way passes because nothing happened.
+
+Where a binding matters, assert the wiring (`widget.bind()` lists the
+sequence) and call what it invokes. `test_display_persist.py` does both.
+
+Related: `CTkSlider.bind()` forwards to its inner `_canvas`, so the binding is
+registered there rather than on the CTkSlider itself.
 
 ### GUI tests without a screen
 

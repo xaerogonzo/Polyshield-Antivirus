@@ -70,10 +70,32 @@ class ScanController:
         self._cancelled = False
         self._lock = threading.Lock()
 
-    # Called from inside the background thread once Popen succeeds
-    def _attach(self, proc: subprocess.Popen):
+    def _attach(self, proc: subprocess.Popen) -> bool:
+        """Adopt the k2 process, applying intent recorded before it existed.
+
+        run_scan() pre-counts files before Popen — minutes on a Full scan — so
+        pause() and cancel() are routinely called while _proc is still None.
+        They record intent rather than dropping it; this is where it lands, and
+        it must happen under the same lock so a cancel() racing Popen() cannot
+        slip between the two.
+
+        Returns False when the scan was already cancelled, in which case the
+        process has been killed and the caller must not proceed.
+        """
         with self._lock:
             self._proc = proc
+            if self._cancelled:
+                # Cancel outranks a pending pause: never leave a suspended
+                # process alive, and never suspend one we are about to kill.
+                self._paused = False
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+                return False
+            if self._paused:
+                _os_suspend(proc.pid)
+            return True
 
     @property
     def paused(self) -> bool:
@@ -85,17 +107,20 @@ class ScanController:
 
     def pause(self):
         with self._lock:
-            if self._paused or self._cancelled or self._proc is None:
+            if self._paused or self._cancelled:
                 return
-            _os_suspend(self._proc.pid)
             self._paused = True
+            if self._proc is not None:
+                _os_suspend(self._proc.pid)
+            # else: intent recorded — _attach() applies it on arrival.
 
     def resume(self):
         with self._lock:
-            if not self._paused or self._proc is None:
+            if not self._paused:
                 return
-            _os_resume(self._proc.pid)
             self._paused = False
+            if self._proc is not None:
+                _os_resume(self._proc.pid)
 
     def toggle_pause(self):
         (self.resume if self._paused else self.pause)()
@@ -104,6 +129,7 @@ class ScanController:
         with self._lock:
             self._cancelled = True
             if self._proc is None:
+                self._paused = False    # nothing to resume; drop the intent
                 return
             # Must resume first on Windows — a suspended process ignores TerminateProcess
             if self._paused:
@@ -226,6 +252,14 @@ def run_scan(
             line_callback(f"[INFO] {total} file(s) to scan")
             progress_callback(0, total, "")
 
+        # The pre-count above runs for minutes on a Full scan, and Stop is a
+        # button the user can press throughout it.  Without this check k2.exe
+        # was launched *after* the scan had been cancelled.
+        if controller.cancelled:
+            line_callback("[INFO] Scan cancelled before it started.")
+            done_callback(-1, None)
+            return
+
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -236,7 +270,13 @@ def run_scan(
                 errors="replace",
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
-            controller._attach(proc)
+            # A cancel() racing this Popen() cannot be prevented by the check
+            # above — it lands between the check and the call.  _attach() is the
+            # backstop: it kills the process it just adopted and reports False.
+            if not controller._attach(proc):
+                line_callback("[INFO] Scan cancelled.")
+                done_callback(-1, None)
+                return
 
             # k2 emits a JSON block to stdout AFTER the human-readable summary
             # when --report=json is passed.  Accumulate those lines separately so
