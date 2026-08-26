@@ -276,27 +276,28 @@ def tk_root():
     Lives here rather than in one test module because only one such root can
     exist per session; every GUI test file shares this one.
 
-    The root class mirrors app.py's own choice: App subclasses TkinterDnD.Tk
-    when tkinterdnd2 imports, and plain CTk otherwise. That is not a detail —
     ScanView registers a drop target during _build(), and the tkdnd Tcl
-    extension is loaded by the root, not by the import. On a plain CTk root the
-    whole view fails to construct, so testing there would mean testing a
-    configuration that never ships.
+    package is loaded by the root rather than by the tkinterdnd2 import — so
+    without the _require() call below the view raises TclError before it is
+    built. TkinterDnD.Tk is exactly tkinter.Tk plus that call, and the DnD
+    methods are already mixed into every widget at import, so loading the
+    package here buys the capability without swapping the root class (which
+    would cost CustomTkinter's themed background).
     """
     ctk = pytest.importorskip("customtkinter")
     import tkinter
 
     try:
-        from tkinterdnd2 import TkinterDnD
-        root_cls = TkinterDnD.Tk
-    except ImportError:
-        root_cls = ctk.CTk
-
-    try:
-        root = root_cls()
+        root = ctk.CTk()
     except tkinter.TclError as exc:                      # no display
         pytest.skip(f"Tk unavailable: {exc}")
     root.withdraw()
+
+    try:
+        from tkinterdnd2 import TkinterDnD
+        TkinterDnD._require(root)
+    except Exception:
+        pass    # drag-and-drop unavailable; ScanView degrades in _build()
 
     import ui.theme as theme
     from ui.core import settings as cfg

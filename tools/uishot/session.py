@@ -83,6 +83,21 @@ class TkSession:
 
         self._ctk = ctk
         self._root = ctk.CTk()
+        # Load tkdnd into this interpreter. ScanView registers a drop target
+        # during _build(), and that Tcl package is loaded by the root, not by
+        # the tkinterdnd2 import — without it the view raises TclError before
+        # it finishes building and the scene fails outright.
+        #
+        # _require() rather than swapping the root for TkinterDnD.Tk: that
+        # class is exactly tkinter.Tk plus this call, and the DnD methods are
+        # already mixed into every widget at import. Swapping the class costs
+        # CustomTkinter's themed root background and shifts every existing
+        # golden by ~24%.
+        try:
+            from tkinterdnd2 import TkinterDnD
+            TkinterDnD._require(self._root)
+        except Exception:
+            pass    # drag-and-drop unavailable; every other scene still works
         self._root.geometry(f"{self.size[0]}x{self.size[1]}+0+0")
         theme.init(cfg)
         theme.init_colors(cfg)

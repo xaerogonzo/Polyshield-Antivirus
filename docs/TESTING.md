@@ -53,6 +53,7 @@ The suite is split by concern:
 | `test_pattern_stats.py` | Per-pattern telemetry and the FP-rate arithmetic behind the Settings display (v1.13) |
 | `test_dispute.py` | K2-vs-Guardian disagreement detection (v1.13) |
 | `test_scan_pipeline.py` | Engine queue construction and ordering, cancellation, finalize idempotence, pause/stop coordination, and the module-level log/ETA/path helpers (v1.13) |
+| `test_threat_actions.py` | What the panel shows after a scan — result collection, severity, reason buckets, every filter chip and display mode, plus one end-to-end Guardian→UI contract test (v1.13) |
 
 ### Isolating module-global state (v1.13)
 
@@ -89,14 +90,20 @@ reads: `_DATA_DIR`, `_KNOWN_BAD_TXT`, `_BLOOM_PATH`), `ignore_db`,
 telemetry, so whether a test touches the stats DB depends on a string argument
 rather than on anything visible in its fixture list.
 
-### The session Tk root mirrors production's
+### The Tk root has to load tkdnd, but must stay a CTk
 
-`tk_root` in `conftest.py` builds a `TkinterDnD.Tk` when `tkinterdnd2` imports
-and a plain `CTk` otherwise — the same choice `app.py` makes for `App`. This is
-load-bearing rather than cosmetic: `ScanView._build()` registers a drop target,
-and the tkdnd Tcl extension is loaded by the *root*, not by the import. On a
-plain `CTk` root the whole view raises `TclError` during construction, so
-testing there would exercise a configuration that never ships.
+`ScanView._build()` registers a drop target, and the tkdnd Tcl package is
+loaded by the **root**, not by the `tkinterdnd2` import. Without it the view
+raises `TclError` before it finishes building — so both `conftest.py`'s
+`tk_root` and `uishot`'s `TkSession` call `TkinterDnD._require(root)` after
+creating an ordinary `ctk.CTk()`.
+
+The tempting shortcut is to swap the root for `TkinterDnD.Tk`, which is what
+`app.py` does for `App`. Don't: that class is exactly `tkinter.Tk` plus the
+same `_require()` call, the DnD methods are already mixed into every widget at
+import, and a raw `tkinter.Tk` root loses CustomTkinter's themed background.
+Measured cost when tried: every existing golden drifted about 24%, and the new
+captures rendered on light grey.
 
 ### Detection payloads are assembled at runtime
 
