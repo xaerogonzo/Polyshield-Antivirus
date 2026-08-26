@@ -44,6 +44,7 @@ Commercial AV products have telemetry, ad-ware components, and they replace Defe
 - 🎚️ **Sensitivity profiles for Guardian AI** — Conservative / Balanced / Power, plus per-pattern toggles
 - 🐉 **Behavioral analysis** — optional Speakeasy PE emulation for unknown executables
 - 🔄 **Self-updating threat intelligence** — MalwareBazaar hashes, C2 blocklists and YARA rules refresh on a schedule; the Dashboard tells you when they are going stale, and says so plainly if a feed downloaded but isn't usable
+- 🐳 **Container traffic is not treated as suspicious** — Docker, WSL2 and Hyper-V bridge ranges are recognised as local, so container processes stop being flagged as unsigned outbound connections
 - ⏸️ **Stop and Pause take effect immediately** — including during the file-counting phase of a Full scan, where the request used to be silently discarded
 - 🔐 **Quarantine kept under Defender's watch** — second line of defense by design (not by accident)
 - 🚀 **No telemetry, no cloud-by-default, no API keys required**

@@ -57,6 +57,8 @@ The suite is split by concern:
 | `test_settings.py` | Settings persistence — the locked read-merge-replace, cross-process key preservation, the failure contract, and corruption recovery (v1.13) |
 | `test_scan_control.py` | `ScanController`'s state machine, intent recorded before the k2 process exists, the two cancellation races, and the shared pause/resume helper (v1.13) |
 | `test_scan_presets.py` | What a Smart/Quick/Full scan actually resolves to on disk (v1.13) |
+| `test_process_monitor.py` | The verdict ladder of the component that kills processes, the allow-list/reload ordering, and stop() not lying about whether it stopped (v1.13) |
+| `test_network_monitor.py` | Private-range policy, PID-reuse attribution, connection flagging tiers, and the IP verdict cache (v1.13) |
 
 ### Isolating module-global state (v1.13)
 
@@ -88,7 +90,9 @@ scheduled callbacks are not.
 
 The opt-in sandboxes are `guardian_sandbox` (the scanner's construction-time
 reads: `_DATA_DIR`, `_KNOWN_BAD_TXT`, `_BLOOM_PATH`), `ignore_db`,
-`pattern_db`, and `quarantine_sandbox`. `settings_file` is the odd one
+`pattern_db`, and `quarantine_sandbox`. `net_sandbox` empties the two network caches -- both are process-global and
+both decide verdicts, so a test inheriting either is reading a previous test's
+conclusions. `settings_file` is the odd one
 out: `settings_sandbox` replaces `set_value()` outright, which is what most
 tests want, so the tests *of* `set_value()` need the real functions pointed at
 a temp file instead. It redirects the lock sidecar too — left at the real path,
@@ -130,6 +134,31 @@ made, outside the lost-update contract. A test must never treat it as `SAVE_OK`.
 What the suite cannot prove: that this holds across a real process boundary.
 That needs two processes — change a setting in the UI, send `SET_CONFIG` for a
 different key through `service_client`, and confirm both survive.
+
+### Two races that were probed rather than assumed (v1.13)
+
+The plan for this arc listed both as "fix only if a test confirms it". They
+did not come out the same way, and the difference is worth recording so the
+next reader does not re-litigate either one.
+
+**`network_monitor._poll_count += 1` — not fixed.** It is a read-modify-write
+outside `_ip_cache_lock`, while the cache clear it guards is inside. It looks
+like a lost-update race. It does not reproduce: eight threads x 5000
+increments, five trials, with `sys.setswitchinterval(1e-6)` forcing preemption,
+lost zero increments on a GIL build. The consequence if it ever did occur is
+also negligible — the periodic cache sweep would happen one poll later, and the
+case that actually matters (a fresh C2 import) is handled by an explicit
+`clear_ip_cache()` from the "ips" post-update hook, not by the counter. Left
+alone deliberately. A free-threaded build would change this analysis.
+
+**`ProcessMonitor.stop()` — fixed.** This one reproduces immediately. With a
+watch loop that ignores `_stop_evt` (standing in for a hung
+`GetObject("winmgmts:")`), `stop()` returned after its 5 s join, cleared
+`_thread` regardless of the outcome, and `is_running()` then reported `False`
+while the thread was still alive and still able to fire `alert_callback`. For
+the one component that terminates processes, "I turned it off" must not be
+able to lie. The handle is now dropped only on a successful join, and
+`_STOP_JOIN_TIMEOUT_S` exists as a constant so the test can shrink it.
 
 ### The Tk root has to load tkdnd, but must stay a CTk
 
