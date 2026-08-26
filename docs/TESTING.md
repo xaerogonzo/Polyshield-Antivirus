@@ -39,7 +39,7 @@ Tests live in `tests/` and are hermetic: `conftest.py` redirects every consumer'
 touches the live ~146 MB intelligence database, and the post-update hook registry
 is emptied between tests.
 
-The v1.12 suite is split by concern:
+The suite is split by concern:
 
 | File | Covers |
 |---|---|
@@ -47,6 +47,51 @@ The v1.12 suite is split by concern:
 | `test_intel_updater.py` | The updater core — cross-process lock ownership, per-feed status, backoff, freshness, YARA publishing, posture |
 | `test_service_intel.py` | Service IPC dispatch, the worker handoff, client wrappers, and the UI launch-time fallback |
 | `test_dashboard_intel_card.py` | What the Dashboard actually renders (see *GUI tests without a screen* below) |
+| `test_guardian_tiers.py` | The verdict ladder — every tier, profile gating, the circuit breaker, and live reload on the production singleton (v1.13) |
+| `test_quarantine.py` | Capture, listing, restore, delete — including the two refusal cases that protect user data (v1.13) |
+| `test_ignore_list.py` | The false-positive whitelist and its in-process cache (v1.13) |
+| `test_pattern_stats.py` | Per-pattern telemetry and the FP-rate arithmetic behind the Settings display (v1.13) |
+| `test_dispute.py` | K2-vs-Guardian disagreement detection (v1.13) |
+
+### Isolating module-global state (v1.13)
+
+Redirecting `_DB_PATH` is only half of hermeticity. The detection path also
+keeps a scanner singleton, a hook registry, and a lazily-populated hash cache,
+and a suite can leave every production *file* untouched while still polluting
+all three.
+
+The worked example: `guardian_engine.scan_async()`'s worker calls
+`register_intel_hooks()` as a fallback, so *any* test touching the async
+Guardian path registers `reload_signatures` into the real hook registry. A
+later test that never asked for the `hooks` fixture then inherits a live
+callback pointing at an earlier test's scanner.
+
+Two autouse fixtures in `conftest.py` handle this:
+
+- `_restore_global_state` — snapshots and **restores** `_post_update_hooks`,
+  both registration latches, `guardian_engine._scanner`, and
+  `ignore_list._cache` around every test. Restore rather than clear, because
+  `test_intel_hooks.py` registers hooks on purpose.
+- `_assert_session_leaves_no_trace` — asserts at session teardown that all of
+  the above came back, and that no non-daemon thread outlived the run. The
+  per-test fixture is the mechanism; this is the proof it worked.
+
+The opt-in sandboxes are `guardian_sandbox` (the scanner's construction-time
+reads: `_DATA_DIR`, `_KNOWN_BAD_TXT`, `_BLOOM_PATH`), `ignore_db`,
+`pattern_db`, and `quarantine_sandbox`. Note `ignore_db` depends on
+`pattern_db`: `ignore_list.add()` forwards a `"Suspicious pattern:"` reason to
+telemetry, so whether a test touches the stats DB depends on a string argument
+rather than on anything visible in its fixture list.
+
+### Detection payloads are assembled at runtime
+
+`test_guardian_tiers.py` builds its pattern-matching samples from string
+fragments via a `_payload()` helper rather than writing them as literals. What
+Guardian's regexes match is, by construction, what a real-time AV matches too:
+Defender flagged an earlier draft of that file as `Trojan:Win32/ClickFix` on
+the strength of one `mshta` line, and CI runs on a Defender-enabled Windows
+runner where a quarantined test file is a red build for reasons unrelated to
+the code. Do not collapse those fragments back into single literals.
 
 **Rule for live-reload tests:** assert through the same public path production
 uses — `scanner.scan_file()`, `monitor._check_process()`, `is_known_bad_ip()` —

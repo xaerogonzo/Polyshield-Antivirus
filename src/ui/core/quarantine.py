@@ -30,8 +30,14 @@ def list_quarantined() -> list[dict]:
 
 
 def add_file(src_path: str, threat_name: str = "Unknown") -> Path:
-    """Move a file into quarantine and write its .kicometa sidecar."""
-    src = Path(src_path)
+    """Move a file into quarantine and write its .kicometa sidecar.
+
+    The origin is recorded as an absolute path. A relative one would be
+    resolved at *restore* time against whatever the working directory happens
+    to be then — which, for a file that may sit in quarantine for months, is a
+    guess rather than a destination.
+    """
+    src = Path(src_path).resolve()
     dest = _unique_dest(src.name)
     shutil.move(str(src), dest)
     _save_meta(dest, {
@@ -42,13 +48,43 @@ def add_file(src_path: str, threat_name: str = "Unknown") -> Path:
     return dest
 
 
+def move_to_quarantine(src_path: str, threat_name: str = "Unknown") -> tuple[bool, str]:
+    """Quarantine a file, reporting a verdict and a message fit for the UI.
+
+    The view-facing wrapper around add_file(). Every caller is a button
+    handler that needs two things add_file() does not give it: a boolean it
+    can branch on, and a line it can put in the status bar and the scan log.
+    add_file() raises instead, and an exception reaching a Tk command handler
+    is invisible to the user — the button simply does nothing.
+    """
+    name = Path(src_path).name
+    try:
+        dest = add_file(src_path, threat_name)
+    except FileNotFoundError:
+        return False, f"Quarantine failed: {name} no longer exists"
+    except PermissionError:
+        return False, f"Quarantine failed: {name} is locked by another process"
+    except Exception as exc:
+        return False, f"Quarantine failed: {name} - {exc}"
+    return True, f"Quarantined: {name}"
+
+
 def restore(entry: dict) -> bool:
-    """Restore a quarantined file to its original location."""
+    """Restore a quarantined file to its original location.
+
+    Refuses rather than overwrites. If something already occupies the original
+    path — the user re-created or re-downloaded it while the threat sat in
+    quarantine — the restore fails and leaves both the quarantined file and
+    its sidecar intact. Losing the file the user kept is worse than declining
+    to restore the one they quarantined.
+    """
     qpath: Path = entry["path"]
     orig = entry["original_path"]
     if orig == "Unknown":
         return False
     dest = Path(orig)
+    if dest.exists():
+        return False
     try:
         dest.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(qpath), dest)

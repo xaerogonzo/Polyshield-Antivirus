@@ -322,7 +322,9 @@ class QuarantineView(ctk.CTkFrame):
                 messagebox.showerror(
                     "Error",
                     "Could not restore file.\n"
-                    "Original path may be unknown or inaccessible.")
+                    "A file may already exist at the original path — PolyShield "
+                    "will not overwrite it. The original path may also be "
+                    "unknown or inaccessible.")
             self.refresh()
 
     def _delete(self, entry: dict):
