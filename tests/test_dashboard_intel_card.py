@@ -16,30 +16,8 @@ import pytest
 ctk = pytest.importorskip("customtkinter")
 
 
-@pytest.fixture(scope="session")
-def tk_root():
-    """One Tk root for the whole session.
-
-    Deliberately session-scoped: creating and destroying a CTk root per test
-    tears down Tcl's library state, and the *next* root then fails with
-    'invalid command name "tcl_findLibrary"'.  That surfaced here as an
-    intermittent skip — a test quietly protecting nothing.
-    """
-    import tkinter
-    try:
-        root = ctk.CTk()
-    except tkinter.TclError as exc:                      # no display
-        pytest.skip(f"Tk unavailable: {exc}")
-    root.withdraw()
-    import ui.theme as theme
-    from ui.core import settings as cfg
-    theme.init(cfg)
-    theme.init_colors(cfg)
-    yield root
-    try:
-        root.destroy()
-    except Exception:
-        pass
+# tk_root is session-scoped and shared with the other GUI test modules; it
+# lives in conftest.py because only one CTk root can exist per session.
 
 
 @pytest.fixture
