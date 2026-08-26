@@ -191,6 +191,10 @@ or red "Confirmed" (Power). The consensus badge counts how many engines flagged
 each file and shows a specific warning for lone Guardian-pattern hits where
 all hash engines say clean (>99% FP probability per Gemini's analysis).
 
+Every engine the watcher launches records a verdict in `entry["verdicts"]`, and a
+completion barrier notifies observers once all of them have reported — no engine's
+result can be suppressed by another finishing first (v1.13).
+
 The watcher path (`watcher.py::scan_new_file`) passes `use_patterns_override=False`
 by default (controlled by `watcher_guardian_patterns` setting) so real-time
 scanning runs hash tiers only — pattern false positives at watcher cadence

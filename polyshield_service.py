@@ -446,12 +446,25 @@ class PolyShieldService(win32serviceutil.ServiceFramework):
         self._start_watcher()
 
     def _service_scan_callback(self, path: str, entry: dict):
-        from ui.core import watcher as wtch
-        wtch.scan_new_file(path, entry)
+        """Hand the file to the scan pipeline; record the event when it finishes.
 
+        This used to call scan_new_file() and read entry["status"] on the very
+        next line. scan_new_file() returns before k2 has even started, so the
+        event stream -- and config/service_events.json with it -- recorded
+        "pending" for essentially every real-time detection. The verdict now
+        arrives through the completion callback.
+        """
+        from ui.core import watcher as wtch
+        wtch.scan_new_file(path, entry, on_complete=self._on_scan_complete)
+
+    def _on_scan_complete(self, entry: dict):
+        """Called once per detected file, after every launched engine reported.
+
+        Runs on a scan worker thread, not the watchdog thread.
+        """
         event = {
-            "path":     path,
-            "filename": Path(path).name,
+            "path":     entry.get("path", ""),
+            "filename": entry.get("filename", ""),
             "time":     datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "status":   entry.get("status", "pending"),
             "source":   "k2",

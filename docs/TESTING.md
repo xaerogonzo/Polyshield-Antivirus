@@ -60,6 +60,7 @@ The suite is split by concern:
 | `test_display_persist.py` | That slider drags coalesce into one settings write instead of ~60 (v1.13) |
 | `test_process_monitor.py` | The verdict ladder of the component that kills processes, the allow-list/reload ordering, and stop() not lying about whether it stopped (v1.13) |
 | `test_network_monitor.py` | Private-range policy, PID-reuse attribution, connection flagging tiers, and the IP verdict cache (v1.13) |
+| `test_watcher.py` | Real-time engine verdicts surviving any completion order, and the completion contract that decides when observers see them (v1.13) |
 
 ### Isolating module-global state (v1.13)
 
@@ -160,6 +161,50 @@ while the thread was still alive and still able to fire `alert_callback`. For
 the one component that terminates processes, "I turned it off" must not be
 able to lie. The handle is now dropped only on a successful join, and
 `_STOP_JOIN_TIMEOUT_S` exists as a constant so the test can shrink it.
+
+### The watcher callback contract (v1.13)
+
+A registered detection callback means **scan complete**, not "file detected".
+Specifically it:
+
+- fires once per detected file, after every engine that was actually launched
+  has reported
+- receives the final entry, with `entry["verdicts"]` carrying one
+  `{engine, infected, reason, status}` record per launched engine and
+  `entry["status"]` as the derived summary
+- **runs on a scan worker thread**, not the watchdog observer thread, so it
+  must be thread-safe
+
+That is a behaviour change. Callbacks used to fire from `on_created` straight
+after `scan_callback` returned -- but `scan_new_file()` ends in `run_scan()`,
+which returns before k2 has even started, so every observer saw `"pending"`.
+The Windows Service had the same bug one level up: it read
+`entry.get("status")` on the line after calling `scan_new_file`, and persisted
+`"pending"` into `config/service_events.json` for essentially every real-time
+detection. It now passes an `on_complete` callback instead.
+
+`entry["verdicts"]` includes clean results deliberately. Without them a
+consumer cannot tell *ran and found nothing* from *was never launched* from
+*failed to produce a result* -- and an engine failure that reads as clean is
+the worst of the three.
+
+The status reduction keeps producing the strings the three existing consumers
+already understand, plus one new one:
+
+| Condition | Status |
+|---|---|
+| k2 flagged it | `threat found` |
+| a secondary engine flagged it | `suspicious (<Engine>)`, fixed precedence |
+| every launched engine completed cleanly | `clean` |
+| nothing detected, but an engine errored | `incomplete (<Engine> error)` |
+| the barrier is still open | `pending` |
+
+The new string needs no UI change: both renderers colour on `"threat" in
+status` and `status == "clean"` and print anything else verbatim, so
+`incomplete (...)` renders amber -- which is the right signal for "did not
+finish". The load-bearing half is that `clean` is the only string earning the
+green all-clear, so it is reserved for runs where every launched engine
+actually completed.
 
 ### The Tk root has to load tkdnd, but must stay a CTk
 

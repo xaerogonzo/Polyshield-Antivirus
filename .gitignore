@@ -73,3 +73,7 @@ artifacts/
 
 # tokensave MCP binding (TokenSave Manager) — machine-local by choice
 .mcp.json
+
+# Settings cross-process lock sidecar (runtime artifact)
+config/ui_settings.json.lock
+config/*.corrupt
