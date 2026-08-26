@@ -57,6 +57,7 @@ The suite is split by concern:
 | `test_settings.py` | Settings persistence — the locked read-merge-replace, cross-process key preservation, the failure contract, and corruption recovery (v1.13) |
 | `test_scan_control.py` | `ScanController`'s state machine, intent recorded before the k2 process exists, the two cancellation races, and the shared pause/resume helper (v1.13) |
 | `test_scan_presets.py` | What a Smart/Quick/Full scan actually resolves to on disk (v1.13) |
+| `test_display_persist.py` | That slider drags coalesce into one settings write instead of ~60 (v1.13) |
 
 ### Isolating module-global state (v1.13)
 
@@ -165,6 +166,20 @@ scenario stops being a genuine regression.
 
 Guardian's tier-3 SQLite fallback masks a stale RAM set, so its test disables
 that fallback (`lookup_hash` → `None`) to isolate the tier-2 RAM path.
+
+### Synthetic button events do not reach a withdrawn root
+
+`button.invoke()` works because it calls the command directly. There is no
+equivalent for a `bind()`: Tk will not dispatch a synthetic `<ButtonRelease-1>`
+to a widget whose toplevel is withdrawn -- not with `when="now"`, and not after
+`pack()` plus `update()`. The event is accepted and silently goes nowhere,
+which means a test written that way passes because nothing happened.
+
+Where a binding matters, assert the wiring (`widget.bind()` lists the
+sequence) and call what it invokes. `test_display_persist.py` does both.
+
+Related: `CTkSlider.bind()` forwards to its inner `_canvas`, so the binding is
+registered there rather than on the CTkSlider itself.
 
 ### GUI tests without a screen
 
