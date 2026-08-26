@@ -286,6 +286,30 @@ def net_sandbox(monkeypatch):
     return nm
 
 
+@pytest.fixture
+def watcher_sandbox(monkeypatch, settings_sandbox):
+    """Empty the watcher's module-level state for one test.
+
+    All three are process-global: the event log accumulates every file the
+    watcher has ever seen, the callback list decides who gets notified, and a
+    leftover _observer would make is_running() report a previous test's
+    Observer.
+
+    Depends on settings_sandbox deliberately, the same way ignore_db depends on
+    pattern_db. start() and stop() both call cfg.set_value("watcher_enabled"),
+    so whether a watcher test writes the user's real config depends on a code
+    path rather than on anything visible in its fixture list -- which is
+    precisely how it leaked the first time, leaving a config/ui_settings.json.lock
+    behind in the working tree.
+    """
+    from ui.core import watcher as wtch
+
+    monkeypatch.setattr(wtch, "_event_log", [])
+    monkeypatch.setattr(wtch, "_on_detection_callbacks", [])
+    monkeypatch.setattr(wtch, "_observer", None)
+    return wtch
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _assert_session_leaves_no_trace():
     """Fail the run if the suite ends holding state it did not start with.
