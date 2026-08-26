@@ -83,8 +83,35 @@ def settings_sandbox(monkeypatch):
 
     sandbox = dict(cfg._DEFAULTS)
     monkeypatch.setattr(cfg, "_cache", sandbox)
-    monkeypatch.setattr(cfg, "set_value", lambda k, v: sandbox.__setitem__(k, v))
+
+    def _set(k, v):
+        sandbox[k] = v
+        return cfg.SAVE_OK      # match the real contract; None would be a lie
+
+    monkeypatch.setattr(cfg, "set_value", _set)
     return sandbox
+
+
+@pytest.fixture
+def settings_file(tmp_path, monkeypatch):
+    """A real on-disk settings file, for the persistence tests.
+
+    settings_sandbox above replaces set_value() outright, which is what most
+    tests want. These tests are about set_value() itself -- the locked
+    read-merge-replace, corruption recovery, the failure contract -- so they
+    need the real functions pointed at a temp file instead.
+
+    The lock sidecar is redirected too. Leaving it at the real path would let a
+    test contend with a running PolyShield for the user's actual settings lock.
+    """
+    from ui.core import settings as cfg
+
+    sfile = tmp_path / "config" / "ui_settings.json"
+    sfile.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(cfg, "_SETTINGS_FILE", sfile)
+    monkeypatch.setattr(cfg, "_LOCK_FILE", sfile.with_name(sfile.name + ".lock"))
+    monkeypatch.setattr(cfg, "_cache", None)
+    return sfile
 
 
 # ── Row helpers ───────────────────────────────────────────────────────────────
@@ -131,13 +158,20 @@ def add_c2_ip(db: Path, ip: str, tags: str = "test-c2") -> None:
 def _restore_global_state():
     """Snapshot and restore every module global the detection path mutates."""
     from tools import update_intelligence as upd
-    from ui.core import guardian_engine, ignore_list, intel_hooks
+    from ui.core import (guardian_engine, ignore_list, intel_hooks,
+                         network_monitor, settings, watcher)
 
     saved_hooks = list(upd._post_update_hooks)
     saved_registered = intel_hooks._registered
     saved_ge_registered = guardian_engine._post_update_hook_registered
     saved_scanner = guardian_engine._scanner
     saved_cache = ignore_list._cache
+    saved_settings_cache = settings._cache
+    saved_net_ip = dict(network_monitor._ip_check_cache)
+    saved_net_pid = dict(network_monitor._pid_proc_cache)
+    saved_poll = network_monitor._poll_count
+    saved_watch_cbs = list(watcher._on_detection_callbacks)
+    saved_watch_log = list(watcher._event_log)
 
     yield
 
@@ -148,6 +182,14 @@ def _restore_global_state():
     guardian_engine._post_update_hook_registered = saved_ge_registered
     guardian_engine._scanner = saved_scanner
     ignore_list._cache = saved_cache
+    settings._cache = saved_settings_cache
+    network_monitor._ip_check_cache.clear()
+    network_monitor._ip_check_cache.update(saved_net_ip)
+    network_monitor._pid_proc_cache.clear()
+    network_monitor._pid_proc_cache.update(saved_net_pid)
+    network_monitor._poll_count = saved_poll
+    watcher._on_detection_callbacks[:] = saved_watch_cbs
+    watcher._event_log[:] = saved_watch_log
 
 
 # ── Detection-path sandboxes ──────────────────────────────────────────────────
@@ -236,7 +278,8 @@ def _assert_session_leaves_no_trace():
     untouched and still be thoroughly non-hermetic through Python globals.
     """
     from tools import update_intelligence as upd
-    from ui.core import guardian_engine, ignore_list, intel_hooks
+    from ui.core import (guardian_engine, ignore_list, intel_hooks,
+                         network_monitor, watcher)
 
     before = {
         "hooks": list(upd._post_update_hooks),
@@ -244,6 +287,9 @@ def _assert_session_leaves_no_trace():
         "ge_registered": guardian_engine._post_update_hook_registered,
         "scanner": guardian_engine._scanner,
         "ignore_cache": ignore_list._cache,
+        "net_ip": dict(network_monitor._ip_check_cache),
+        "net_pid": dict(network_monitor._pid_proc_cache),
+        "watch_cbs": list(watcher._on_detection_callbacks),
     }
 
     yield
@@ -256,6 +302,18 @@ def _assert_session_leaves_no_trace():
         "a test left its scanner installed as the production singleton")
     assert ignore_list._cache == before["ignore_cache"], (
         "the ignore-list cache survived the test that populated it")
+    # settings._cache is deliberately NOT asserted here. It is a lazily
+    # populated read cache: it starts as None because nothing has read a
+    # setting yet, not because it is "clean", and any test calling cfg.get()
+    # legitimately fills it. The per-test _restore_global_state snapshot is
+    # what stops one test's mutation reaching another -- that is the half with
+    # teeth. Asserting a meaningless baseline here only produces a false alarm.
+    assert network_monitor._ip_check_cache == before["net_ip"], (
+        "an IP verdict outlived the test that cached it")
+    assert network_monitor._pid_proc_cache == before["net_pid"], (
+        "a PID attribution outlived the test that cached it")
+    assert watcher._on_detection_callbacks == before["watch_cbs"], (
+        "a watcher detection callback outlived the test that registered it")
 
     stragglers = [t.name for t in threading.enumerate()
                   if t is not threading.main_thread() and not t.daemon]
