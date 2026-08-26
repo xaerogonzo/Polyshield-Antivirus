@@ -41,6 +41,17 @@ Return values (never exceptions — see below)
                    write is explicitly OUTSIDE the lost-update guarantee.
     SAVE_FAILED    nothing was persisted; _cache is left unchanged
 
+Cost
+----
+set_value() is not free: a lock acquisition, a read, a merge, and an atomic
+replace with an fsync is roughly 3 ms. That is fine for a button or a switch
+and wrong for a continuous input -- do not call it from a slider `command=`
+handler on every tick. display_view's sliders coalesce through
+_schedule_persist() and flush on release; anything similar should do the same.
+The fsync is deliberate: os.replace() keeps a reader from ever seeing a torn
+file, but without the flush a crash can leave the new name pointing at
+unwritten blocks, which is the corruption this module exists to prevent.
+
 set_value() returns a status rather than raising.  All 73 call sites are bare
 calls inside Tk event handlers — including slider `command=` callbacks that
 fire on every drag tick — so an exception would propagate into Tk's dispatcher

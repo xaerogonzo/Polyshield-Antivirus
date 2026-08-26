@@ -72,6 +72,8 @@ class DisplayView(ctk.CTkScrollableFrame):
         self._status_cb  = status_callback or (lambda _: None)
         self._app: App | None = app_ref
         self._preview_after_id: str | None = None   # debounce handle for image preview
+        self._persist_after_id: str | None = None   # debounce handle for slider writes
+        self._pending_writes: dict = {}             # key -> value awaiting persistence
         self._build()
 
     # ── Public lifecycle ──────────────────────────────────────────────────────
@@ -315,6 +317,8 @@ class DisplayView(ctk.CTkScrollableFrame):
             command=self._on_opacity_change,
         )
         self._opacity_slider.set((cfg.get("display_bg_opacity") or 0.15) * 100)
+        self._opacity_slider.bind("<ButtonRelease-1>",
+                                 lambda _e: self._flush_pending_writes())
         self._opacity_slider.grid(row=0, column=1, sticky="ew", padx=(8, 8))
         self._opacity_lbl = ctk.CTkLabel(op_row, text=f"{int(self._opacity_slider.get())}%",
                                           width=42, font=ctk.CTkFont(size=12),
@@ -334,6 +338,8 @@ class DisplayView(ctk.CTkScrollableFrame):
             command=self._on_blur_change,
         )
         self._blur_slider.set(int(cfg.get("display_bg_blur") or 0))
+        self._blur_slider.bind("<ButtonRelease-1>",
+                                 lambda _e: self._flush_pending_writes())
         self._blur_slider.grid(row=0, column=1, sticky="ew", padx=(8, 8))
         self._blur_lbl = ctk.CTkLabel(blur_row, text=f"Blur: {int(self._blur_slider.get())}",
                                        width=56, font=ctk.CTkFont(size=12),
@@ -393,7 +399,7 @@ class DisplayView(ctk.CTkScrollableFrame):
     def _on_opacity_change(self, val) -> None:
         v = int(float(val))
         self._opacity_lbl.configure(text=f"{v}%")
-        cfg.set_value("display_bg_opacity", round(v / 100, 2))
+        self._schedule_persist("display_bg_opacity", round(v / 100, 2))
         self._schedule_preview()
         if self._app:
             self._app._apply_bg_image()
@@ -401,10 +407,38 @@ class DisplayView(ctk.CTkScrollableFrame):
     def _on_blur_change(self, val) -> None:
         v = int(float(val))
         self._blur_lbl.configure(text=f"Blur: {v}")
-        cfg.set_value("display_bg_blur", v)
+        self._schedule_persist("display_bg_blur", v)
         self._schedule_preview()
         if self._app:
             self._app._apply_bg_image()
+
+    def _schedule_persist(self, key: str, value) -> None:
+        """Coalesce slider writes instead of persisting on every drag tick.
+
+        cfg.set_value() does real disk I/O -- a locked read, a merge, and an
+        atomic replace with an fsync -- which is roughly 3 ms a call. A slider
+        command fires on every mouse-motion event, so writing per tick spends
+        hundreds of milliseconds of main-thread time per second of dragging.
+
+        The label and the live background still update per tick; only the
+        write is deferred, exactly as _schedule_preview() already defers the
+        PIL work. Releasing the slider flushes immediately, so the debounce is
+        a backstop rather than the thing the user waits on.
+        """
+        self._pending_writes[key] = value
+        if self._persist_after_id is not None:
+            try:
+                self.after_cancel(self._persist_after_id)
+            except Exception:
+                pass
+        self._persist_after_id = self.after(250, self._flush_pending_writes)
+
+    def _flush_pending_writes(self) -> None:
+        """Write everything the sliders have queued. Safe to call at any time."""
+        self._persist_after_id = None
+        pending, self._pending_writes = self._pending_writes, {}
+        for key, value in pending.items():
+            cfg.set_value(key, value)
 
     def _schedule_preview(self) -> None:
         """Debounced thumbnail regeneration (200 ms) to avoid PIL overhead on drag."""
