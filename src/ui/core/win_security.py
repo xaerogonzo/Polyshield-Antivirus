@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from ui.core import ps_run
+
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW
 
 # ── ASR rule GUID → human category mapping ───────────────────────────────────
@@ -68,32 +70,11 @@ def _reg_key_exists(hive, subkey: str) -> bool:
 def _run_ps(command: str, timeout: int = 20) -> tuple[bool, str]:
     """Run a PowerShell command and return (success, output).
 
-    Uses Popen with stderr/stdin=DEVNULL to avoid the Windows pipe-hang bug:
-    subprocess.run(capture_output=True) can block indefinitely when WMI child
-    processes keep the stdout pipe handle open after proc.kill().
+    Thin wrapper over the shared runner — see ui.core.ps_run for why the
+    implementation has the shape it does. Kept as a module-local name so the
+    eleven call sites below read unchanged.
     """
-    try:
-        proc = subprocess.Popen(
-            ["powershell", "-NoProfile", "-NonInteractive",
-             "-ExecutionPolicy", "Bypass", "-Command", command],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            creationflags=_NO_WINDOW,
-        )
-        try:
-            stdout, _ = proc.communicate(timeout=timeout)
-            return proc.returncode == 0, stdout.strip()
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.communicate(timeout=3)
-            except subprocess.TimeoutExpired:
-                pass  # WMI child still holds pipe — OS will clean up
-            return False, f"timed out after {timeout}s"
-    except Exception as exc:
-        return False, str(exc)
+    return ps_run.run_ps(command, timeout)
 
 
 def _is_elevated() -> bool:
@@ -672,7 +653,21 @@ def get_security_score(
     """
     Compute a 0–100 composite security score with per-category breakdown.
     All arguments are pre-fetched data dicts (so callers can reuse data).
-    Pass None to fetch live.
+
+    Passing None fetches live — **except for defender_status**, which is never
+    fetched here. None for that one falls through to the unavailable branch and
+    forfeits the full 25 points with the issue "Defender status unavailable".
+    Both callers (dashboard_view._load and fetch_overview_async) pass it
+    explicitly, so nothing scores wrong today; the asymmetry is pinned by
+    test_security_score.py rather than changed, because fetching it here would
+    be a behaviour change and not a documentation fix.
+
+    Not quite pure even with all six supplied: the Account Security branch
+    calls get_account_policy() live.
+
+    Weights: Defender 25, Firewall 20, Device Security 20, Account Security 15,
+    App & Browser Control 15, System Health 5. Each floors at 0 rather than
+    going negative — two categories carry more penalty than they have points.
     """
     if firewall_profiles is None:
         firewall_profiles = get_firewall_profiles()

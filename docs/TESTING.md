@@ -65,6 +65,9 @@ The suite is split by concern:
 | `test_clamav_engine.py` | The subprocess engine's failure taxonomy — missing executable, a `Popen` that would not start, a non-zero exit, and a pipe that dies mid-scan after real verdicts were already reported (v1.14) |
 | `test_engine_contract.py` | The one `scan_async` interface Guardian, YARA and ClamAV all claim to implement, driven through a common adapter (v1.14) |
 | `test_emulate_report.py` | Speakeasy's report parser and the indicators derived from it — pure functions over a dict, so no emulator is needed (v1.14) |
+| `test_ps_run.py` | The PowerShell runner's contract — output, exit codes, the timeout, and the bounded drain that stops a pipe-holding child from hanging the caller (v1.14) |
+| `test_security_score.py` | The composite 0–100 posture the Dashboard shows — every category weight, floor, and label boundary (v1.14) |
+| `test_system_surface.py` | The registry helpers, and `defender.get_status()` keeping its promise to always return a dict (v1.14) |
 
 ### The engine failure contract (v1.14)
 
@@ -176,6 +179,60 @@ raise, for the "runtime not installed" case.
 One timing gotcha worth keeping: ClamAV unlinks its `--file-list` temp file in
 its own `finally`, so a test that wants to assert what was listed has to read
 the file inside the fake `Popen`, not after `scan_async()` returns.
+
+### The shared PowerShell runner (v1.14)
+
+`defender.py` and `win_security.py` each carried a byte-for-byte copy of
+`_run_ps`, reached from 19 call sites between them. The duplication mattered
+more than duplication usually does, because the shape of that function is not
+obvious and is not arbitrary: `subprocess.run(capture_output=True)` can block
+**indefinitely** when a WMI child keeps the stdout pipe handle open after
+`proc.kill()`, which is how those two views used to hang the whole app. Two
+copies meant two places to get the fix subtly wrong, and neither had a test.
+
+The order this was done in is the point:
+
+1. `tests/test_ps_run.py` was written against **both existing copies**, and
+   every assertion passed against both before either was touched.
+2. Only then was the implementation extracted to `src/ui/core/ps_run.py`.
+3. The same suite, unchanged, was re-run against the shared implementation
+   *and* both wrappers.
+
+So "the refactor preserved behaviour" is a checked claim. `_run_ps` survives in
+each module as a thin wrapper, which keeps all 19 call sites reading exactly as
+before, and each module's original timeout wording is preserved through a
+`timeout_message` parameter — no caller matches on the text, but preserving it
+costs one argument and keeps the change behaviour-preserving rather than
+opportunistic.
+
+Two behaviours are pinned rather than improved, because changing either would
+be a behaviour change rather than a test:
+
+- **stderr is discarded.** It goes to `DEVNULL`, so a command that fails with a
+  message on stderr and nothing on stdout reaches the caller as `(False, "")` —
+  a bare failure with no explanation.
+- **Decoding uses the platform default.** `text=True` is passed with no
+  explicit `encoding`, so a decode failure surfaces from `communicate()` and
+  comes back as `(False, str(exc))`.
+
+The test that matters most is
+`test_a_child_still_holding_the_pipe_does_not_hang_the_caller`: both
+`communicate()` calls time out, and reaching the assertion at all is the
+property under test.
+
+### `get_status()` promising more than it delivered (v1.14)
+
+`defender.get_status()`'s docstring says it *always* returns a dict. It did
+not. `ConvertTo-Json` emits an array whenever `Select-Object` sees a collection
+rather than a single object, and `null` when it sees nothing; both reached
+`data["available"] = True` and raised `TypeError` straight out of the function.
+
+That mattered because of *where* it ran. `dashboard_view._load` calls it on a
+background thread, before its `self.after(0, self._apply, …)` marshal — so the
+exception killed the thread, `_apply` never ran, and the Dashboard sat on
+"Refreshing…" with its refresh button disabled until the app was restarted. The
+sibling readers `get_threat_history()` and `get_threat_names()` already
+normalised the shape they were handed; this one did not, and now does.
 
 ### Isolating module-global state (v1.13)
 
