@@ -667,6 +667,7 @@ def scan_async(
     cancel_event=None,   # threading.Event | None
     pause_event=None,    # threading.Event | None — cleared while paused
     use_patterns_override: bool | None = None,
+    on_error=None,
 ):
     """
     Scan a list of files/folders asynchronously in a daemon thread.
@@ -680,6 +681,12 @@ def scan_async(
                    Callers that want match-context + tier-aware UI use the 5-arg form.
     on_done      : callable(infected_count: int)
     on_progress  : optional callable(done: int, total: int, current_file: str)
+    on_error     : optional callable(message: str), fired at most once and
+                   always before on_done. Additive, and present here so the
+                   three engines stay drivable through one interface — see
+                   tests/test_engine_contract.py. Guardian's per-file verdicts
+                   already carry a tier, so this reports only the case where
+                   the engine was launched and could not run at all.
     use_patterns_override : if not None, forces the pattern tier on/off for this
                             scan only (used by the real-time watcher to skip
                             patterns by default).
@@ -690,6 +697,11 @@ def scan_async(
         register_intel_hooks()
 
         if not is_available():
+            # Launched but unable to run. The watcher only launches Guardian
+            # after is_available() says yes, so reaching here means it changed
+            # underneath — which must not read as a completed clean scan.
+            if on_error:
+                on_error("Guardian signatures are unavailable")
             on_done(0)
             return
 
