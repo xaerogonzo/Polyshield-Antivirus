@@ -69,6 +69,99 @@ The suite is split by concern:
 | `test_security_score.py` | The composite 0–100 posture the Dashboard shows — every category weight, floor, and label boundary (v1.14) |
 | `test_system_surface.py` | The registry helpers, and `defender.get_status()` keeping its promise to always return a dict (v1.14) |
 | `test_winsec_probes.py` | The three live probes — Secure Boot / TPM / VBS, local accounts, and SmartScreen / CFA / ASR — driven through the `_run_ps` and `winreg` seams (v1.14) |
+| `test_integration_edges.py` | Four small Windows-boundary modules — VirusTotal request/parse, the Explorer context-menu registry writes and the command Explorer runs, schtasks construction and parsing, and autorun path resolution (v1.15) |
+
+### A resolved path nobody can scan (v1.15)
+
+`startup_scanner._extract_path` pulls the executable out of a registry Run
+value. Every mistake it makes has the same shape and none of them are loud: the
+resolved path fails `Path.exists()`, `get_scannable_paths()` drops the entry,
+and a startup executable is simply never scanned. Autoruns are where
+persistence lives, so a miss there is not cosmetic.
+
+Three real values it got wrong:
+
+| Value | Resolved to | Why |
+|---|---|---|
+| `C:\Program Files\App\app.EXE --flag` | `C:\Program` | `split(".exe", 1)` was case-sensitive; the uppercase extension fell through to the first-token fallback |
+| `C:\my.exe.tools\app.exe` | `C:\my.exe` | split on the first *substring* match rather than at a token boundary |
+| `%ProgramFiles%\App\app.exe` | *(unchanged)* | environment variables were never expanded |
+
+The last is the most common: `%ProgramFiles%`, `%APPDATA%` and `%SystemRoot%`
+are ordinary things to find in a Run key.
+
+The table test covers the shapes, but the one that says what the bug *was* is
+`test_a_run_key_entry_reaches_the_scan_list_end_to_end` — it writes a fake Run
+value using all three problem shapes at once and asserts the executable comes
+out of `get_scannable_paths()`. Asserting the extraction alone would have
+missed that the consequence is a file dropping out of a scan.
+
+An unknown variable is still left unexpanded, which resolves to "does not
+exist" — the same outcome as before, so nothing regresses on a name we cannot
+map.
+
+### A button that did nothing (v1.15)
+
+`guardian_view` pointed at `scripts/setup_guardian.bat`; the file moved to
+`scripts/components/` in the scripts reorganisation. The launch was guarded by
+a bare `if bat.exists():` with no `else`, so clicking *Open setup_guardian.bat*
+produced no window, no error and no status line — indistinguishable from a
+click that never registered.
+
+`test_the_setup_script_is_where_the_button_looks_for_it` asserts against the
+**real** tree rather than a fixture. That is the point: a mocked path would
+have kept passing through exactly the drift that broke it. The path is now a
+class attribute (`GuardianView.SETUP_BAT`) so the test can read it without
+building a Tk page, and `_open_setup_bat` reports a missing script through the
+status callback instead of returning silently.
+
+### Absence and failure, in two more places (v1.15)
+
+Both are pinned as they are rather than changed, and both are worth knowing
+about before someone reads the tests as an endorsement:
+
+* `virustotal.lookup_hash` maps HTTP 404 to `{"error": "File not found in
+  VirusTotal database (never submitted)."}`. The lookup *worked*; the answer is
+  "never seen". `virustotal_view` renders it in red under "VirusTotal lookup
+  failed", and `scan_view` truncates it to 50 characters, cutting it mid-word.
+* `scheduler.get_task_info` returns `{"exists": False}` for any non-zero exit,
+  so an access-denied query is indistinguishable from "no task scheduled" —
+  and `SchedulerView` reads only `info.get("exists")`.
+
+Both are the distinction *Absent is not the same as unknown* draws below. Left
+alone because the consequence is a less informative screen rather than a wrong
+verdict, and because deciding what an unknown file should look like is a
+product call that would change rendering in views this work did not touch.
+
+### The command Explorer actually runs (v1.15)
+
+`shell_ext.register()` writes a command string into HKCU, and Phase 4a is going
+to repoint it at a frozen executable. The tests pin the shape first: every path
+quoted, exactly one `%1`, and an install directory containing spaces, an
+ampersand or parentheses still producing one parseable command line.
+
+`%1` is deliberately single-file — `app.py` reads exactly one path after
+`--scan`, and the verb is not registered for multi-select. That is the contract
+to preserve, not to extend.
+
+`is_registered()` now treats *every* read failure as "not registered", matching
+`win_security._reg_key_exists`. Catching `FileNotFoundError` alone was the
+outlier: it is called during `SettingsView._build()`, so a `PermissionError`
+from a policy-locked hive propagated out of a view constructor and took the
+page down rather than leaving a checkbox unticked.
+
+### A parser that promised a dict and raised instead (v1.15)
+
+`virustotal.parse_result` caught `(KeyError, TypeError)` — the two ways a
+*subscript* fails. A `"attributes": null`, or a stats block that arrives as a
+list, makes `.get()` / `.items()` / `.values()` the thing that fails, and
+`AttributeError` escaped.
+
+It escaped into `virustotal_view._apply_result`, which runs straight from a Tk
+callback, so the results panel stayed empty and the button stayed stuck on
+"Querying…" with nothing shown anywhere. Same class as the empty-archive
+`IndexError` in `fetch_malwarebazaar`: a function contracted to return a dict
+raising instead, past a caller that only inspects the returned value.
 
 ### The engine failure contract (v1.14)
 
