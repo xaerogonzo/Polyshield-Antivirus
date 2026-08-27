@@ -625,6 +625,39 @@ def _get_scanner() -> _EnhancedScanner:
     return _scanner
 
 
+def pattern_labels() -> tuple[str, ...]:
+    """The heuristic pattern labels, in the order the engine evaluates them.
+
+    The single source of truth for these strings.  They are not decoration:
+    `guardian_pattern_toggles` is a dict *keyed by label*, and
+    `_pattern_enabled()` resolves a toggle by looking the label up.  A settings
+    screen holding its own copy of the list can therefore drift into writing
+    `toggles["old name"] = False` for a pattern the engine now calls something
+    else -- the switch reads OFF and the pattern keeps firing, with nothing
+    anywhere reporting a mismatch.
+    """
+    return tuple(p[0] for p in _EnhancedScanner._PATTERNS)
+
+
+def conservative_disabled() -> frozenset[str]:
+    """Labels the conservative profile turns off by default.
+
+    Exposed for the same reason as pattern_labels(): so the Settings screen can
+    show what the engine will do rather than a second opinion about it.
+    """
+    return _EnhancedScanner._CONSERVATIVE_DISABLED
+
+
+def pattern_enabled(label: str, profile: str, toggles: dict) -> bool:
+    """Whether `label` fires under this profile + override set.
+
+    Thin re-export of the scanner's resolver so callers outside this module do
+    not have to reach through a private class -- and, more to the point, do not
+    reimplement it.
+    """
+    return _EnhancedScanner._pattern_enabled(label, profile, toggles)
+
+
 def reload_signatures():
     """Force a reload of MalwareBazaar signatures from SQLite. Call after updating the DB."""
     global _scanner

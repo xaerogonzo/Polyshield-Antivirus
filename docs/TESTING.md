@@ -69,6 +69,103 @@ The suite is split by concern:
 | `test_security_score.py` | The composite 0–100 posture the Dashboard shows — every category weight, floor, and label boundary (v1.14) |
 | `test_system_surface.py` | The registry helpers, and `defender.get_status()` keeping its promise to always return a dict (v1.14) |
 | `test_winsec_probes.py` | The three live probes — Secure Boot / TPM / VBS, local accounts, and SmartScreen / CFA / ASR — driven through the `_run_ps` and `winreg` seams (v1.14) |
+| `test_settings_update_views.py` | The two largest views, tested for the decisions they make — pattern-label/profile truth shared with the engine, the false-positive figures shown as advice, busy/failure transitions, and an `ast` guard against the `after(…, configure, {…})` idiom (v1.15) |
+
+### A frozen badge, and the guard for it (v1.15)
+
+CLAUDE.md documents this idiom and records it as *fixed*:
+
+```python
+self.after(0, self._lbl.configure, {"text": value})   # silently does nothing
+```
+
+CustomTkinter's `configure()` is `(require_redraw=False, **kwargs)`, so the
+dict binds to `require_redraw` and the widget is redrawn with nothing applied.
+Three instances were still live: `update_view.py:997` and `:1058`, and
+`guardian_view.py:290` — every one of them inside a **progress callback**,
+which is the worst place for it. The badge stayed on "Fetching recent…" for the
+whole of a multi-minute update while the log filled with progress lines
+underneath.
+
+They survived earlier cleanups for an ordinary reason: the call was split
+across two lines, so a single-line grep did not see it.
+
+`test_no_view_schedules_configure_with_a_positional_dict` walks `src/ui` with
+`ast` and flags any `X.after(delay, widget.configure, {...})`. The failure mode
+is a *shape*, not three particular lines, so the scan is the thing worth
+keeping. A companion test feeds the scanner one broken snippet, one fixed one
+and one legitimate `after(0, callback, arg, arg)` — a guard that cannot fail is
+not a guard.
+
+### Three copies of one truth (v1.15)
+
+`guardian_pattern_toggles` is a dict **keyed by pattern label**, and
+`_pattern_enabled()` resolves an override by looking the label up. The labels
+therefore have to be identical everywhere, and they were maintained in three
+places: `guardian_engine._PATTERNS`, `settings_view._PATTERN_LABELS`, and a
+local `_CONSERVATIVE_OFF` set inside `_build_guardian_advanced_body` that also
+reimplemented `_pattern_enabled()` itself.
+
+They agreed. Nothing made them agree. A rename in the engine would have left
+the screen writing `toggles["old name"] = False` for a pattern the engine now
+resolves under a different name — **the switch reads OFF and the pattern keeps
+firing**, with nothing anywhere reporting a mismatch.
+
+Fixed by deletion rather than by synchronisation. `guardian_engine` grew three
+small accessors — `pattern_labels()`, `conservative_disabled()`,
+`pattern_enabled()` — and `settings_view` reads all three. The switch is now a
+readout of the scan rather than a second opinion about it.
+
+Two of the tests here are worth reading together, because they are different
+kinds of test:
+
+* `test_the_settings_screen_lists_exactly_the_engine_pattern_labels` compares
+  the two lists. It passes against the old code too — the copies agreed — so on
+  its own it guards against drift without demonstrating anything.
+* `test_the_screen_follows_the_engine_when_a_pattern_is_renamed` **manufactures
+  the drift**: it renames a pattern in the engine and asserts the screen renames
+  with it. That one fails against the hardcoded tuple, which is what makes the
+  first one meaningful.
+
+### Reading a view without a screen: three wrinkles (v1.15)
+
+Collected here because each one silently produces a passing test that proves
+nothing, and all three cost time in this file.
+
+**`cget("text")` is empty when a label uses `textvariable`.**
+`_collapsible_section` drives its header through a `StringVar`, so `cget("text")`
+returns the widget name — a test asserting on it compares against the literal
+string `'CTkLabel'` and can never see the title, badge or chevron. Resolve the
+variable (`w.getvar(w.cget("textvariable"))`) before asserting.
+
+**CTk widgets forward `bind()` to their inner Tk widgets.**
+Already recorded for `CTkSlider` and its `_canvas`; it holds for `CTkFrame` and
+`CTkLabel` too. `header.bind()` on the CTk wrapper returns `None` however many
+handlers are attached — the sequences live on `_canvas` and `_text_label`.
+Combined with the rule that a synthetic `<Button-1>` never reaches a withdrawn
+root, the honest test asserts the *wiring* on the inner widgets and covers both
+states through `start_expanded`.
+
+**Geometry does not apply under a withdrawn parent.**
+`dlg.geometry("500x400")` reads back as `200x200` however long the event loop
+is pumped. Same lesson as the headless `wm_attributes("-topmost")` readback:
+spy on the method and assert the call was made, not what the window manager did
+with it.
+
+### A view constructor that goes to the network (v1.15)
+
+`UpdateView.__init__` → `_build()` starts background threads that shell out to
+PowerShell for the Sandboxie version and query the GitHub releases API for the
+latest YARA tag. Simply constructing the view in a test does both.
+
+They also outlive the test: the worker calls `winfo_exists()` on a root pytest
+has finished with, and the `RuntimeError: main thread is not in main loop`
+surfaces as a `PytestUnhandledThreadExceptionWarning` attributed to whatever
+unrelated test happened to be running when it landed.
+
+The fixture replaces `update_view.threading.Thread` with a stub that records
+its target and never starts it. Anything a test actually wants to exercise is
+then called directly, on the main thread, where its assertions can see it.
 
 ### The engine failure contract (v1.14)
 

@@ -994,8 +994,12 @@ class UpdateView(ctk.CTkScrollableFrame):
                 def _on_progress(msg: str):
                     if self.winfo_exists():
                         self.after(0, self._log_append, f"  {msg}", _TAG_INTEL)
-                        self.after(0, self._intel_badge.configure,
-                                   {"text": msg[:90], "text_color": "#ffb86c"})
+                        # Lambda, not a positional dict: CTk's configure() is
+                        # (require_redraw=False, **kwargs), so a dict passed
+                        # positionally binds to require_redraw and the badge
+                        # silently never changes.  See CLAUDE.md.
+                        self.after(0, lambda m=msg: self._intel_badge.configure(
+                            text=m[:90], text_color="#ffb86c"))
 
                 result = run_update(on_progress=_on_progress, mode=mode)
 
@@ -1055,8 +1059,8 @@ class UpdateView(ctk.CTkScrollableFrame):
                 def _on_progress(msg: str):
                     if self.winfo_exists():
                         self.after(0, self._log_append, f"  {msg}", _TAG_INTEL)
-                        self.after(0, self._intel_badge.configure,
-                                   {"text": msg[:90], "text_color": "#ffb86c"})
+                        self.after(0, lambda m=msg: self._intel_badge.configure(
+                            text=m[:90], text_color="#ffb86c"))
 
                 result = import_nsrl(path, on_progress=_on_progress)
                 if self.winfo_exists():
