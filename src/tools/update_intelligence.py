@@ -42,13 +42,15 @@ from __future__ import annotations
 
 import argparse
 import io
+import ipaddress
 import logging
+import os
 import sqlite3
 import sys
 import time
 import urllib.request
 import zipfile
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -115,6 +117,31 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT
 );
 """
+
+
+def _utcnow() -> datetime:
+    """Naive UTC — the single time frame for every freshness stamp here.
+
+    Mirrors intel_updater._utcnow().  The two modules write and read the same
+    `meta` rows, so they have to agree on the frame: naive UTC, so a stored
+    stamp subtracts cleanly from a later reading of it.  datetime.utcnow() is
+    deprecated from 3.12 and was emitting warnings from four call sites.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def _valid_ip(value: str) -> str:
+    """Return the normalised IP, or "" if `value` is not one.
+
+    Both C2 feeds are IP feeds, so anything that will not parse is not a
+    record — it is a CSV header row, a stray comment, or a truncated line.
+    Letting those through put the literal string "dst_ip" in the blocklist,
+    where network_monitor would compare live connections against it forever.
+    """
+    try:
+        return str(ipaddress.ip_address(value.strip()))
+    except ValueError:
+        return ""
 
 
 def _open_db_readonly() -> sqlite3.Connection | None:
@@ -186,7 +213,13 @@ def fetch_malwarebazaar(
             updater passes notify=False and fires ONE notification phase for
             the union of domains it changed, after every feed has committed.
 
-    Returns stats dict: {added, skipped, total_db}
+    Returns stats dict: {added, skipped, total_db}, or {error, http_status} if
+    the feed could not be downloaded or did not parse to any usable hash.
+
+    Nothing local is touched until the response has parsed to at least one
+    valid MD5: download -> validate -> import -> commit -> freshness.  A feed
+    that returns an error page, an empty archive, or garbage must leave the
+    existing intelligence exactly as it was, and must not stamp last_mb_update.
     """
     log = on_progress or (lambda _: None)
     url = _MB_FULL_URL if mode == "full" else _MB_RECENT_URL
@@ -210,11 +243,26 @@ def fetch_malwarebazaar(
 
     log(f"Downloaded {len(raw_bytes):,} bytes.  Parsing…")
 
-    # The full list is a ZIP; recent list is plain text
+    # The full list is a ZIP; recent list is plain text.  Every failure here is
+    # a bad *download*, so it returns like one — this function's contract is a
+    # dict, and intel_updater._run_malwarebazaar reads res["error"] first.  An
+    # empty archive used to raise IndexError straight through that adapter.
     if raw_bytes[:2] == b"PK":
-        with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
-            name = zf.namelist()[0]
-            text = zf.read(name).decode("utf-8", errors="ignore")
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw_bytes)) as zf:
+                names = zf.namelist()
+                if not names:
+                    log("[ERROR] Downloaded archive is empty.")
+                    return {"error": "downloaded archive is empty", "http_status": 0}
+                text = zf.read(names[0]).decode("utf-8", errors="ignore")
+        except Exception as exc:
+            # Broad on purpose, and consistent with download_yara_community: the
+            # contract of this function is a dict, and zipfile raises several
+            # unrelated types for a bad archive (BadZipFile for corruption,
+            # RuntimeError for an encrypted member, EOFError for a truncated
+            # stream).  Enumerating them invites the next one to escape.
+            log(f"[ERROR] Downloaded archive could not be read: {exc}")
+            return {"error": f"unreadable archive: {exc}", "http_status": 0}
     else:
         text = raw_bytes.decode("utf-8", errors="ignore")
 
@@ -229,13 +277,19 @@ def fetch_malwarebazaar(
             hashes.append(h)
 
     if not hashes:
+        # Deliberately an error rather than {"added": 0, "total_db": 0}.  That
+        # shape claimed the database held nothing, which is a lie about a table
+        # that may hold millions, and it was the value the Update Center logged
+        # back to the user.  Reporting the *real* total would be worse still:
+        # _run_malwarebazaar would then read (added=0, total>0) as UNCHANGED and
+        # advance freshness on a feed that returned nothing.
         log("[WARNING] No valid MD5 hashes found in downloaded file.")
-        return {"added": 0, "skipped": 0, "total_db": 0}
+        return {"error": "feed returned no valid MD5 hashes", "http_status": 0}
 
     log(f"Found {len(hashes):,} valid MD5 hashes.  Writing to DB…")
 
     con = _open_db()
-    now = datetime.utcnow().isoformat()
+    now = _utcnow().isoformat()
     added = 0
     for h in hashes:
         cur = con.execute(
@@ -282,46 +336,56 @@ def import_nsrl(
 
     log(f"Importing NSRL from {p.name} — this may take several minutes…")
     con = _open_db()
-    # Mark bloom stale immediately — if we crash mid-import the old .bin is invalid
-    con.execute("INSERT OR REPLACE INTO meta VALUES ('nsrl_bloom_stale', '1')")
-    con.commit()
+    try:
+        # Mark the bloom stale before the first row lands.  Under the atomic
+        # publish in _rebuild_nsrl_bloom the old filter now survives a crash --
+        # but the `safe` table commits every 500 K rows, so a crash still
+        # leaves a filter that no longer describes the table.  Stale is exactly
+        # what that is, and a reader seeing stale=1 falls back to SQLite.
+        con.execute("INSERT OR REPLACE INTO meta VALUES ('nsrl_bloom_stale', '1')")
+        con.commit()
 
-    now = datetime.utcnow().isoformat()
-    added = 0
-    rows = 0
+        now = _utcnow().isoformat()
+        added = 0
+        rows = 0
 
-    with open(p, "r", encoding="utf-8", errors="ignore") as f:
-        for raw_line in f:
-            rows += 1
-            if rows == 1 and raw_line.startswith('"SHA-1"'):
-                continue  # header row
-            parts = raw_line.strip().split(",")
-            if len(parts) < 2:
-                continue
-            md5 = parts[1].strip().strip('"').lower()
-            if len(md5) != 32:
-                continue
-            product = parts[3].strip().strip('"') if len(parts) > 3 else ""
-            cur = con.execute(
-                "INSERT OR IGNORE INTO safe (hash, source, product, added_at) "
-                "VALUES (?, 'nsrl', ?, ?)",
-                (md5, product, now),
-            )
-            added += cur.rowcount
-            if rows % 500_000 == 0:
-                con.commit()
-                log(f"  Processed {rows:,} rows, {added:,} new safe hashes…")
+        with open(p, "r", encoding="utf-8", errors="ignore") as f:
+            for raw_line in f:
+                rows += 1
+                if rows == 1 and raw_line.startswith('"SHA-1"'):
+                    continue  # header row
+                parts = raw_line.strip().split(",")
+                if len(parts) < 2:
+                    continue
+                md5 = parts[1].strip().strip('"').lower()
+                if len(md5) != 32:
+                    continue
+                product = parts[3].strip().strip('"') if len(parts) > 3 else ""
+                cur = con.execute(
+                    "INSERT OR IGNORE INTO safe (hash, source, product, added_at) "
+                    "VALUES (?, 'nsrl', ?, ?)",
+                    (md5, product, now),
+                )
+                added += cur.rowcount
+                if rows % 500_000 == 0:
+                    con.commit()
+                    log(f"  Processed {rows:,} rows, {added:,} new safe hashes…")
 
-    con.commit()
-    total = con.execute("SELECT COUNT(*) FROM safe").fetchone()[0]
-    log(f"NSRL import complete.  Added {added:,}  |  Safe DB total: {total:,}")
+        # Commit the table BEFORE building the filter over it, so the filter can
+        # never be published describing rows that are not durable yet.
+        con.commit()
+        total = con.execute("SELECT COUNT(*) FROM safe").fetchone()[0]
+        log(f"NSRL import complete.  Added {added:,}  |  Safe DB total: {total:,}")
 
-    # Rebuild the bloom filter now that the import is complete
-    def _bloom_progress(pct: int) -> None:
-        log(f"  Building NSRL bloom filter… {pct}%")
+        # Rebuild the bloom filter now that the import is complete
+        def _bloom_progress(pct: int) -> None:
+            log(f"  Building NSRL bloom filter… {pct}%")
 
-    _rebuild_nsrl_bloom(con, progress_cb=_bloom_progress)
-    con.close()
+        _rebuild_nsrl_bloom(con, progress_cb=_bloom_progress)
+    finally:
+        # An unreadable file or a failed rebuild must not also leak the write
+        # connection — it holds the WAL lock the service needs.
+        con.close()
 
     # Committed — the safe table feeds the same hash-domain consumers.
     if notify:
@@ -352,6 +416,26 @@ def _rebuild_nsrl_bloom(
     crossings ~7 000× compared with single-row iteration.
 
     Emits progress_cb(pct: int) periodically (every 500 K rows) if provided.
+
+    Publication is atomic, and ordered.  The filter is built beside its
+    destination, flushed and fsynced, then moved into place with os.replace;
+    only after that move lands is nsrl_bloom_stale cleared.  The previous form
+    opened the live nsrl_bloom.bin "wb" -- truncating a valid ~150-200 MB
+    filter before tofile() had written a byte -- so a crash during the write
+    destroyed the old one and left nothing usable in its place.
+
+    The two failure states this rules out:
+
+        SQLite=NEW / bloom=OLD / stale=0    bloom advertised for data it lacks
+        SQLite=OLD / bloom=NEW / stale=0    bloom advertised ahead of the table
+
+    Caller ordering matters and is part of this contract: import_nsrl commits
+    the `safe` rows *before* calling here, and stale=0 is written last, so a
+    reader either sees stale=1 (and falls back to SQLite, per
+    guardian_engine._load_nsrl_bloom) or sees a filter that matches a committed
+    table.  On any failure stale stays 1 and the previous filter is untouched:
+    an out-of-date bloom is safe -- it can only omit entries, never invent
+    them, and a miss falls through to the SQLite truth.
     """
     try:
         from pybloom_live import ScalableBloomFilter
@@ -388,10 +472,37 @@ def _rebuild_nsrl_bloom(
                 progress_cb(int(done * 100 / total))
 
     _BLOOM_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(_BLOOM_PATH, "wb") as f:
-        bloom.tofile(f)
 
-    # Mark bloom as up-to-date
+    # Sibling temp file, not tempfile.mkstemp: os.replace carries the ACL along
+    # with the file, and a hardened scratch DACL would become a live filter only
+    # the publishing account can read -- which _load_nsrl_bloom reports as
+    # simply "no bloom".  A plain create here inherits the intelligence dir ACL.
+    tmp = _BLOOM_PATH.with_name(f"{_BLOOM_PATH.name}.{os.getpid()}.tmp")
+    try:
+        with open(tmp, "wb") as f:
+            bloom.tofile(f)
+            f.flush()
+            os.fsync(f.fileno())    # the write must be on disk before the swap
+
+        # Validate before publishing.  A full fromfile() round-trip is not done
+        # deliberately: it would allocate a second ~150-200 MB filter while the
+        # first is still live, to re-prove what tofile() returning plus fsync
+        # already establishes.  The reader is the second line of defence and
+        # already quarantines a filter it cannot parse.
+        if tmp.stat().st_size == 0:
+            raise OSError("bloom filter serialised to an empty file")
+
+        os.replace(str(tmp), str(_BLOOM_PATH))   # atomic; previous stays valid until now
+    finally:
+        # A failed build leaves the previous nsrl_bloom.bin in place and
+        # nsrl_bloom_stale at 1, which is the safe direction: consumers fall
+        # back to SQLite rather than trusting a filter that may be partial.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    # Published — and only now is the filter allowed to claim it is current.
     con.execute("INSERT OR REPLACE INTO meta VALUES ('nsrl_bloom_stale', '0')")
     con.commit()
 
@@ -419,7 +530,7 @@ def _sync_known_bad_txt(on_progress: Callable[[str], None] | None = None):
     _KNOWN_BAD.parent.mkdir(parents=True, exist_ok=True)
     header = (
         "# PolyShield Intelligence DB — auto-generated, do not edit manually.\n"
-        f"# Generated: {datetime.utcnow().isoformat()}  |  Entries: {len(hashes):,}\n"
+        f"# Generated: {_utcnow().isoformat()}  |  Entries: {len(hashes):,}\n"
     )
     with open(_KNOWN_BAD, "w", encoding="utf-8") as f:
         f.write(header)
@@ -535,11 +646,27 @@ def _fire_post_update_hooks(domains=("hashes",)) -> None:
 
 def clear_malicious_db(
     on_progress: Callable[[str], None] | None = None,
+    notify: bool = True,
 ) -> dict:
     """
     Delete all rows from the malicious table and wipe known_bad.txt.
     Leaves the safe (NSRL) table untouched.
     Returns {deleted, ok}.
+
+    Removal is an intelligence change, so it fires the "hashes" post-update
+    hooks exactly as an import does.  Without that, the database said empty
+    while every already-running consumer kept the hashes it loaded at start-up:
+    guardian_engine went on reporting "Known Signature", and process_monitor --
+    which does not merely report -- went on terminating process trees and
+    quarantining executables on hashes the user had just deleted.  Nothing in
+    the UI could distinguish that from the clear having failed.
+
+    The hooks fire even when zero rows were deleted.  The contract of a
+    function called "clear" is that consumers end up reflecting an empty
+    database, not that DELETE happened to match something: a monitor holding a
+    stale RAM set is exactly the case where the table is already empty and the
+    consumer is not, and a row-count guard would skip precisely that repair.
+    Pass notify=False to suppress it (the batch updater's convention).
     """
     log = on_progress or (lambda _: None)
     try:
@@ -554,7 +681,10 @@ def clear_malicious_db(
         log(f"[ERROR] DB clear failed: {exc}")
         return {"deleted": 0, "ok": False, "error": str(exc)}
 
-    # Wipe known_bad.txt so guardian_engine RAM set is cleared too
+    # known_bad.txt is the pre-v1.8 load path and nothing reads it any more
+    # (guardian_engine and process_monitor both SELECT from SQLite).  Kept
+    # truthful rather than relied upon: the hook fired below is what actually
+    # clears the RAM sets.
     try:
         if _KNOWN_BAD.exists():
             _KNOWN_BAD.write_text(
@@ -562,6 +692,10 @@ def clear_malicious_db(
             log(f"Cleared {_KNOWN_BAD.name}.")
     except Exception as exc:
         log(f"[WARNING] Could not clear known_bad.txt: {exc}")
+
+    # Committed — only now may in-memory consumers be told to refresh.
+    if notify:
+        _fire_post_update_hooks(("hashes",))
 
     return {"deleted": count, "ok": True}
 
@@ -573,6 +707,11 @@ def _parse_feodo(raw: str) -> list[tuple[str, str, int, str]]:
     Parse Feodo Tracker CSV.
     Format: first_seen_utc,dst_ip,dst_port,c2_status,last_online,malware
     Returns list of (ip, tags, port, malware).
+
+    Rows whose dst_ip is not an IP are dropped rather than trusted.  The export
+    carries a bare column-header row that is *not* '#'-commented, so the old
+    truthiness check ("if ip") admitted the literal string "dst_ip" into the
+    blocklist, where network_monitor compared every live connection against it.
     """
     records: list[tuple[str, str, int, str]] = []
     for line in raw.splitlines():
@@ -582,13 +721,46 @@ def _parse_feodo(raw: str) -> list[tuple[str, str, int, str]]:
         parts = line.split(",")
         if len(parts) < 4:
             continue
-        ip      = parts[1].strip()
+        ip      = _valid_ip(parts[1])
         port    = int(parts[2].strip()) if parts[2].strip().isdigit() else 0
         status  = parts[3].strip()
         malware = parts[5].strip() if len(parts) > 5 else ""
         if ip:
             records.append((ip, status, port, malware))
     return records
+
+
+def _split_ioc_endpoint(ioc_value: str) -> tuple[str, int]:
+    """Split a ThreatFox ioc_value into (ip, port).
+
+    Three shapes reach this, and only the first two carry a port:
+
+        1.2.3.4:443          IPv4 with port      -> one colon
+        [2001:db8::1]:443    IPv6 with port      -> bracketed, per RFC 3986
+        2001:db8::1          bare IPv6, no port  -> many colons, no brackets
+
+    The previous rsplit(":", 1) treated the third case as the second and cut
+    the address at its last colon, so a bare IPv6 IOC was stored as the
+    meaningless prefix "2001:db8:" -- despite a docstring claiming IPv6 was
+    handled.  Returns ("", 0) for anything that is not an address.
+    """
+    value = ioc_value.strip()
+    if not value:
+        return "", 0
+
+    if value.startswith("["):
+        host, _, rest = value.partition("]")
+        ip = _valid_ip(host[1:])
+        port_str = rest.lstrip(":")
+        return ip, int(port_str) if port_str.isdigit() else 0
+
+    # Exactly one colon can only be host:port -- an IPv6 address always has
+    # at least two.  Anything else is an address in its own right.
+    if value.count(":") == 1:
+        host, _, port_str = value.partition(":")
+        return _valid_ip(host), int(port_str) if port_str.isdigit() else 0
+
+    return _valid_ip(value), 0
 
 
 def _parse_threatfox(raw: str) -> list[tuple[str, str, int, str]]:
@@ -611,15 +783,7 @@ def _parse_threatfox(raw: str) -> list[tuple[str, str, int, str]]:
         malware   = parts[3] if len(parts) > 3 else ""
         confidence = parts[4].strip('"') if len(parts) > 4 else ""
         tags      = f"threatfox:{confidence}%"
-        # ioc_value is "ip:port" — split on last colon to handle IPv6 too
-        if ":" in ioc_value:
-            rsplit    = ioc_value.rsplit(":", 1)
-            ip        = rsplit[0]
-            port_str  = rsplit[1]
-            port      = int(port_str) if port_str.isdigit() else 0
-        else:
-            ip   = ioc_value
-            port = 0
+        ip, port  = _split_ioc_endpoint(ioc_value)
         if ip:
             records.append((ip, tags, port, malware))
     return records
@@ -685,8 +849,13 @@ def import_c2_blocklist(
         log(f"  [WARN] ThreatFox download failed: {exc}")
 
     if not all_records:
+        # No usable record from either feed: return an error rather than
+        # {"total_db": 0}, which described an untouched blocklist table as
+        # empty.  The blocklist itself is deliberately left alone — a failed
+        # fetch must not cost the user the C2 intelligence they already have.
         log("[WARNING] Both feeds returned no records — check network or try again later.")
-        return {"added": 0, "updated": 0, "total_db": 0,
+        return {"error": "both C2 feeds returned no usable records",
+                "added": 0, "updated": 0,
                 "feodo_count": 0, "threatfox_count": 0}
 
     # Deduplicate — keep last entry per IP (ThreatFox overwrites Feodo for same IP)
@@ -697,7 +866,7 @@ def import_c2_blocklist(
     log(f"Merged {len(all_records):,} total → {len(deduped):,} unique IPs.  Writing to DB…")
 
     con   = _open_db()
-    now   = datetime.utcnow().isoformat()
+    now   = _utcnow().isoformat()
     added = updated = 0
 
     for ip, tags, port, malware in deduped.values():
@@ -1048,7 +1217,7 @@ def download_yara_community(
 
         # 8. Freshness metadata — WHAT was installed and WHEN we installed it
         #    are different facts, so they are stored separately.
-        now = datetime.utcnow().isoformat()
+        now = _utcnow().isoformat()
         con = _open_db()
         con.execute("INSERT OR REPLACE INTO meta VALUES ('yara_version', ?)", (tag,))
         con.execute("INSERT OR REPLACE INTO meta VALUES ('yara_last_update', ?)", (now,))
