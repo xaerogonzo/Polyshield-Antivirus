@@ -4,6 +4,8 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+from ui.core import ps_run
+
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW  # 0x08000000 — suppresses console flash
 
 # MpCmdRun.exe location (Defender CLI, works without elevation for scan triggers)
@@ -15,37 +17,14 @@ _MPCMDRUN = Path(
 def _run_ps(command: str, timeout: int = 20) -> tuple[bool, str]:
     """Run a PowerShell command and return (success, output).
 
-    Uses Popen with stderr/stdin=DEVNULL to avoid the Windows pipe-hang bug:
-    subprocess.run(capture_output=True) can block indefinitely when WMI child
-    processes keep the stdout pipe handle open after proc.kill().
+    Thin wrapper over the shared runner — see ui.core.ps_run for why the
+    implementation has the shape it does. Kept as a module-local name so the
+    eight call sites below read unchanged, and so the timeout wording this
+    module has always used is preserved.
     """
-    try:
-        proc = subprocess.Popen(
-            [
-                "powershell",
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy", "Bypass",
-                "-Command", command,
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            text=True,
-            creationflags=_NO_WINDOW,
-        )
-        try:
-            stdout, _ = proc.communicate(timeout=timeout)
-            return proc.returncode == 0, stdout.strip()
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            try:
-                proc.communicate(timeout=3)
-            except subprocess.TimeoutExpired:
-                pass  # WMI child still holds pipe — OS will clean up
-            return False, f"PowerShell timed out after {timeout}s"
-    except Exception as exc:
-        return False, str(exc)
+    return ps_run.run_ps(
+        command, timeout,
+        timeout_message="PowerShell timed out after {timeout}s")
 
 
 def get_status() -> dict:
@@ -75,22 +54,32 @@ def get_status() -> dict:
         return {"available": False}
     try:
         data = json.loads(output)
-        data["available"] = True
-        # Normalise the last-updated timestamp to a readable string
-        raw_ts = data.get("AntivirusSignatureLastUpdated", "")
-        if raw_ts:
-            try:
-                # PowerShell emits /Date(ms)/ or ISO strings
-                if "/Date(" in str(raw_ts):
-                    ms = int(str(raw_ts).split("(")[1].split(")")[0])
-                    data["AntivirusSignatureLastUpdated"] = datetime.fromtimestamp(
-                        ms / 1000
-                    ).strftime("%Y-%m-%d %H:%M")
-            except Exception:
-                pass
-        return data
     except json.JSONDecodeError:
         return {"available": False}
+
+    # ConvertTo-Json emits an array whenever Select-Object sees a collection
+    # rather than a single object, and `null` when it sees nothing. Neither is
+    # a status, and both used to reach the assignment below and raise TypeError
+    # straight out of a function whose docstring promises a dict on every path.
+    # get_threat_history() and get_threat_names() already normalise the shape
+    # they are handed; this one did not.
+    if not isinstance(data, dict):
+        return {"available": False}
+
+    data["available"] = True
+    # Normalise the last-updated timestamp to a readable string
+    raw_ts = data.get("AntivirusSignatureLastUpdated", "")
+    if raw_ts:
+        try:
+            # PowerShell emits /Date(ms)/ or ISO strings
+            if "/Date(" in str(raw_ts):
+                ms = int(str(raw_ts).split("(")[1].split(")")[0])
+                data["AntivirusSignatureLastUpdated"] = datetime.fromtimestamp(
+                    ms / 1000
+                ).strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            pass
+    return data
 
 
 def get_threat_history(limit: int = 20) -> list[dict]:
