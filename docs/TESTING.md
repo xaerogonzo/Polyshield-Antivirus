@@ -68,6 +68,7 @@ The suite is split by concern:
 | `test_ps_run.py` | The PowerShell runner's contract — output, exit codes, the timeout, and the bounded drain that stops a pipe-holding child from hanging the caller (v1.14) |
 | `test_security_score.py` | The composite 0–100 posture the Dashboard shows — every category weight, floor, and label boundary (v1.14) |
 | `test_system_surface.py` | The registry helpers, and `defender.get_status()` keeping its promise to always return a dict (v1.14) |
+| `test_winsec_probes.py` | The three live probes — Secure Boot / TPM / VBS, local accounts, and SmartScreen / CFA / ASR — driven through the `_run_ps` and `winreg` seams (v1.14) |
 
 ### The engine failure contract (v1.14)
 
@@ -233,6 +234,45 @@ exception killed the thread, `_apply` never ran, and the Dashboard sat on
 "Refreshing…" with its refresh button disabled until the app was restarted. The
 sibling readers `get_threat_history()` and `get_threat_names()` already
 normalised the shape they were handed; this one did not, and now does.
+
+### Absent is not the same as unknown (v1.14)
+
+`get_device_security()` reports each feature as `True`, `False`, or `None` plus
+a `*_needs_elevation` flag, and `get_security_score()` charges the full penalty
+for `False` and half for unknown. Both branches that consult PowerShell had a
+gap between those states.
+
+The TPM and VBS branches were shaped like this:
+
+```python
+if ok and out:
+    try:
+        ... result["tpm_present"] = ...
+    except Exception:
+        pass                      # keep the registry-derived value if set
+elif "tpm_present" not in result:
+    result["tpm_present"] = None
+    result["tpm_needs_elevation"] = True
+```
+
+A command that **succeeded** but returned something unparseable — a warning
+banner, a truncated line — took the `if` branch, raised inside it, and was
+swallowed. The `elif` never ran. With no registry value either, `tpm_present`
+was never assigned at all: absent from the dict rather than `None`.
+
+That reads as healthy everywhere downstream, because every consumer uses
+`.get()`. `device_sec.get("tpm_present") is False` is `False` for a missing key,
+and `.get("tpm_needs_elevation")` is `None`, so **no penalty applies**. A
+machine whose TPM and VBS state could not be read scored 20/20 on Device
+Security with no issues listed — identical to one with both confirmed present.
+
+Both branches now track whether the parse actually succeeded and fall through
+to the unknown state when it did not. The same machine now scores 15/20 and
+says "TPM status unknown (requires admin)".
+
+The general lesson for this file: when a dict is read with `.get()` downstream,
+a key that is never written is indistinguishable from a healthy one. Prefer
+writing an explicit `None` over letting an exception skip the assignment.
 
 ### Isolating module-global state (v1.13)
 
