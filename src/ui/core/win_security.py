@@ -292,15 +292,23 @@ def get_device_security() -> dict:
             "ConvertTo-Json -Compress"
         )
         ok, out = _run_ps(ps, timeout=10)
+        parsed = False
         if ok and out:
             try:
                 tpm = json.loads(out)
                 result["tpm_present"] = bool(tpm.get("TpmPresent"))
                 result["tpm_ready"]   = bool(tpm.get("TpmReady"))
                 result["tpm_version"] = str(tpm.get("TpmVersion", ""))
+                parsed = True
             except Exception:
                 pass  # keep registry-derived tpm_present if set
-        elif "tpm_present" not in result:
+        # A command that succeeded but returned something unparseable used to
+        # land in the except above and fall out of this branch entirely, so
+        # tpm_present was never assigned -- absent from the dict rather than
+        # None. get_security_score() reads it with .get(), so absent charges
+        # nothing at all, and a machine whose TPM state could not be read
+        # scored exactly like one with a confirmed TPM.
+        if not parsed and "tpm_present" not in result:
             result["tpm_present"] = None
             result["tpm_needs_elevation"] = True
     elif "tpm_present" not in result:
@@ -328,6 +336,7 @@ def get_device_security() -> dict:
             "ConvertTo-Json -Compress"
         )
         ok, out = _run_ps(ps, timeout=12)
+        parsed = False
         if ok and out:
             try:
                 dg = json.loads(out)
@@ -336,9 +345,13 @@ def get_device_security() -> dict:
                 result["vbs_enabled"]      = vbs == 2   # 2 = running
                 result["credential_guard"] = 1 in (svc if isinstance(svc, list) else [svc])
                 result["hvci"]             = 2 in (svc if isinstance(svc, list) else [svc])
+                parsed = True
             except Exception:
                 pass  # keep registry-derived vbs_enabled if set
-        elif "vbs_enabled" not in result:
+        # Same shape as the TPM branch above: unparseable-but-successful used
+        # to leave vbs_enabled unassigned rather than None, which scores as
+        # though VBS were confirmed running.
+        if not parsed and "vbs_enabled" not in result:
             result["vbs_enabled"] = None
             result["vbs_needs_elevation"] = True
     elif "vbs_enabled" not in result:
