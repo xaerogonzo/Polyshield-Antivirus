@@ -310,6 +310,83 @@ def watcher_sandbox(monkeypatch, settings_sandbox):
     return wtch
 
 
+class _InlineThread:
+    """A threading.Thread stand-in that runs its target on .start()."""
+
+    def __init__(self, target=None, args=(), kwargs=None, daemon=None, **_):
+        self._target = target
+        self._args = args
+        self._kwargs = kwargs or {}
+
+    def start(self):
+        if self._target is not None:
+            self._target(*self._args, **self._kwargs)
+
+    def join(self, timeout=None):
+        pass
+
+    def is_alive(self):
+        return False
+
+
+class _InlineThreading:
+    """The threading module with Thread swapped for the inline runner.
+
+    __getattr__ only fires for names not found on the instance, so Thread
+    resolves to _InlineThread and Event/Lock/local fall through to the real
+    module untouched. Patching threading.Thread directly would mutate the
+    stdlib module for the whole process.
+    """
+
+    Thread = _InlineThread
+
+    def __getattr__(self, name):
+        return getattr(threading, name)
+
+
+@pytest.fixture
+def run_engines_inline(monkeypatch):
+    """Make an engine's scan_async() complete before it returns.
+
+    Every engine ends scan_async() with threading.Thread(target=_run,
+    daemon=True).start(). A test that lets that thread run really is racing its
+    own assertions, and the usual fixes -- sleep, poll, an Event with a timeout
+    -- buy flakiness on a loaded CI runner in exchange for nothing. Running the
+    worker on the calling thread makes the assertions ordinary.
+
+    Scoped per engine module rather than globally, so a test that genuinely
+    wants concurrency (the pause/resume ones) can simply not ask for it.
+    """
+    def _install(*modules):
+        for module in modules:
+            monkeypatch.setattr(module, "threading", _InlineThreading())
+
+    return _install
+
+
+@pytest.fixture
+def yara_sandbox(tmp_path, monkeypatch):
+    """Point the YARA engine's three import-time path constants at temp dirs.
+
+    _USER_DIR, _COMMUNITY_DIR and _ACTIVE_PTR are resolved from parents[3] when
+    the module is imported, so they cannot be configured -- only patched. A
+    developer with rules/community/ populated would otherwise compile a
+    different ruleset than CI does, and the test outcome would depend on
+    machine state rather than on the code.
+
+    Returns (user_dir, community_dir); neither is created, because "the
+    directory does not exist" is one of the states under test.
+    """
+    from ui.core import yara_engine as ye
+
+    user = tmp_path / "user_rules"
+    community = tmp_path / "community"
+    monkeypatch.setattr(ye, "_USER_DIR", user)
+    monkeypatch.setattr(ye, "_COMMUNITY_DIR", community)
+    monkeypatch.setattr(ye, "_ACTIVE_PTR", community / ".active")
+    return user, community
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _assert_session_leaves_no_trace():
     """Fail the run if the suite ends holding state it did not start with.

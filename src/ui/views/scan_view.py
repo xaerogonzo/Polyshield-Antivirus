@@ -1557,21 +1557,39 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
                         f"[YARA]  {Path(fpath).name}  — no match", _TAG_YARA)
             self.after(0, _upd)
 
+        failed: list[str] = []
+
+        def _on_error(message: str):
+            failed.append(str(message))
+
+            def _upd():
+                self._log_append(f"[YARA] ⚠ {message}", _TAG_YARA)
+            self.after(0, _upd)
+
         def _on_done(infected_count: int):
             def _upd():
                 if infected_count:
                     self._log_append(
                         f"[YARA] Done — {infected_count} match(es) found.", _TAG_YARA)
                     self._build_threat_actions()
+                elif failed:
+                    # Never "no rule matches" here. The engine did not finish,
+                    # and a clean-looking log line is how a ruleset that will
+                    # not compile passes for a scan that found nothing.
+                    self._log_append(
+                        "[YARA] Did not complete — results are incomplete.", _TAG_YARA)
                 else:
                     self._log_append("[YARA] Done — no rule matches.", _TAG_YARA)
-                self._status_cb(f"YARA done — {infected_count} match(es)")
+                self._status_cb(
+                    "YARA did not complete" if failed and not infected_count
+                    else f"YARA done — {infected_count} match(es)")
                 self._run_next_engine()
             self.after(0, _upd)
 
         ye.scan_async(paths, _on_result, _on_done,
                       cancel_event=self._pipeline_cancel_event,
-                      pause_event=self._pipeline_pause_event)
+                      pause_event=self._pipeline_pause_event,
+                      on_error=_on_error)
 
     # ── ClamAV scan ───────────────────────────────────────────────────────────
 
@@ -1594,6 +1612,15 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
                         f"[ClamAV]  {Path(fpath).name}  — clean", _TAG_CLAMAV)
             self.after(0, _upd)
 
+        failed: list[str] = []
+
+        def _on_error(message: str):
+            failed.append(str(message))
+
+            def _upd():
+                self._log_append(f"[ClamAV] ⚠ {message}", _TAG_CLAMAV)
+            self.after(0, _upd)
+
         def _on_done(infected_count: int):
             def _upd():
                 if infected_count:
@@ -1601,15 +1628,22 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
                         f"[ClamAV] Done — {infected_count} threat(s) found.",
                         _TAG_CLAMAV)
                     self._build_threat_actions()
+                elif failed:
+                    self._log_append(
+                        "[ClamAV] Did not complete — results are incomplete.",
+                        _TAG_CLAMAV)
                 else:
                     self._log_append("[ClamAV] Done — no threats found.", _TAG_CLAMAV)
-                self._status_cb(f"ClamAV done — {infected_count} threat(s)")
+                self._status_cb(
+                    "ClamAV did not complete" if failed and not infected_count
+                    else f"ClamAV done — {infected_count} threat(s)")
                 self._run_next_engine()
             self.after(0, _upd)
 
         ce.scan_async(paths, _on_result, _on_done,
                       cancel_event=self._pipeline_cancel_event,
-                      pause_event=self._pipeline_pause_event)
+                      pause_event=self._pipeline_pause_event,
+                      on_error=_on_error)
 
     # ── Defender scan ──────────────────────────────────────────────────────────
 
