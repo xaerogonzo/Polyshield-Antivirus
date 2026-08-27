@@ -64,15 +64,36 @@ def scan_async(
     on_progress=None,   # fn(done: int, total: int, current_file: str) | None
     cancel_event=None,  # threading.Event | None
     pause_event=None,   # threading.Event | None — cleared while paused
+    on_error=None,      # fn(message: str) | None — called at most once, before on_done
 ) -> None:
     """
     Scan all paths in a single clamscan.exe invocation (DB loads once).
     Matches guardian_engine.scan_async() / yara_engine.scan_async() signature.
+
+    on_error is additive: every pre-existing call site omits it and behaves
+    exactly as it did before. It fires at most once, and always *before*
+    on_done, because on_done releases the watcher's completion barrier — an
+    error delivered afterwards would arrive to find "clean" already published.
+
+    A subprocess engine has more ways to fail than a Python-loop one, and all
+    of them used to end at on_done(count) with nothing to distinguish them
+    from a scan that ran to completion: a missing clamscan.exe, a Popen that
+    would not start, a non-zero exit, and a pipe that died half way through a
+    scan whose partial results had already been reported.
     """
     def _run():
+        failures: list[str] = []
+
+        def _finish(count: int):
+            if failures and on_error:
+                on_error("; ".join(failures))
+            on_done(count)
+
         exe = _find_exe("clamscan.exe")
         if exe is None:
-            on_done(0)
+            failures.append(
+                "clamscan.exe not found — set the ClamAV path in Settings")
+            _finish(0)
             return
 
         # Build the eligible file list, recursively expanding any directories.
@@ -102,18 +123,21 @@ def scan_async(
         total = len(eligible)
 
         if not eligible:
-            on_done(0)
+            _finish(0)
             return
 
-        # If already cancelled before the subprocess even starts, skip
+        # If already cancelled before the subprocess even starts, skip.
+        # Cancellation is not a failure: the user asked for it, and it must not
+        # reach on_error.
         if cancel_event and cancel_event.is_set():
-            on_done(0)
+            _finish(0)
             return
 
         tmpfile = None
         count = 0
         done = 0
         proc = None
+        cancelled = False
 
         try:
             with tempfile.NamedTemporaryFile(
@@ -138,6 +162,7 @@ def scan_async(
                     # Must resume first on Windows — a suspended process
                     # ignores TerminateProcess. The watch thread also clears
                     # itself in its finally, but be explicit here.
+                    cancelled = True
                     if pause_event is not None:
                         pause_event.set()
                     proc_pause.resume_pid(proc.pid)
@@ -170,11 +195,21 @@ def scan_async(
                 # other lines (ERROR, skipped, etc.) are silently ignored
 
             try:
-                proc.wait(timeout=_SCAN_TIMEOUT)
+                rc = proc.wait(timeout=_SCAN_TIMEOUT)
             except Exception:
-                pass
-        except Exception:
-            pass
+                rc = None      # still running or unwaitable; not a verdict
+
+            # clamscan: 0 = nothing found, 1 = threats found, anything else is
+            # the scanner reporting that the scan itself failed. Treating 2 as
+            # "no threats" is how a broken virus database becomes an all-clear.
+            if not cancelled and rc not in (0, 1, None):
+                failures.append(f"clamscan exited with code {rc}")
+        except Exception as exc:
+            # Reached when the stdout pipe dies mid-scan. Whatever was reported
+            # before that point is real and stays reported — but the caller has
+            # to be told the scan stopped early, or a partial count reads as a
+            # complete one.
+            failures.append(str(exc))
         finally:
             if tmpfile:
                 try:
@@ -182,6 +217,6 @@ def scan_async(
                 except Exception:
                     pass
 
-        on_done(count)
+        _finish(count)
 
     threading.Thread(target=_run, daemon=True).start()

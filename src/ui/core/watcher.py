@@ -280,18 +280,30 @@ def scan_new_file(path: str, entry: dict, notify_cb=None, on_complete=None):
         label = _ENGINE_LABELS[name]
 
         def _launch(barrier):
+            errors: list[str] = []
+
             def _on_result(_fp, infected, reason):
                 if infected:
                     _record(name, True, reason)
                     if notify_cb:
                         notify_cb(filename, f"{label}: {reason[:50]}")
 
+            def _on_error(message):
+                # Fired before on_done by contract, so the verdict below can
+                # still see it. An engine that could not run must not land here
+                # as a clean verdict: "clean" is what earns the green all-clear.
+                errors.append(str(message))
+
             def _on_done(_count):
                 if not _has_verdict(name):
-                    _record(name, False)
+                    if errors:
+                        _record(name, False, errors[0], status="error")
+                    else:
+                        _record(name, False)
                 barrier.arrive(name)
 
-            module.scan_async([path], _on_result, _on_done, **kwargs)
+            module.scan_async([path], _on_result, _on_done,
+                              on_error=_on_error, **kwargs)
 
         return _launch
 

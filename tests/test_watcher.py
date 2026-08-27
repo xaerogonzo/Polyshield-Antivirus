@@ -58,6 +58,20 @@ class FakeEngine:
     def report_done_only(self):
         self.calls[0][1](0)
 
+    def report_error(self, message="engine failed"):
+        """Fail the way a real engine fails: error first, then completion.
+
+        Distinct from launch_error above, which models scan_async raising. An
+        engine that cannot do its job usually starts perfectly well -- YARA
+        with a ruleset that will not compile, ClamAV with a missing
+        executable -- and then ends having scanned nothing.
+        """
+        _on_result, on_done, kwargs = self.calls[0]
+        on_error = kwargs.get("on_error")
+        assert on_error is not None, "the watcher passed no error handler"
+        on_error(message)
+        on_done(0)
+
 
 @pytest.fixture
 def pipeline(watcher_sandbox, settings_sandbox, monkeypatch):
@@ -330,6 +344,55 @@ def test_a_secondary_detection_names_the_engine(pipeline):
     pipeline["engines"]["yara"].report(infected=True, reason="rule match")
 
     assert entry["status"] == "suspicious (YARA)"
+
+
+def test_an_engine_that_starts_and_then_fails_is_not_a_clean_result(pipeline):
+    """The case a raising launch does not cover.
+
+    A ruleset that will not compile does not make scan_async raise. The engine
+    starts perfectly normally, finds it has nothing it can do, and ends -- and
+    until the engines gained an error channel that was spelled exactly like a
+    scan which ran and found nothing. The barrier fired, the verdict recorded
+    clean, and the entry derived the green all-clear.
+    """
+    pipeline["enable"]("yara")
+    entry = _entry()
+    seen = _start(pipeline, entry)
+
+    pipeline["k2_done"](0, None)
+    pipeline["engines"]["yara"].report_error(
+        "rules are present but could not be compiled")
+
+    assert len(seen) == 1
+    assert entry["status"] == "incomplete (YARA error)"
+
+
+def test_the_failure_reason_survives_into_the_verdict(pipeline):
+    """The verdict list is the source of truth; the status string is derived."""
+    pipeline["enable"]("clamav")
+    entry = _entry()
+    _start(pipeline, entry)
+
+    pipeline["k2_done"](0, None)
+    pipeline["engines"]["clamav"].report_error("clamscan.exe not found")
+
+    clamav = [v for v in entry["verdicts"] if v["engine"] == "clamav"]
+    assert len(clamav) == 1
+    assert clamav[0]["status"] == "error"
+    assert "clamscan.exe not found" in clamav[0]["reason"]
+
+
+def test_a_detection_still_outranks_a_failure_from_another_engine(pipeline):
+    """An error must not bury a threat that a working engine did find."""
+    pipeline["enable"]("guardian", "yara")
+    entry = _entry()
+    _start(pipeline, entry)
+
+    pipeline["k2_done"](0, None)
+    pipeline["engines"]["guardian"].report(infected=True, reason="Known signature")
+    pipeline["engines"]["yara"].report_error("rules failed to compile")
+
+    assert entry["status"] == "suspicious (Guardian)"
 
 
 def test_clean_requires_every_launched_engine_to_have_completed_cleanly(pipeline):

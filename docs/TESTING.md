@@ -61,9 +61,124 @@ The suite is split by concern:
 | `test_process_monitor.py` | The verdict ladder of the component that kills processes, the allow-list/reload ordering, and stop() not lying about whether it stopped (v1.13) |
 | `test_network_monitor.py` | Private-range policy, PID-reuse attribution, connection flagging tiers, and the IP verdict cache (v1.13) |
 | `test_watcher.py` | Real-time engine verdicts surviving any completion order, and the completion contract that decides when observers see them (v1.13) |
+| `test_yara_engine.py` | Rule discovery through the `.active` generation pointer, and the failure contract — a matcher that threw, a timeout, an unreadable file and a ruleset that will not compile are each distinguishable from clean (v1.14) |
+| `test_clamav_engine.py` | The subprocess engine's failure taxonomy — missing executable, a `Popen` that would not start, a non-zero exit, and a pipe that dies mid-scan after real verdicts were already reported (v1.14) |
+| `test_engine_contract.py` | The one `scan_async` interface Guardian, YARA and ClamAV all claim to implement, driven through a common adapter (v1.14) |
+| `test_emulate_report.py` | Speakeasy's report parser and the indicators derived from it — pure functions over a dict, so no emulator is needed (v1.14) |
 | `test_ps_run.py` | The PowerShell runner's contract — output, exit codes, the timeout, and the bounded drain that stops a pipe-holding child from hanging the caller (v1.14) |
 | `test_security_score.py` | The composite 0–100 posture the Dashboard shows — every category weight, floor, and label boundary (v1.14) |
 | `test_system_surface.py` | The registry helpers, and `defender.get_status()` keeping its promise to always return a dict (v1.14) |
+
+### The engine failure contract (v1.14)
+
+`"clean"` is the only status that earns the green all-clear, so it has to mean
+*every launched engine completed and found nothing*. The watcher established
+that in v1.13 with `_derive_status()` and `"incomplete (<Engine> error)"` — but
+the engines had no way to say they had failed, so the guarantee had a hole in
+it that only a raising `scan_async` could fill.
+
+The hole in practice: a single malformed `.yar` file makes `_compile()` return
+`None`, which is exactly what an empty rules directory returns. YARA then ends
+with `on_done(0)` and no results. `is_available()` still reported it available
+(it checks that rule *files* exist, never that they compile), the Scan view
+logged "Done — no rule matches", and the watcher derived `"clean"`. ClamAV had
+four versions of the same problem: a missing `clamscan.exe`, a `Popen` that
+raised, a non-zero exit, and a stdout pipe that died part-way through.
+
+All three engines now take an optional `on_error` callback:
+
+```python
+module.scan_async(paths, on_result, on_done, on_error=handler)
+```
+
+- **Additive.** Every pre-existing call site omits it and behaves exactly as
+  before, which is what let this land without touching `guardian_view.py`.
+  Widening `on_done` instead was not possible: all five call sites define it as
+  `def _on_done(count)`, so a second positional argument is a `TypeError`.
+- **At most once per scan**, with per-file failures summarised rather than
+  concatenated — a scan of a thousand unreadable files must not build a
+  thousand-clause sentence.
+- **Always before `on_done`.** This is load-bearing, not incidental: `on_done`
+  is what releases the watcher's completion barrier, and the barrier derives
+  the entry status the moment the last engine reports. An error delivered
+  afterwards arrives to find `"clean"` already published. Both engines have a
+  test pinning the ordering.
+
+`yara_engine.scan_file()` gained a third outcome for the same reason:
+`(False, "YARA error: …")` for a file it could not scan, against `(False, "")`
+for one it scanned and found clean.
+
+**`is_available()` deliberately still answers "runtime installed and rule files
+exist"**, not "the ruleset compiles". Compiling on that call would put a full
+compile on a hot path — the watcher calls it per file event — and would
+re-create the failure shape recorded in
+[WINDOWS_SERVICE.md](WINDOWS_SERVICE.md): a malformed rule would drop YARA out
+of the pipeline silently, never queued and never launched, with nothing
+anywhere to report. The engine stays available and reports the compile failure
+through `on_error` instead.
+
+### Two things probed and deliberately left alone (v1.14)
+
+**Skipped files still spell themselves like clean ones.** A file over
+`_MAX_FILE_MB` produces `(False, "")` from YARA, and from ClamAV produces
+either a clean verdict (named directly) or no callback at all (reached by
+directory expansion). Neither is counted as a detection, so no threat total is
+wrong — but the verdict claims more than the engine did, and the two ClamAV
+paths disagree with each other. Representing "skipped" in its own right means
+changing `on_result`'s shape across all three engines and every consumer, which
+is a wider change than the error channel needed. Both behaviours are pinned by
+tests named to say they are pinned, not endorsed.
+
+**`_parse_report()` raises on a structurally wrong report** — JSON nulls for
+`entry_points`, `apis`, `args` or `network_events`, or `entry_points` arriving
+as something other than a list. That was checked rather than assumed, and
+raising turns out to be right: `emulate_async` wraps the call, converts the
+exception into `EmulationReport(error=…)` and still calls `on_done`, so the
+user is told the report could not be read. Making the parser swallow these
+would hand the view an empty report that looks like a clean emulation.
+
+### Making an engine's worker thread deterministic (v1.14)
+
+Every engine ends `scan_async()` with
+`threading.Thread(target=_run, daemon=True).start()`. A test that lets that
+thread run really is racing its own assertions, and the usual repairs — a
+sleep, a poll, an `Event` with a timeout — buy flakiness on a loaded runner in
+exchange for nothing.
+
+The `run_engines_inline` fixture swaps the engine module's `threading`
+reference for a shim whose `Thread` runs its target on `.start()`, so the whole
+scan completes before `scan_async()` returns:
+
+```python
+def test_something(run_engines_inline):
+    run_engines_inline(yara_engine)     # or several modules at once
+```
+
+The shim's `__getattr__` falls through to the real module, so `Event`, `Lock`
+and `local` are untouched — patching `threading.Thread` directly would mutate
+the stdlib module for the whole process. It is scoped per engine module rather
+than applied globally, so a test that genuinely wants concurrency simply does
+not ask for it.
+
+### Engines absent from CI must be faked, not skipped (v1.14)
+
+`requirements-ci.txt` deliberately excludes yara-python, ClamAV and Speakeasy —
+they are optional at import time, and the Speakeasy path drags in an
+`unicorn==1.0.2` pin that only exists to restore modules removed in Python
+3.12+. A development machine usually has yara installed, so a test that simply
+imported it would pass here and skip on the runner, which is the exact
+local-vs-CI difference this suite exists to catch.
+
+So `test_yara_engine.py` injects a fake `yara` into `sys.modules` (both
+`is_available()` and `_compile()` import it *inside* the function, so a
+`sys.modules` entry is enough), `test_clamav_engine.py` swaps the engine's
+`subprocess` reference for a shim, and `test_emulate_report.py` never goes near
+an emulator. Setting `sys.modules["yara"] = None` is what makes `import yara`
+raise, for the "runtime not installed" case.
+
+One timing gotcha worth keeping: ClamAV unlinks its `--file-list` temp file in
+its own `finally`, so a test that wants to assert what was listed has to read
+the file inside the fake `Popen`, not after `scan_async()` returns.
 
 ### The shared PowerShell runner (v1.14)
 
@@ -347,6 +462,12 @@ LocalService account and the real filesystem:
 2. That artefacts it publishes are readable by the interactive user — see the
    `tempfile.mkdtemp` ACL gotcha in [WINDOWS_SERVICE.md](WINDOWS_SERVICE.md).
 3. That `SvcStop` completes promptly while an update is in flight.
+
+`sandbox_engine.detonate()` belongs on this list too. It launches the target
+inside Sandboxie-Plus and deliberately shows the app's own window, so there is
+nothing meaningful to assert without a real Sandboxie install and a real
+detonation. The Speakeasy half of that view *is* covered, at the parser layer,
+by `test_emulate_report.py`.
 
 Run them by starting the service, sending `RUN_INTEL_UPDATE` through
 `service_client`, and reading `C:\ProgramData\PolyShield\service.log`. Take a

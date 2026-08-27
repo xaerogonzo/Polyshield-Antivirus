@@ -100,19 +100,51 @@ def _compile():
 def scan_file(path: str, rules) -> tuple[bool, str]:
     """
     Scan a single file with pre-compiled rules.
-    Returns (infected: bool, reason: str).
-    Skips files over _MAX_FILE_MB to avoid hanging on huge binaries.
+
+    Three outcomes, and a caller must be able to tell them apart:
+
+        (True,  "YARA: <rules>")   matched
+        (False, "")                scanned and clean, or skipped for size
+        (False, "YARA error: …")   could not be scanned — NOT a clean verdict
+
+    The third used to be spelled exactly like the second: one bare
+    `except Exception: pass` swallowed a rule that threw, a file that could not
+    be read, and the 10-second match timeout alike, and every one of them
+    returned the clean tuple. An engine that could not answer must not answer
+    "clean" — the watcher reserves that string for runs where every launched
+    engine actually completed (see watcher._derive_status).
+
+    Files over _MAX_FILE_MB are still reported as (False, "") rather than as a
+    distinct "skipped" state; representing that properly would change
+    on_result's shape across all three engines and every consumer.
     """
     try:
         if Path(path).stat().st_size / 1_048_576 > _MAX_FILE_MB:
             return False, ""
+    except OSError as exc:
+        return False, f"YARA error: {exc}"
+
+    try:
         matches = rules.match(path, timeout=_SCAN_TIMEOUT)
-        if matches:
-            names = ", ".join(m.rule for m in matches)
-            return True, f"YARA: {names}"
-    except Exception:
-        pass
+    except Exception as exc:
+        return False, f"YARA error: {exc}"
+
+    if matches:
+        names = ", ".join(m.rule for m in matches)
+        return True, f"YARA: {names}"
     return False, ""
+
+
+def _summarise(failures: list[str]) -> str:
+    """Condense per-file failures into one message.
+
+    Capped because the caller puts this in a status string, and a scan of a
+    thousand unreadable files should not build a thousand-entry sentence.
+    """
+    head = "; ".join(failures[:3])
+    if len(failures) > 3:
+        head += f"; +{len(failures) - 3} more"
+    return head
 
 
 def scan_async(
@@ -122,15 +154,36 @@ def scan_async(
     on_progress=None,  # fn(done: int, total: int, current_file: str) | None
     cancel_event=None, # threading.Event | None
     pause_event=None,  # threading.Event | None — cleared while paused
+    on_error=None,     # fn(message: str) | None — called at most once, before on_done
 ) -> None:
     """
     Compile rules once, scan all paths in a daemon thread.
     Matches guardian_engine.scan_async() signature exactly.
+
+    on_error is additive: every pre-existing call site omits it and behaves
+    exactly as it did before. It fires at most once, and always *before*
+    on_done, because on_done is what releases the watcher's completion barrier
+    — an error delivered afterwards would arrive to find the verdict already
+    recorded and the status already derived.
     """
     def _run():
+        failures: list[str] = []
+
+        def _finish(count: int):
+            if failures and on_error:
+                on_error(_summarise(failures))
+            on_done(count)
+
         rules = _compile()
         if rules is None:
-            on_done(0)
+            # Two very different states used to share this exit. No rule files
+            # at all is a configuration the user chose. Rule files that will
+            # not compile is an engine that has silently stopped contributing
+            # while is_available() still reports it as available — the caller
+            # sees on_done(0), logs "no rule matches", and derives "clean".
+            if _all_yar_files():
+                failures.append("rules are present but could not be compiled")
+            _finish(0)
             return
 
         count = 0
@@ -147,7 +200,9 @@ def scan_async(
             infected, reason = scan_file(path, rules)
             if infected:
                 count += 1
+            elif reason:
+                failures.append(f"{Path(path).name}: {reason}")
             on_result(path, infected, reason)
-        on_done(count)
+        _finish(count)
 
     threading.Thread(target=_run, daemon=True).start()
