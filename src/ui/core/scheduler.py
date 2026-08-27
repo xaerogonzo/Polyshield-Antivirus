@@ -2,13 +2,11 @@ import subprocess
 import json
 from pathlib import Path
 from datetime import datetime
+from ui.core import paths
 
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW
 
-_BASE_DIR = Path(__file__).resolve().parents[3]
 _TASK_NAME = "PolyShield_ScheduledScan"
-_SCRIPT = str(_BASE_DIR / "scheduled_scan.py")
-_PYTHON = str(_BASE_DIR / "kicomav_env" / "Scripts" / "python.exe")
 
 
 def _run(args: list[str]) -> tuple[bool, str]:
@@ -28,8 +26,12 @@ def create_task(scan_path: str, frequency: str, start_time: str) -> tuple[bool, 
     frequency : 'DAILY' | 'WEEKLY'
     start_time: 'HH:MM'
     """
-    # Build the command the task will run
-    run_cmd = f'"{_PYTHON}" "{_SCRIPT}" "{scan_path}"'
+    # Build the command the task will run.  Routed through paths so a frozen
+    # build cannot silently register a task pointing at a virtualenv
+    # interpreter and a .py file that the distribution does not contain --
+    # a task that would fail at 02:00 months later, with nobody watching.
+    argv = paths.script_launch_argv("scheduled_scan.py", scan_path)
+    run_cmd = " ".join(f'"{a}"' for a in argv)
 
     args = [
         "schtasks", "/create",

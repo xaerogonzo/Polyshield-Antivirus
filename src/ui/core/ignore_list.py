@@ -24,8 +24,9 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from ui.core import paths
 
-_DB_PATH = Path(__file__).resolve().parents[3] / "intelligence" / "ignore_list.sqlite"
+_DB_PATH = paths.intelligence_dir() / "ignore_list.sqlite"
 _lock    = threading.Lock()
 
 # In-process cache to avoid hitting SQLite on every scan_file() call.

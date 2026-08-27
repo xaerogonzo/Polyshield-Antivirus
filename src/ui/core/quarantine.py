@@ -3,9 +3,9 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
+from ui.core import paths
 
-BASE_DIR = Path(__file__).resolve().parents[3]
-QUARANTINE_DIR = BASE_DIR / "quarantine"
+QUARANTINE_DIR = paths.quarantine_dir()
 QUARANTINE_DIR.mkdir(exist_ok=True)
 
 # Per-file sidecar suffix

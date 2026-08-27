@@ -24,12 +24,19 @@ from datetime import datetime
 from pathlib import Path
 
 # ── Bootstrap: project root + src/ on sys.path ────────────────────────────────
+# One of only three places that may still derive a root from __file__: the
+# bootstrap cannot import the module that centralises path resolution until
+# sys.path can find it. Everything after this line goes through ui.core.paths,
+# which is what makes the service and the GUI agree on where data lives --
+# they must, since both read the same threat database and settings file.
 _SVC_DIR = Path(__file__).resolve().parent          # project root
 _SVC_SRC = _SVC_DIR / "src"                         # src/ for ui.core.* imports
 if str(_SVC_DIR) not in sys.path:
     sys.path.insert(0, str(_SVC_DIR))
 if str(_SVC_SRC) not in sys.path:
     sys.path.insert(0, str(_SVC_SRC))
+
+from ui.core import paths                           # noqa: E402  (after bootstrap)
 
 import servicemanager
 import win32event
@@ -39,7 +46,7 @@ import win32serviceutil
 # ── Constants ─────────────────────────────────────────────────────────────────
 SERVICE_PORT     = 52614
 TOKEN_FILE       = Path(r"C:\ProgramData\PolyShield\service_token.txt")
-EVENTS_FILE      = _SVC_DIR / "config" / "service_events.json"
+EVENTS_FILE      = paths.config_dir() / "service_events.json"
 LOG_FILE         = Path(r"C:\ProgramData\PolyShield\service.log")
 HEARTBEAT_SECS   = 30
 _NET_EVENTS_CAP  = 100    # max network events kept in memory
@@ -110,7 +117,7 @@ class PolyShieldService(win32serviceutil.ServiceFramework):
     _svc_start_type_   = win32service.SERVICE_AUTO_START
     # Use venv python.exe directly — works with virtual environments
     _exe_name_  = sys.executable
-    _exe_args_  = f'"{_SVC_DIR / "polyshield_service.py"}"'
+    _exe_args_  = f'"{paths.resource_root() / "polyshield_service.py"}"'
 
     def __init__(self, args):
         win32serviceutil.ServiceFramework.__init__(self, args)
@@ -784,7 +791,7 @@ class PolyShieldService(win32serviceutil.ServiceFramework):
         """Persist a manually blocked IP in the intelligence DB."""
         import sqlite3 as _sqlite3
         from datetime import datetime as _dt
-        db_path = _SVC_DIR / "intelligence" / "threat_db.sqlite"
+        db_path = paths.intelligence_dir() / "threat_db.sqlite"
         if not db_path.exists():
             return
         try:

@@ -23,6 +23,7 @@ import customtkinter as ctk
 from ui.core import defender as dfn
 from ui.core import win_security as ws
 import ui.theme as theme
+from ui.core import paths
 
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW
 
@@ -776,7 +777,7 @@ class WinSecView(ctk.CTkScrollableFrame):
     def _relaunch_as_admin(self):
         """Re-launch the UI script with elevated privileges."""
         try:
-            script = str(Path(__file__).resolve().parents[3] / "src" / "ui" / "app.py")
+            script = str(paths.resource_root() / "src" / "ui" / "app.py")
             import ctypes
             ctypes.windll.shell32.ShellExecuteW(
                 None, "runas", sys.executable, f'"{script}"', None, 1)

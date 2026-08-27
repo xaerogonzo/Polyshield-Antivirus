@@ -8,10 +8,18 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+# Bootstrap before importing ui.core.paths -- see polyshield_service.py for why
+# this is one of the three places still allowed to derive a root from __file__.
 BASE_DIR = Path(__file__).resolve().parent
-K2_EXE = str(BASE_DIR / "kicomav_env" / "Scripts" / "k2.exe")
-LOGS_DIR = BASE_DIR / "logs"
-LOGS_DIR.mkdir(exist_ok=True)
+for _p in (BASE_DIR, BASE_DIR / "src"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+from ui.core import paths                    # noqa: E402  (after bootstrap)
+
+K2_EXE = str(paths.k2_exe())
+LOGS_DIR = paths.logs_dir()
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def main():

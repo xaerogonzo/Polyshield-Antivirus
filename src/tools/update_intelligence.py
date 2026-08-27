@@ -58,20 +58,26 @@ from typing import Callable
 
 _LOG = logging.getLogger(__name__)
 
-_ROOT         = Path(__file__).resolve().parents[2]
-_DB_PATH      = _ROOT / "intelligence" / "threat_db.sqlite"
-_KNOWN_BAD    = _ROOT / "guardianai" / "data" / "known_bad.txt"
-_BLOOM_PATH   = _ROOT / "intelligence" / "nsrl_bloom.bin"
-
 # Running this file directly (python src/tools/update_intelligence.py) puts
 # src/tools/ on sys.path but not src/, so the ui.core re-export shim further
 # down would raise ModuleNotFoundError before main() ever runs.  Bootstrap the
 # path here instead — a no-op when imported as tools.update_intelligence from a
 # host process that already configured sys.path.
+#
+# This is one of only three places still allowed to derive a root from
+# __file__: the bootstrap cannot import the module that centralises path
+# resolution until sys.path can find it.  Everything below goes through it.
+_ROOT = Path(__file__).resolve().parents[2]
 if __package__ in (None, ""):
     for _p in (_ROOT / "src", _ROOT):
         if str(_p) not in sys.path:
             sys.path.insert(0, str(_p))
+
+from ui.core import paths                    # noqa: E402  (after bootstrap)
+
+_DB_PATH      = paths.intelligence_dir() / "threat_db.sqlite"
+_KNOWN_BAD    = paths.guardian_dir() / "data" / "known_bad.txt"
+_BLOOM_PATH   = paths.intelligence_dir() / "nsrl_bloom.bin"
 
 _MB_RECENT_URL    = "https://bazaar.abuse.ch/export/txt/md5/recent/"
 _MB_FULL_URL      = "https://bazaar.abuse.ch/export/txt/md5/full/"
@@ -954,7 +960,7 @@ def get_c2_blocklist_stats() -> dict:
 # one keeps working, and a leftover directory is inert because nothing points
 # at it.
 
-_YARA_DIR         = _ROOT / "rules" / "community"
+_YARA_DIR         = paths.rules_dir() / "community"
 _YARA_ACTIVE_FILE = _YARA_DIR / ".active"
 _YARA_RELEASE_URL = "https://api.github.com/repos/YARAHQ/yara-forge/releases/latest"
 _YARA_UA          = "PolyShield-Intelligence/1.0"

@@ -39,12 +39,12 @@ import logging
 import threading
 import weakref
 from pathlib import Path
+from ui.core import paths
 
 log = logging.getLogger(__name__)
 
-_ROOT           = Path(__file__).resolve().parents[3]
-_DB_PATH        = _ROOT / "intelligence" / "threat_db.sqlite"
-_KNOWN_BAD_PATH = _ROOT / "guardianai" / "data" / "known_bad.txt"  # legacy fallback only
+_DB_PATH        = paths.intelligence_dir() / "threat_db.sqlite"
+_KNOWN_BAD_PATH = paths.guardian_dir() / "data" / "known_bad.txt"  # legacy fallback only
 
 # If the malicious table exceeds this count, skip RAM loading entirely.
 # _check_process() already has a per-lookup SQLite fallback that covers all hashes.

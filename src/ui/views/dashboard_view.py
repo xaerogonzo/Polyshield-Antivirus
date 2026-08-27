@@ -9,10 +9,10 @@ from ui.core import scanner as sc
 from ui.core import watcher as wtch
 from ui.core import settings as cfg
 from ui.core import win_security as ws
+from ui.core import paths
 
-_BASE_DIR  = Path(__file__).resolve().parents[3]
-_LOGS_DIR  = _BASE_DIR / "logs"
-_INTEL_DB  = _BASE_DIR / "intelligence" / "threat_db.sqlite"
+_LOGS_DIR  = paths.logs_dir()
+_INTEL_DB  = paths.intelligence_dir() / "threat_db.sqlite"
 
 
 def _svc_installed() -> bool:

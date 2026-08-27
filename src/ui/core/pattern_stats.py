@@ -19,8 +19,9 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
+from ui.core import paths
 
-_DB_PATH = Path(__file__).resolve().parents[3] / "intelligence" / "pattern_stats.sqlite"
+_DB_PATH = paths.intelligence_dir() / "pattern_stats.sqlite"
 _lock    = threading.Lock()
 
 

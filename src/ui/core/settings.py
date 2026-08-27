@@ -66,6 +66,7 @@ import threading
 import time
 from datetime import datetime
 from pathlib import Path
+from ui.core import paths
 
 try:                                    # Windows-only; the product is too.
     import msvcrt
@@ -74,9 +75,8 @@ except ImportError:                     # pragma: no cover - non-Windows
 
 log = logging.getLogger(__name__)
 
-_BASE_DIR      = Path(__file__).resolve().parents[3]
-_SETTINGS_FILE = _BASE_DIR / "config" / "ui_settings.json"
-_LOCK_FILE     = _BASE_DIR / "config" / "ui_settings.json.lock"
+_SETTINGS_FILE = paths.config_dir() / "ui_settings.json"
+_LOCK_FILE     = paths.config_dir() / "ui_settings.json.lock"
 
 SAVE_OK       = "ok"
 SAVE_DEGRADED = "degraded"

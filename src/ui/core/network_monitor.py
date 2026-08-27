@@ -42,6 +42,7 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
+from ui.core import paths
 
 try:
     import psutil
@@ -49,8 +50,7 @@ try:
 except ImportError:
     _PSUTIL_OK = False
 
-_ROOT    = Path(__file__).resolve().parents[3]
-_DB_PATH = _ROOT / "intelligence" / "threat_db.sqlite"
+_DB_PATH = paths.intelligence_dir() / "threat_db.sqlite"
 
 POLL_INTERVAL      = 30    # seconds between connection sweeps
 _CACHE_RESET_POLLS = 20    # clear ip cache after this many polls (~10 min)
