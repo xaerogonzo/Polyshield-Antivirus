@@ -1191,15 +1191,18 @@ class SettingsView(ctk.CTkScrollableFrame):
             "only if you're actively researching false positives."),
     }
 
-    _PATTERN_LABELS = (
-        "AutoRun exploit (AUTORUN.INF)",
-        "Script dropper (WScript.Shell.Run)",
-        "Encoded PowerShell payload",
-        "MSHTA remote payload",
-        "Mimikatz credential dump",
-        "Ransomware note (files encrypted)",
-        "Ransomware payment demand",
-    )
+    @property
+    def _PATTERN_LABELS(self) -> tuple[str, ...]:
+        """The engine's pattern labels, read from the engine.
+
+        This used to be a hand-maintained tuple repeating the seven strings in
+        guardian_engine._PATTERNS.  The labels are the *keys* of
+        `guardian_pattern_toggles`, so a copy that drifted would have written
+        an override under a name the engine no longer resolves: the switch
+        reads OFF, the pattern keeps firing, and nothing reports a mismatch.
+        """
+        from ui.core import guardian_engine as _ge
+        return _ge.pattern_labels()
 
     def _build_guardian_sensitivity_section(self, parent, start_row: int):
         """v1.10 — Sensitivity profile dropdown + 'Advanced…' button inside the
@@ -1345,6 +1348,7 @@ class SettingsView(ctk.CTkScrollableFrame):
             self._build_guardian_advanced_body, width=720, height=660)
 
     def _build_guardian_advanced_body(self, parent):
+        from ui.core import guardian_engine as _ge
         from ui.core import settings as _cfg
         from ui.core import pattern_stats as _ps
 
@@ -1383,8 +1387,7 @@ class SettingsView(ctk.CTkScrollableFrame):
         patterns_frame.grid(row=2, column=0, sticky="ew")
         patterns_frame.grid_columnconfigure(0, weight=1)
 
-        _CONSERVATIVE_OFF = {"Ransomware note (files encrypted)",
-                              "Ransomware payment demand"}
+
 
         def _build_pattern_rows():
             """Populate (or repopulate) the pattern toggle rows inside patterns_frame."""
@@ -1399,11 +1402,13 @@ class SettingsView(ctk.CTkScrollableFrame):
                 row_f.grid(row=i, column=0, sticky="ew", padx=4, pady=2)
                 row_f.grid_columnconfigure(1, weight=1)
 
-                # Effective initial state: explicit override OR profile default
-                if label in toggles:
-                    initial = bool(toggles[label])
-                else:
-                    initial = not (profile == "conservative" and label in _CONSERVATIVE_OFF)
+                # Ask the engine what it will actually do, rather than deciding
+                # it a second time here.  This block used to reimplement
+                # _pattern_enabled() against a local copy of the conservative
+                # set, so the switch was a second opinion about the scan rather
+                # than a readout of it -- and the two could disagree without
+                # anything failing.
+                initial = _ge.pattern_enabled(label, profile, toggles)
 
                 sw_var = ctk.BooleanVar(value=initial)
                 def _make_cb(lbl=label, var=sw_var):

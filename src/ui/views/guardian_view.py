@@ -287,8 +287,11 @@ class GuardianView(ctk.CTkFrame):
                     messages.append(msg)
                     # Show last message live
                     if self.winfo_exists():
-                        self.after(0, self._update_status.configure,
-                                   {"text": msg[:80], "text_color": "#ffb86c"})
+                        # Lambda, not a positional dict — see CLAUDE.md: CTk's
+                        # configure() is (require_redraw=False, **kwargs), so a
+                        # dict lands on require_redraw and the label never moves.
+                        self.after(0, lambda m=msg: self._update_status.configure(
+                            text=m[:80], text_color="#ffb86c"))
 
                 result = run_update(on_progress=_log, mode=mode)
 
