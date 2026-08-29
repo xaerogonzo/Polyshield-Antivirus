@@ -7,6 +7,7 @@ import customtkinter as ctk
 
 from ui.core import service_client as svc
 import ui.theme as theme
+from ui.core import paths
 
 _GREEN  = "#50fa7b"
 _RED    = "#ff5555"
@@ -18,7 +19,7 @@ _ROW0   = "#1e1e2e"
 _ROW1   = "#232340"
 
 _SVC_NAME   = "PolyShieldService"
-_SVC_SCRIPT = str(Path(__file__).resolve().parents[3] / "polyshield_service.py")
+_SVC_SCRIPT = str(paths.resource_root() / "polyshield_service.py")
 _PYTHON_EXE = sys.executable
 
 
@@ -455,7 +456,7 @@ class ServiceView(ctk.CTkFrame):
             return
         self._set_busy(True)
         self._status_cb("Applying Defender fix (UAC prompt will appear)…")
-        bat = Path(__file__).resolve().parents[3] / "scripts" / "service" / "fix_service_crash.bat"
+        bat = paths.resource_root() / "scripts" / "service" / "fix_service_crash.bat"
 
         def _run():
             try:

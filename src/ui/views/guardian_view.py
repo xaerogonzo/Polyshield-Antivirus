@@ -22,6 +22,7 @@ import ui.theme as theme
 
 from ui.core import guardian_engine as ge
 from ui.core import settings as cfg
+from ui.core import paths
 
 try:
     from tkinterdnd2 import DND_FILES
@@ -276,9 +277,7 @@ class GuardianView(ctk.CTkFrame):
             try:
                 import sys
                 from pathlib import Path
-                _root = Path(__file__).resolve().parents[3] / "src"
-                if str(_root) not in sys.path:
-                    sys.path.insert(0, str(_root))
+                paths.bootstrap_sys_path()
                 from tools.update_intelligence import run_update
 
                 messages: list[str] = []
@@ -330,7 +329,7 @@ class GuardianView(ctk.CTkFrame):
     # anything, and so the one place that has to track scripts/ layout is
     # obvious.  It moved to scripts/components/ in the scripts reorganisation
     # and this reference was left behind -- see _open_setup_bat.
-    SETUP_BAT = (Path(__file__).resolve().parents[3]
+    SETUP_BAT = (paths.resource_root()
                  / "scripts" / "components" / "setup_guardian.bat")
 
     def _open_setup_bat(self):

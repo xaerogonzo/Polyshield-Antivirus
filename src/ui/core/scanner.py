@@ -7,11 +7,13 @@ import shutil
 import ctypes
 from datetime import datetime
 from pathlib import Path
+from ui.core import paths
 
-BASE_DIR = Path(__file__).resolve().parents[3]
-K2_EXE = str(BASE_DIR / "kicomav_env" / "Scripts" / "k2.exe")
-LOGS_DIR = BASE_DIR / "logs"
-QUARANTINE_DIR = BASE_DIR / "quarantine"
+# k2 lives in the development virtualenv and is optional (v1.6.1+);
+# is_available() below reports its absence rather than assuming it.
+K2_EXE = str(paths.k2_exe())
+LOGS_DIR = paths.logs_dir()
+QUARANTINE_DIR = paths.quarantine_dir()
 
 
 def is_available() -> bool:
@@ -408,7 +410,7 @@ def get_infected_paths(report_path: str) -> list[str]:
 
 def get_update_cfg_info() -> dict:
     """Read rules/update.cfg and return version metadata."""
-    cfg_path = BASE_DIR / "rules" / "update.cfg"
+    cfg_path = paths.rules_dir() / "update.cfg"
     result = {"version": "Unknown", "last_updated": "Unknown", "raw": ""}
     if not cfg_path.exists():
         return result

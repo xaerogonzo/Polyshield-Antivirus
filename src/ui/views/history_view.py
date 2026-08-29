@@ -5,9 +5,9 @@ import customtkinter as ctk
 from pathlib import Path
 from ui.core import scanner as sc
 import ui.theme as theme
+from ui.core import paths
 
-_BASE_DIR = Path(__file__).resolve().parents[3]
-_LOGS_DIR = _BASE_DIR / "logs"
+_LOGS_DIR = paths.logs_dir()
 
 
 def _load_reports() -> list[dict]:

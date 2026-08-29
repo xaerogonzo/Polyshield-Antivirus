@@ -12,6 +12,7 @@ from pathlib import Path
 
 import customtkinter as ctk
 import ui.theme as theme
+from ui.core import paths
 
 _CARD  = "#1a1a2e"
 _CARD2 = "#12121e"
@@ -615,7 +616,7 @@ class HelpView(ctk.CTkScrollableFrame):
           2. docs/USAGE.md         — detailed usage guide fallback
           3. GitHub docs URL       — always works; opens in the default browser
         """
-        root = Path(__file__).resolve().parents[3]
+        root = paths.resource_root()
         for candidate in (
             root / "docs" / "README.md",
             root / "docs" / "USAGE.md",

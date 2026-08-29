@@ -24,6 +24,7 @@ import customtkinter as ctk
 from ui.core import scanner as sc
 from ui.core import guardian_engine as ge
 import ui.theme as theme
+from ui.core import paths
 
 _TAG_OK        = "ok"
 _TAG_ERR       = "err"
@@ -40,7 +41,6 @@ _TAG_CLAMAV    = "clamav"
 _NO_WINDOW = subprocess.CREATE_NO_WINDOW
 
 # Project root (three levels above this file's directory: src/ui/views/file.py)
-_BASE_DIR = Path(__file__).resolve().parents[3]
 
 
 class UpdateView(ctk.CTkScrollableFrame):
@@ -193,7 +193,7 @@ class UpdateView(ctk.CTkScrollableFrame):
 
     def _build_guardian_section(self, row: int):
         """Guardian AI engine / git pull card."""
-        guardian_dir = _BASE_DIR / "guardianai"
+        guardian_dir = paths.guardian_dir()
         is_present = guardian_dir.is_dir()
 
         card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
@@ -693,10 +693,7 @@ class UpdateView(ctk.CTkScrollableFrame):
 
     def _refresh_c2_info(self):
         try:
-            import sys
-            root = str(_BASE_DIR)
-            if root not in sys.path:
-                sys.path.insert(0, root)
+            paths.bootstrap_sys_path()
             from tools.update_intelligence import get_c2_blocklist_stats
             stats = get_c2_blocklist_stats()
             count   = stats.get("total", 0)
@@ -783,7 +780,7 @@ class UpdateView(ctk.CTkScrollableFrame):
             pass
 
     def _refresh_guardian_info(self):
-        guardian_dir = _BASE_DIR / "guardianai"
+        guardian_dir = paths.guardian_dir()
         if not guardian_dir.is_dir():
             return
         try:
@@ -819,7 +816,7 @@ class UpdateView(ctk.CTkScrollableFrame):
     def _refresh_speakeasy_info(self):
         """Read installed speakeasy-emulator version via pip show (background)."""
         def _run():
-            pip = str(_BASE_DIR / "kicomav_env" / "Scripts" / "pip.exe")
+            pip = str(paths.venv_pip())
             try:
                 r = subprocess.run(
                     [pip, "show", "speakeasy-emulator"],
@@ -905,7 +902,7 @@ class UpdateView(ctk.CTkScrollableFrame):
     def _run_guardian_update(self):
         if self._upd_guardian:
             return
-        guardian_dir = _BASE_DIR / "guardianai"
+        guardian_dir = paths.guardian_dir()
         if not guardian_dir.is_dir():
             self._log_append("  [SKIP] guardianai/ not installed — run setup_guardian.bat first.\n",
                              _TAG_ERR)
@@ -959,7 +956,7 @@ class UpdateView(ctk.CTkScrollableFrame):
             self._guardian_btn.configure(state="disabled", text="Pulling…")
             self._guardian_badge.configure(text="  Pulling…  ", text_color="#ffb86c")
         else:
-            guardian_dir = _BASE_DIR / "guardianai"
+            guardian_dir = paths.guardian_dir()
             ok = guardian_dir.is_dir()
             self._guardian_btn.configure(
                 state="normal" if ok else "disabled",
@@ -986,9 +983,7 @@ class UpdateView(ctk.CTkScrollableFrame):
         def _run():
             try:
                 import sys
-                root = str(_BASE_DIR / "src")
-                if root not in sys.path:
-                    sys.path.insert(0, root)
+                paths.bootstrap_sys_path()
                 from tools.update_intelligence import run_update
 
                 def _on_progress(msg: str):
@@ -1051,9 +1046,7 @@ class UpdateView(ctk.CTkScrollableFrame):
         def _run():
             try:
                 import sys
-                root = str(_BASE_DIR / "src")
-                if root not in sys.path:
-                    sys.path.insert(0, root)
+                paths.bootstrap_sys_path()
                 from tools.update_intelligence import import_nsrl
 
                 def _on_progress(msg: str):
@@ -1077,10 +1070,7 @@ class UpdateView(ctk.CTkScrollableFrame):
             return
         # Read current count for the dialog message
         try:
-            import sys
-            root = str(_BASE_DIR)
-            if root not in sys.path:
-                sys.path.insert(0, root)
+            paths.bootstrap_sys_path()
             from tools.update_intelligence import get_stats
             count = get_stats().get("malicious", 0)
         except Exception:
@@ -1142,9 +1132,7 @@ class UpdateView(ctk.CTkScrollableFrame):
         def _run():
             try:
                 import sys
-                root = str(_BASE_DIR / "src")
-                if root not in sys.path:
-                    sys.path.insert(0, root)
+                paths.bootstrap_sys_path()
                 from tools.update_intelligence import clear_malicious_db
 
                 def _on_progress(msg: str):
@@ -1212,9 +1200,7 @@ class UpdateView(ctk.CTkScrollableFrame):
         def _run():
             try:
                 import sys
-                root = str(_BASE_DIR / "src")
-                if root not in sys.path:
-                    sys.path.insert(0, root)
+                paths.bootstrap_sys_path()
                 from tools.update_intelligence import import_c2_blocklist
 
                 def _on_progress(msg: str):
@@ -1280,7 +1266,7 @@ class UpdateView(ctk.CTkScrollableFrame):
         self._log_section_header("Speakeasy Emulator", _TAG_SPEAKEASY)
         self._status_cb("Updating Speakeasy emulator…")
 
-        pip = str(_BASE_DIR / "kicomav_env" / "Scripts" / "pip.exe")
+        pip = str(paths.venv_pip())
 
         def _run():
             try:
@@ -1412,7 +1398,7 @@ class UpdateView(ctk.CTkScrollableFrame):
         import tempfile as _tempfile
 
         def _run():
-            community_dir = _BASE_DIR / "rules" / "community"
+            community_dir = paths.rules_dir() / "community"
             tmp_path = None
             try:
                 # 1. Query GitHub releases API

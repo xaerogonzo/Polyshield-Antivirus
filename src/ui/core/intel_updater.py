@@ -42,6 +42,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
+from ui.core import paths
 
 log = logging.getLogger(__name__)
 
@@ -56,8 +57,7 @@ def _utcnow() -> datetime:
     """
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
-_ROOT      = Path(__file__).resolve().parents[3]
-_LOCK_PATH = _ROOT / "intelligence" / ".update.lock"
+_LOCK_PATH = paths.intelligence_dir() / ".update.lock"
 
 # Only consulted when process liveness cannot be established at all.  It must
 # never override positive evidence that the owner is alive — an import can

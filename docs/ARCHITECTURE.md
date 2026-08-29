@@ -311,6 +311,123 @@ service_client.block_ip(ip)
 
 ---
 
+## Path Resolution (v1.15)
+
+`src/ui/core/paths.py` is the only module that decides where anything lives.
+Before it, **33 sites across 26 files** each recomputed the project root from
+`__file__`, in three different spellings, and nothing anywhere was aware the
+code might not be running from a source checkout.
+
+That is fine while it always is. It stops being fine the moment the app is
+compiled: under a Nuitka onefile build the modules are unpacked into a
+temporary directory that is deleted on exit, so every one of those sites would
+have put the threat database, the quarantine, the logs and the user's settings
+somewhere that does not survive the process.
+
+The distinction the module encodes is **not** "Nuitka is weird". It is:
+
+| | |
+|---|---|
+| **RESOURCE lifetime** | ships with the program, read-only, recreatable from the bundle, may live in a temporary extraction directory |
+| **DATA lifetime** | created or modified by the user or the application, must survive a restart, must never live only in a temporary extraction directory |
+
+That outlives any particular packager, which is why the API is about lifetimes
+rather than about being frozen.
+
+### The API
+
+```python
+paths.app_root()       # durable writable application data
+paths.resource_root()  # files that ship with the program
+paths.is_frozen()      # the single predicate
+```
+
+plus named accessors — `intelligence_dir()`, `quarantine_dir()`, `logs_dir()`,
+`config_dir()`, `rules_dir()`, `guardian_dir()` — so a caller never has to
+remember which of the two roots a directory belongs to. That is the mistake the
+module exists to prevent.
+
+`app_root()` is **deliberately not** `Path(sys.executable).parent`. A build
+installed under `C:\Program Files\PolyShield` cannot write beside itself
+without elevation, and PolyShield writes a threat database, a quarantine, logs
+and settings on an ordinary run — so a beside-the-exe definition produces a
+build that works from `dist\` and fails for every real installation. It
+resolves:
+
+1. `%POLYSHIELD_DATA_DIR%` if set — the seam for an installer, a portable
+   launcher, or a deployment keeping data on another volume.
+2. Frozen: `%LOCALAPPDATA%\PolyShield`, writable in both portable and installed
+   layouts. **This is the line Phase 4b may revisit** if the distribution ships
+   as a folder; it is a one-line change here, which is the point.
+3. Source checkout: the project root, unchanged.
+
+### Classification
+
+| DATA | RESOURCE |
+|---|---|
+| `intelligence/threat_db.sqlite` | `src/` (sys.path) |
+| `intelligence/nsrl_bloom.bin` | `src/ui/app.py` (launch target) |
+| `intelligence/ignore_list.sqlite` | `polyshield_service.py` |
+| `intelligence/pattern_stats.sqlite` | `scheduled_scan.py` |
+| `intelligence/.update.lock` | `launch_ui.vbs` |
+| `quarantine/` | `scripts/**.bat` |
+| `logs/` | `_speakeasy_worker.py` |
+| `config/ui_settings.json` (+ `.lock`) | `_svc_helper.bat` |
+| `config/service_events.json` | |
+| `rules/user_rules/` (user-authored) | |
+| `rules/community/**` (downloaded intel) | |
+| `rules/update.cfg` (written by `k2 --update`) | |
+| `guardianai/data/known_bad.txt` | |
+
+`rules/` is split rather than classified whole: `user_rules/` is the user's own
+work and the community generations are downloaded intelligence, so both are
+DATA even though a first-run tree ships neither.
+
+### A third category the split does not describe
+
+```
+kicomav_env/Scripts/{k2,python,pip}.exe    the development virtualenv
+guardianai/                                a separately cloned repository
+```
+
+Neither is shipped and neither is user data — they are the **development
+environment**, and they do not exist in a distribution at all. `k2_exe()`,
+`venv_python()`, `venv_pip()` and `guardian_dir()` resolve them anyway, and the
+callers already degrade when they are absent (`scanner.is_available()` has
+returned False for a missing k2 since v1.6.1). Deciding whether k2 ships, and
+in what form, is an explicit **Phase 4b** decision; `paths.py` only makes the
+question visible instead of scattering it across four files.
+
+### Launch targets
+
+Three places used to build their own `pythonw.exe` + `app.py` command line —
+the Explorer context menu, the elevated relaunch in the Windows Security view,
+and the launch-at-login shortcut. They now share `app_launch_argv()`, which in
+a frozen build returns the running executable, because the executable *is* the
+GUI.
+
+`script_launch_argv()` covers the helper scripts (`scheduled_scan.py`, the
+service) and **raises** `FrozenLaunchUndecided` in a frozen build. That is
+deliberate. Returning the source command anyway would register a scheduled task
+pointing at a virtualenv interpreter the distribution does not contain — a task
+that fails at 02:00 some months later with nobody watching, which is the exact
+failure class this work exists to prevent.
+
+### Three modules may still derive a root themselves
+
+`src/ui/app.py`, `polyshield_service.py`, `scheduled_scan.py` and
+`src/tools/update_intelligence.py` each put the checkout on `sys.path` before
+anything else runs — **the bootstrap cannot import the module that centralises
+path resolution until `sys.path` can find it.** Each derives its own root for
+that and only that; `tests/test_paths.py` asserts the raw root is not used
+again below the `from ui.core import paths` line.
+
+Two further exceptions are not root derivations at all:
+`emulate_engine._WORKER` and `service_view`'s `_svc_helper.bat` resolve a file
+**beside their own module**, which is correct in a checkout and correct in an
+extraction directory. That is precisely why they are not routed through
+`paths`.
+
 ## NSRL Bloom Filter (v1.7)
 
 The NSRL known-safe dataset contains ~72 million unique hashes. Loading those into a Python `set` would consume 4–6 GB of RAM. A `ScalableBloomFilter` at 0.1% false-positive rate for 72M entries takes ~150 MB.

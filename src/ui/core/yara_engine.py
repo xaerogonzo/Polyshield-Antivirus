@@ -11,9 +11,10 @@ yara-python is already in requirements.txt — no extra install needed.
 
 import threading
 from pathlib import Path
+from ui.core import paths
 
-_USER_DIR      = Path(__file__).resolve().parents[3] / "rules" / "user_rules"
-_COMMUNITY_DIR = Path(__file__).resolve().parents[3] / "rules" / "community"
+_USER_DIR      = paths.rules_dir() / "user_rules"
+_COMMUNITY_DIR = paths.rules_dir() / "community"
 _ACTIVE_PTR    = _COMMUNITY_DIR / ".active"
 _MAX_FILE_MB   = 50    # skip files larger than this to prevent hangs on huge binaries
 _SCAN_TIMEOUT  = 10    # seconds per file before yara raises a TimeoutError

@@ -71,6 +71,7 @@ The suite is split by concern:
 | `test_winsec_probes.py` | The three live probes — Secure Boot / TPM / VBS, local accounts, and SmartScreen / CFA / ASR — driven through the `_run_ps` and `winreg` seams (v1.14) |
 | `test_settings_update_views.py` | The two largest views, tested for the decisions they make — pattern-label/profile truth shared with the engine, the false-positive figures shown as advice, busy/failure transitions, and an `ast` guard against the `after(…, configure, {…})` idiom (v1.15) |
 | `test_integration_edges.py` | Four small Windows-boundary modules — VirusTotal request/parse, the Explorer context-menu registry writes and the command Explorer runs, schtasks construction and parsing, and autorun path resolution (v1.15) |
+| `test_paths.py` | Where files live — the DATA/RESOURCE split in both execution modes, the GUI and the service converging on one canonical data root, launch targets, and an allow-listed scan for reintroduced `__file__` roots (v1.15) |
 
 ### A frozen badge, and the guard for it (v1.15)
 
@@ -339,6 +340,33 @@ entries, never invent them, so a miss falls through to the SQLite truth.
 `guardian_engine._load_nsrl_bloom` is what makes that hold — it checks the flag
 before loading and quarantines a filter it cannot parse — and it had no test of
 its own until now, which meant the safety property rested on unexercised code.
+
+### A grep finds definitions; a sweep has to find uses (v1.15)
+
+The migration table for the path refactor was built from a search for where
+roots are **defined** — `_ROOT = Path(__file__)…` — which found 33 sites and
+missed nine.
+
+`update_view.py` kept its `_BASE_DIR` because it had many uses, so replacing
+the definition left `guardian_dir = _BASE_DIR / "guardianai"` and eight
+others intact and passing. Files where the definition *was* removed failed
+loudly with `NameError` at import; the one where it survived failed silently
+by continuing to work in a checkout and only breaking once frozen.
+
+A seventh launch target turned up the same way: `settings_view` writes a VBS
+launcher whose **contents** name `kicomav_env\Scripts\pythonw.exe` and
+`src\ui\app.py`. No `__file__` in sight, so no definition scan would ever
+have found it.
+
+The lesson for the rest of this refactor and for Phase 4b: after migrating a
+definition, grep for every **use** of the name it defined, and separately for
+the literal directory names (`kicomav_env`, `guardianai`) that a path might be
+assembled from without ever touching `__file__`.
+
+`test_paths.py` pairs its source scan with an import-and-resolve smoke test
+over all 21 migrated modules, and `tools/uishot/__main__.py --check` builds
+every view: a path assembled lazily inside a function body is invisible to a
+scan, and only constructing the thing finds it.
 
 ### The engine failure contract (v1.14)
 

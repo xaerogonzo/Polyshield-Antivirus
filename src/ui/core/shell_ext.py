@@ -9,6 +9,7 @@ Registers "Scan with PolyShield" on files, folders, and drives using:
 import sys
 import winreg
 from pathlib import Path
+from ui.core import paths
 
 _MENU_LABEL = "Scan with PolyShield"
 _ROOTS = ("*", "Directory", "Drive")
@@ -16,9 +17,14 @@ _HKCU = winreg.HKEY_CURRENT_USER
 
 
 def _get_command() -> str:
-    pythonw = Path(sys.executable).with_name("pythonw.exe")
-    app_py = Path(__file__).resolve().parents[3] / "src" / "ui" / "app.py"
-    return f'"{pythonw}" "{app_py}" "--scan" "%1"'
+    """The command line Explorer runs for the context-menu verb.
+
+    Every argument is quoted so an install directory containing spaces, an
+    ampersand or parentheses still yields one parseable command line, and
+    %1 stays single-file: app.py reads exactly one path after --scan.
+    """
+    argv = paths.app_launch_argv("--scan")
+    return " ".join(f'"{a}"' for a in argv) + ' "%1"'
 
 
 def _shell_key(root: str) -> str:

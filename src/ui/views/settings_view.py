@@ -5,6 +5,7 @@ import customtkinter as ctk
 from ui.core import settings as cfg
 from ui.core import ignore_list as ignore
 import ui.theme as theme
+from ui.core import paths
 
 _SCAN_OPTIONS = [
     (
@@ -957,7 +958,7 @@ class SettingsView(ctk.CTkScrollableFrame):
     def _open_yara_rules_folder(self):
         import subprocess
         from pathlib import Path
-        rules_dir = Path(__file__).resolve().parents[3] / "rules" / "user_rules"
+        rules_dir = paths.rules_dir() / "user_rules"
         rules_dir.mkdir(parents=True, exist_ok=True)
         subprocess.Popen(["explorer", str(rules_dir)],
                          creationflags=subprocess.CREATE_NO_WINDOW)
@@ -1579,8 +1580,21 @@ class SettingsView(ctk.CTkScrollableFrame):
         self._rewrite_launch_vbs(enabled)
 
     def _rewrite_launch_vbs(self, as_admin: bool):
-        from pathlib import Path
-        vbs_path = Path(__file__).resolve().parents[3] / "launch_ui.vbs"
+        r"""Rewrite the VBS launcher that starts the app with or without UAC.
+
+        Source-checkout only.  The script it writes points at
+        kicomav_env\Scripts\pythonw.exe and src\ui\app.py, neither of which
+        a compiled build contains -- and resource_root() is then the temporary
+        extraction directory, so the file would be written somewhere that is
+        deleted when the process exits.  Saying so beats writing a launcher
+        that quietly does nothing.
+        """
+        if paths.is_frozen():
+            self._admin_feedback.configure(
+                text="Admin launch is configured by the installer in this build.",
+                text_color="#888888")
+            return
+        vbs_path = paths.resource_root() / "launch_ui.vbs"
         if as_admin:
             content = (
                 'Dim base\n'

@@ -15,12 +15,13 @@ import hashlib
 import re
 import threading
 from pathlib import Path
+from ui.core import paths
 
-_GUARDIAN_DIR = Path(__file__).resolve().parents[3] / "guardianai"
+_GUARDIAN_DIR = paths.guardian_dir()
 _DATA_DIR = _GUARDIAN_DIR / "data"
 _KNOWN_BAD_TXT = _DATA_DIR / "known_bad.txt"          # legacy fallback only (v1.8+)
-_DB_PATH  = Path(__file__).resolve().parents[3] / "intelligence" / "threat_db.sqlite"
-_BLOOM_PATH = Path(__file__).resolve().parents[3] / "intelligence" / "nsrl_bloom.bin"
+_DB_PATH  = paths.intelligence_dir() / "threat_db.sqlite"
+_BLOOM_PATH = paths.intelligence_dir() / "nsrl_bloom.bin"
 
 # If the malicious table exceeds this count, skip loading into RAM entirely.
 # The tier-3 SQLite lookup in scan_file() handles all hashes regardless of
