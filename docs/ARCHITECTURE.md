@@ -311,6 +311,123 @@ service_client.block_ip(ip)
 
 ---
 
+## Packaging (v1.15, Phase 4b)
+
+The build is `build.ps1` (launched by `build.bat`), which is **tracked**: a
+release artifact that cannot be reproduced from the repository is not
+reproducible. Its output — `dist/` and Nuitka's `*.build` / `*.onefile-build`
+scratch directories — is ignored.
+
+Toolchain lives in `requirements-build.txt`, deliberately apart from both
+`requirements.txt` (nothing here is needed to *run* PolyShield) and
+`requirements-dev.txt` (CI runs tests and never builds; adding Nuitka there
+would cost every CI run a compiler download for nothing). It installs into
+`kicomav_env` rather than a build-only venv because Nuitka compiles what it can
+import — a separate environment would have to duplicate `requirements.txt` to
+see `customtkinter`, `watchdog` and the rest.
+
+### Milestones
+
+Correctness before optimization. Each milestone must produce a **runnable**
+artifact before the next packaging dimension is added; if a build breaks, stop
+at that milestone rather than changing several variables at once. Compression,
+UPX, onefile tuning, startup time and icon polish are all deferred to the last
+step, after a clean-machine run passes.
+
+| | Deliverable | Gate |
+|---|---|---|
+| 4b.1 | GUI exe, simplest working config | Starts; durable data lands outside the extraction directory |
+| 4b.2 | Service exe (no `tk-inter`) | Installs and starts **without Tk**; same canonical data root as the GUI |
+| 4b.3 | Scheduled-scan exe | Task runs (required — see `script_launch_argv`) |
+| 4b.4 | Optional engines, one at a time | Each individually verified, by detection and not by launch |
+| 4b.5 | Clean Windows Sandbox run | The full GUI / Service / clean-machine checklist |
+| 4b.6 | Size and startup tuning | Still passes 4b.5 |
+
+**Failed milestones must be cleanly reversible.** A failed build must not
+become the base for the next attempt: rebuild `dist/` rather than building over
+it, treat staged files as disposable, and revert machine state before retrying.
+From 4b.2 on that matters concretely — a run that registers the Windows service
+and then fails elsewhere leaves the registration behind, and repeated attempts
+accumulate dirty service and context-menu state.
+`scripts/service/fix_service_crash.bat` and `shell_ext.unregister()` exist for
+this and belong in the retry path.
+
+### Engine matrix
+
+| Engine | Ships? | Mandatory | Detected in a frozen build by | Lives where | UI when unavailable |
+|---|---|---|---|---|---|
+| **K2 (kicomav)** | **No — deferred to 4b.4, see below** | No (optional since v1.6.1) | `scanner.is_available()` — `paths.k2_exe().exists()` | dev virtualenv only | Engine row reports unavailable; pipeline runs without it |
+| **Guardian AI** | No — separately cloned repo | No | `guardian_engine.is_available()` | `guardianai/`, cloned by `scripts/components/setup_guardian.bat` | Guardian view offers the setup script |
+| **YARA** | Yes — `yara-python` is a wheel | No | `yara_engine.is_available()` (runtime present *and* rule files exist) | compiled in; rules under `rules/` (DATA) | Engine reports no rules rather than clean |
+| **ClamAV** | No — external install | No | `clamav_engine.is_available()` — `clamscan.exe` on disk | user-installed, `C:\Program Files\ClamAV` | Engine row reports unavailable |
+| **Speakeasy** | **No — see below** | No | import guard in `emulate_engine` | dev virtualenv only | Sandbox/Emulate view reports it is not installed |
+| **Sandboxie** | No — external install | No | `sandbox_engine` path probe | user-installed | Detonation button disabled |
+
+### Why K2 does not ship in the first build
+
+`k2.exe` is **not a standalone binary.** It is a 108 KB setuptools console-script
+stub whose entire payload is:
+
+```python
+from kicomav.k2 import main
+sys.exit(main())
+```
+
+It resolves the interpreter from a path baked into its header, so copying it
+into a distribution accomplishes nothing. That rules out "bundle the exe" —
+there is no exe to bundle.
+
+The real obstacle is one layer down. `k2.py` locates its engines by filesystem
+path (`os.path.join(k2_pwd, "plugins")`) and `k2engine.set_plugins()` loads each
+of the 50 of them with
+
+```python
+SourceFileLoader(f"kicomav.plugins.{name}", plugin_path).load_module()
+```
+
+— that is, from **`.py` source files on disk**, listed in `plugins/kicom.lst`.
+Nuitka compiles Python modules into the binary; it does not leave them on disk
+for a runtime source loader. Shipping `plugins/` as data files alongside a
+compiled `kicomav` is *possible*, but each plugin then imports from the
+compiled `kicomav.kavcore`, which is precisely where mixed compiled/interpreted
+imports get fragile.
+
+What makes this worth deferring rather than attempting inside 4b.1 is the
+failure mode. `set_plugins()` swallows every per-plugin load error:
+
+```python
+except (IOError, ImportError, Exception):
+    ...
+    pass
+```
+
+So a build where the plugins fail to load produces a K2 that starts, exits
+zero, reports no threats, and is indistinguishable from a clean scan. **"The
+exe launches" proves nothing here**; only an EICAR detection through the
+packaged binary does.
+
+The decision, therefore: the first distribution **ships without K2**.
+`scanner.is_available()` has returned False for a missing K2 since v1.6.1 and
+the pipeline already runs without it, so the app degrades honestly rather than
+silently. Bundling it is a 4b.4 experiment gated on an EICAR detection test
+through the packaged build — and if the plugin loader cannot be made reliable,
+K2 stays out and the UI says so.
+
+### Why Speakeasy does not ship
+
+`speakeasy-emulator` pins `unicorn==1.0.2`, which imports `distutils.sysconfig`
+and `pkg_resources` at module scope and locates its native libraries through
+`pkg_resources.resource_filename()`. Both were removed from the standard library
+in Python 3.12+, which is why `requirements.txt` carries a two-sided
+`setuptools>=78.1.1,<82` pin whose upper bound exists solely because setuptools
+82 removed `pkg_resources`.
+
+A resource-filename lookup against a compiled package is the same class of
+problem as K2's plugin loader, on top of a GPL-2.0 dependency in an MIT
+application. `emulate_engine` already treats the import as optional and
+`test_emulate_report.py` covers the half that matters — the report parser —
+without an emulator. Speakeasy stays a source-checkout feature.
+
 ## Path Resolution (v1.15)
 
 `src/ui/core/paths.py` is the only module that decides where anything lives.

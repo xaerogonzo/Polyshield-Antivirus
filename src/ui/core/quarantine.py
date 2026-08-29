@@ -6,7 +6,9 @@ from pathlib import Path
 from ui.core import paths
 
 QUARANTINE_DIR = paths.quarantine_dir()
-QUARANTINE_DIR.mkdir(exist_ok=True)
+# parents=True because on the first run of a distribution the data root
+# itself does not exist yet; a checkout always had one.
+QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Per-file sidecar suffix
 _META_SUFFIX = ".kicometa"

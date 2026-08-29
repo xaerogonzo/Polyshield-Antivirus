@@ -98,7 +98,27 @@ def resource_root() -> Path:
     Read-only, and disposable: under a onefile build this is the temporary
     extraction directory, so anything written here is gone when the process
     exits.  Never put durable state under it.
+
+    Derived from sys.executable when frozen, NOT from this module's __file__.
+    The module path is one level too deep in a compiled build and produces a
+    root one level too high: a checkout has `src/ui/core/paths.py`, so the
+    project root is `parents[3]` -- but a build has no `src/` level, so the
+    same expression walks past the directory the resources are actually in.
+
+    Measured, not reasoned about.  A standalone build reports
+
+        sys.executable   <dist>/PolyShield.dist/python.exe
+        parents[3]       <dist>                       <- one too high
+        this function    <dist>/PolyShield.dist       <- where the data is
+
+    and Nuitka puts the bundled data (customtkinter assets, the Tcl/Tk tree,
+    the tkdnd binaries) beside the executable in both standalone and onefile,
+    so taking its parent is right in both.  tools/build_probe.py is what caught
+    this: no unit test can, because the discrepancy is in a __file__ layout
+    that only exists inside a real compiled build.
     """
+    if is_frozen():
+        return Path(sys.executable).resolve().parent
     return _MODULE_ROOT
 
 

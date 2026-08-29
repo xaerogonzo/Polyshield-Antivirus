@@ -102,6 +102,33 @@ def test_a_frozen_build_keeps_data_out_of_the_extraction_directory(
         assert resource not in named.parents, f"{named} is under the extraction dir"
 
 
+def test_frozen_resources_are_found_beside_the_executable(frozen, monkeypatch, tmp_path):
+    """Not from this module's __file__, which is one level too deep when compiled.
+
+    A checkout has src/ui/core/paths.py, so the project root is parents[3]. A
+    compiled build has no src/ level, so the same expression walks one past the
+    directory the bundled data is actually in -- Nuitka reported
+    <dist>/PolyShield.dist/python.exe as sys.executable while parents[3] gave
+    <dist>, and every RESOURCE lookup (scripts/, launch_ui.vbs, app.py) would
+    have resolved into a directory that does not contain them.
+
+    Found by tools/build_probe.py against a real build, because the layout that
+    exposes it does not exist anywhere else. This test pins the shape; the probe
+    is what proves it.
+    """
+    fake_dist = tmp_path / "PolyShield.dist"
+    fake_dist.mkdir()
+    monkeypatch.setattr(sys, "executable", str(fake_dist / "python.exe"))
+
+    assert paths.resource_root() == fake_dist
+    assert paths.resource_root() != ROOT
+
+
+def test_source_resources_still_come_from_the_checkout(source):
+    """The frozen branch must not change where a checkout looks."""
+    assert paths.resource_root() == ROOT
+
+
 def test_a_frozen_build_writes_under_the_user_profile(frozen, monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     assert paths.app_root() == tmp_path / "Local" / "PolyShield"
