@@ -70,6 +70,7 @@ The suite is split by concern:
 | `test_system_surface.py` | The registry helpers, and `defender.get_status()` keeping its promise to always return a dict (v1.14) |
 | `test_winsec_probes.py` | The three live probes — Secure Boot / TPM / VBS, local accounts, and SmartScreen / CFA / ASR — driven through the `_run_ps` and `winreg` seams (v1.14) |
 | `test_integration_edges.py` | Four small Windows-boundary modules — VirusTotal request/parse, the Explorer context-menu registry writes and the command Explorer runs, schtasks construction and parsing, and autorun path resolution (v1.15) |
+| `test_intel_feeds.py` | The importers that write the detection database — feed parsing, the "a bad download costs nothing" invariant, atomic bloom publication, and clearing reaching the live consumers (v1.15) |
 
 ### A resolved path nobody can scan (v1.15)
 
@@ -162,6 +163,85 @@ callback, so the results panel stayed empty and the button stayed stuck on
 "Querying…" with nothing shown anywhere. Same class as the empty-archive
 `IndexError` in `fetch_malwarebazaar`: a function contracted to return a dict
 raising instead, past a caller that only inspects the returned value.
+
+### Removal is an intelligence change too (v1.15)
+
+`clear_malicious_db()` deleted every row from the `malicious` table and fired
+nothing. Import fired the `hashes` post-update hooks; clearing did not — so the
+database said empty while every already-running consumer kept the set it had
+loaded at start-up. `guardian_engine` went on reporting "Known Signature", and
+`process_monitor`, which does not merely report, went on terminating process
+trees and quarantining executables on hashes the user had just deleted. Nothing
+in the UI could tell that apart from the clear having failed.
+
+The test that pins it does not assert that a callback fired. It drives the two
+consumers through their real decision paths — `scan_file()` and
+`_check_process()` — on the *same instance* either side of the clear, because
+inspecting `virus_db` / `_known_bad` would pass while the live verdict stayed
+wrong. Run it against the unfixed function and the captured log says it
+plainly: `ProcessMonitor: THREAT PID=4242 … reason=known malicious hash`,
+emitted after the database was emptied.
+
+**The hooks fire even when zero rows were deleted.** That looks like a wasted
+call and is the opposite: a consumer holding a stale RAM set is *exactly* the
+case where the table is already empty and the consumer is not, so a rowcount
+guard would skip the only repair that case has. The contract of a function
+called "clear" is that consumers end up reflecting an empty database, not that
+`DELETE` happened to match something.
+
+### A bad download must cost the user nothing (v1.15)
+
+Every importer now follows **download → validate → import → commit → freshness**,
+and the tests assert the failure direction per feed rather than through one
+shared helper: a malformed MalwareBazaar response checks `malicious` and
+`last_mb_update`, a dead C2 fetch checks `ip_blocklist` and `last_c2_update`.
+
+Two shapes were wrong before. `fetch_malwarebazaar` returned
+`{"added": 0, "total_db": 0}` when the response parsed to nothing — describing a
+table that may hold millions as empty, which is what the Update Center logged
+back to the user. Reporting the *real* total instead would have been worse:
+`intel_updater._run_malwarebazaar` reads `(added=0, total>0)` as `UNCHANGED` and
+advances freshness, so a feed that returned nothing would have looked like a
+feed with nothing new. It returns an `error` for that reason, and
+`test_empty_feed_reaches_the_updater_as_failed_not_unchanged` pins the whole
+chain rather than the local return value.
+
+The other was `zf.namelist()[0]` on the full-list ZIP: an empty archive raised
+`IndexError` straight out of a function contracted to return a dict, past an
+adapter that only catches `res["error"]`.
+
+### Publishing a bloom filter without destroying the old one (v1.15)
+
+`_rebuild_nsrl_bloom` opened the live `nsrl_bloom.bin` `"wb"` — truncating a
+valid ~150–200 MB filter before `tofile()` had written a byte. A crash during
+that write left nothing usable, and the only recovery was re-importing a
+multi-GB NSRL file the user may no longer have.
+
+It now mirrors the atomic YARA generation model in the same module: build to a
+sibling temp file, flush, `fsync`, size-check, `os.replace`. A sibling rather
+than `tempfile.mkstemp` for the reason recorded under `_make_staging_dir` —
+`os.replace` carries the ACL along with the file, and a hardened scratch DACL
+would become a filter only the publishing account can read, which
+`_load_nsrl_bloom` reports as simply "no bloom".
+
+A full `fromfile()` round-trip is deliberately *not* done as validation: it
+would allocate a second filter of the same size while the first is still live,
+to re-prove what `tofile()` returning plus `fsync` already establishes.
+
+**The ordering is the contract, and is tested as ordering.** Two states are
+forbidden — a filter advertised as current for a table it does not describe, and
+the reverse — so `import_nsrl` commits the `safe` rows first, the filter is
+published second, and `nsrl_bloom_stale` is cleared last.
+`test_stale_is_cleared_only_after_the_filter_is_on_disk` reads the flag from
+inside the fake's `tofile()` to prove the write happened while still marked
+stale.
+
+On failure the flag stays `1` and the previous filter is untouched. That is the
+safe direction rather than a compromise: a stale filter can only *omit*
+entries, never invent them, so a miss falls through to the SQLite truth.
+`guardian_engine._load_nsrl_bloom` is what makes that hold — it checks the flag
+before loading and quarantines a filter it cannot parse — and it had no test of
+its own until now, which meant the safety property rested on unexercised code.
 
 ### The engine failure contract (v1.14)
 
