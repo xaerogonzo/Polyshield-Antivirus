@@ -97,5 +97,11 @@ def parse_result(vt_response: dict) -> dict:
             "type": attrs.get("type_description", ""),
             "size": attrs.get("size", 0),
         }
-    except (KeyError, TypeError) as exc:
+    except (KeyError, TypeError, AttributeError) as exc:
+        # AttributeError belongs here for the same reason as the other two: a
+        # null "attributes", or a stats/results block that arrives as a list,
+        # makes .get()/.items()/.values() the thing that fails rather than the
+        # subscript. virustotal_view calls this straight from a Tk callback, so
+        # anything that escapes leaves the results panel empty and the button
+        # stuck on "Querying…" with no error shown anywhere.
         return {"error": f"Unexpected response format: {exc}"}
