@@ -26,6 +26,7 @@ a probe that is itself a pattern match is a probe that trips scanners.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -36,6 +37,20 @@ for _p in (_HERE.parent, _HERE.parent / "src"):
         sys.path.insert(0, str(_p))
 
 from ui.core import paths  # noqa: E402
+
+
+#: The floor distinguishes "the plugin tree survived the build" from "it
+#: silently did not". It is deliberately LOW.
+#:
+#: Measured: k2 --vlist reports 23 signatures from the plugins alone and 1263
+#: once its rules directory holds the YARA archives that `k2 --update`
+#: downloads. So the large number is an INSTALL-time property, not a build-time
+#: one -- a gate set at 100 can never pass on a clean build machine no matter
+#: what the payload contains, because the frozen binary resolves that machine's
+#: own (empty) data root. What the build can actually be held to is that the 51
+#: plugin modules are present and loadable, and 20 is comfortably below the 23
+#: they yield while being far above the 0 a lost plugin tree yields.
+_K2_MIN_SIGNATURES = 20
 
 
 def _fragments(*parts: str) -> str:
@@ -114,12 +129,91 @@ def check_guardian() -> dict:
     return out
 
 
-def check_subprocess_engine(name: str) -> dict:
-    """K2 and ClamAV both shell out; availability is a path probe.
+def check_k2() -> dict:
+    r"""K2 carries its signatures inside its plugins, and is asked to list them.
 
-    Not detection-tested here: neither binary ships in the current build, so
-    the property worth checking is the other half of honesty -- that an absent
-    engine reports absent rather than reporting clean.
+    K2 has no signature data file. Its ~1270 known virus names live in the 51
+    modules under ``kicomav/plugins/``, and ``k2 --vlist`` prints each one with
+    the plugin that knows it:
+
+        Trojan.PDF.Generic        [kicomav.plugins.pdf]
+
+    That listing is exactly the right question for a packaged build. K2 loads
+    those plugins with ``SourceFileLoader`` from ``.py`` files on disk and
+    **swallows every per-plugin failure**, so a build that lost them still
+    starts, still exits zero, and still reports a clean scan -- identical, from
+    the outside, to a machine with nothing wrong. A near-empty vlist is that
+    failure made visible.
+
+    Deliberately not detection-by-sample. EICAR is the obvious sample and
+    Defender deletes it from disk between the write and the scan (measured --
+    the file was gone by the time k2 opened it), which would fail this probe
+    for a reason that has nothing to do with the build. See this module's
+    header on why no sample here is ever a literal.
+
+    ``k2 --update`` does NOT add signatures: it fetches ``whitelist.txt`` and
+    two YARA archives, and prunes anything else out of %SYSTEM_RULES_BASE%.
+    So a build ships whatever its plugins know, and this count is the whole of
+    K2's detection capability.
+    """
+    from ui.core import scanner as eng
+
+    out = {"available": False, "detail": "", "detected": None}
+    try:
+        out["available"] = bool(eng.is_available())
+    except Exception as exc:
+        out["detail"] = f"is_available raised: {exc!r}"
+        return out
+    if not out["available"]:
+        out["detail"] = f"expects {paths.k2_exe()}"
+        return out
+
+    try:
+        proc = subprocess.run(
+            paths.k2_argv("--vlist", "--no-color"),
+            capture_output=True, text=True, timeout=120,
+            env=eng._k2_env(),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except Exception as exc:
+        out["detected"] = False
+        out["detail"] = f"reported available but --vlist would not run: {exc!r}"
+        return out
+
+    names = [ln for ln in proc.stdout.splitlines() if "[kicomav.plugins." in ln]
+    # Reported separately from the verdict: whether the downloaded rule set is
+    # present is the installer's business, and saying so here is what keeps the
+    # low floor from reading as "23 is fine".
+    seeded = (paths.k2_rules_dir() / "update.cfg").exists()
+    out["rules_seeded"] = seeded
+    out["detail"] = (f"{len(names)} signature(s) across the loaded plugins; "
+                     f"rule archives {'present' if seeded else 'NOT yet downloaded'}")
+    # A floor, not the exact number: the point is "the plugins loaded", and the
+    # upstream signature count is free to move. Zero, or a handful, means
+    # SourceFileLoader failed and K2 will report every scan clean.
+    out["detected"] = len(names) >= _K2_MIN_SIGNATURES
+    if not out["detected"]:
+        out["detail"] += (f" -- fewer than {_K2_MIN_SIGNATURES}; the plugin "
+                          "tree did not survive the build")
+        # What k2 actually said. A bare count cannot distinguish "ran and
+        # listed nothing" from "did not run", and those have different causes.
+        head = (proc.stdout or "").strip().splitlines()[:6]
+        err = (proc.stderr or "").strip().splitlines()[:4]
+        out["stdout_head"] = head
+        out["stderr_head"] = err
+        out["returncode"] = proc.returncode
+        out["k2_argv"] = paths.k2_argv()
+        out["k2_exists"] = paths.k2_exe().exists()
+    return out
+
+
+def check_subprocess_engine(name: str) -> dict:
+    """ClamAV shells out; availability is a path probe.
+
+    Not detection-tested: clamscan does not ship in the build, so the property
+    worth checking is the other half of honesty -- that an absent engine
+    reports absent rather than reporting clean. K2 *does* ship as of 4c.2 and
+    has its own check above.
     """
     out = {"available": False, "detail": "", "detected": None}
     try:
@@ -139,7 +233,7 @@ def check_subprocess_engine(name: str) -> dict:
 CHECKS = {
     "yara":     check_yara,
     "guardian": check_guardian,
-    "k2":       lambda: check_subprocess_engine("k2"),
+    "k2":       check_k2,
     "clamav":   lambda: check_subprocess_engine("clamav"),
 }
 

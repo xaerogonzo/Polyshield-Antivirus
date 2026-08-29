@@ -813,8 +813,39 @@ class UpdateView(ctk.CTkScrollableFrame):
         except Exception:
             pass
 
+    # Development-environment sections
+    #
+    # Two of the five update sections drive the *development* environment:
+    # Speakeasy is pip-installed into kicomav_env, and Guardian AI is a git
+    # clone. A distribution has neither, so paths.venv_pip() and
+    # paths.guardian_dir() name directories that are simply not there.
+    #
+    # They did report -- Popen raised and the handler logged str(exc) -- but
+    # what reached the log was "[WinError 2] The system cannot find the file
+    # specified", which reads as a broken installation rather than as a section
+    # that does not apply to this one.
+
+    _NOT_IN_BUILD = ("not available in an installed build: it updates the "
+                     "development environment, which a distribution does not ship")
+
+    def _dev_only_unavailable(self, section: str, tag: str) -> bool:
+        """True (and logged) when `section` cannot run in this installation."""
+        if not paths.is_distribution():
+            return False
+        self._log_section_header(section, tag)
+        self._log_append(f"  [SKIP] {section} is {self._NOT_IN_BUILD}.\n", _TAG_ERR)
+        self._status_cb(f"{section}: not available in an installed build")
+        return True
+
     def _refresh_speakeasy_info(self):
         """Read installed speakeasy-emulator version via pip show (background)."""
+        if paths.is_distribution():
+            # pip show interrogates the development virtualenv. Reporting "not
+            # installed" from a build states something about the product that
+            # this check cannot actually determine.
+            self._speakeasy_version_lbl.configure(text="n/a in an installed build")
+            return
+
         def _run():
             pip = str(paths.venv_pip())
             try:
@@ -904,8 +935,9 @@ class UpdateView(ctk.CTkScrollableFrame):
             return
         guardian_dir = paths.guardian_dir()
         if not guardian_dir.is_dir():
-            self._log_append("  [SKIP] guardianai/ not installed — run setup_guardian.bat first.\n",
-                             _TAG_ERR)
+            remedy = (self._NOT_IN_BUILD if paths.is_distribution()
+                      else "run scripts\\components\\setup_guardian.bat first")
+            self._log_append(f"  [SKIP] Guardian AI is {remedy}.\n", _TAG_ERR)
             if self._upd_all:
                 self._run_intel_recent()
             return
@@ -1261,6 +1293,9 @@ class UpdateView(ctk.CTkScrollableFrame):
     def _run_speakeasy_update(self):
         if self._upd_speakeasy:
             return
+        if self._dev_only_unavailable("Speakeasy Emulator", _TAG_SPEAKEASY):
+            return
+
         self._upd_speakeasy = True
         self._set_speakeasy_busy(True)
         self._log_section_header("Speakeasy Emulator", _TAG_SPEAKEASY)

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import pathlib
 import subprocess
 import sys
 import urllib.error
@@ -401,6 +402,48 @@ def test_register_writes_all_three_roots(registry):
         assert registry.tree[("HKCU", base + r"\command")][""]
 
 
+def test_the_menu_icon_names_a_file_that_exists(registry, monkeypatch, tmp_path):
+    """Icon came from sys.executable, which is a path to nothing in a build.
+
+    Nuitka reports a python.exe beside the real binary and that file does not
+    exist (see paths.running_executable), so Explorer silently showed no icon.
+    Silently is the operative word: the command value beside it was already
+    routed through paths and was correct, so nothing about the menu looked
+    broken except the missing glyph.
+    """
+    from ui.core import paths
+
+    exe = tmp_path / "PolyShield.exe"
+    exe.write_text("binary", encoding="utf-8")
+    monkeypatch.setattr(paths, "_FROZEN_OVERRIDE", True)
+    monkeypatch.setattr(sys, "argv", [str(exe)])
+
+    shell_ext.register()
+
+    icon = registry.tree[("HKCU", r"Software\Classes\*\shell\PolyShield")]["Icon"]
+    assert pathlib.Path(icon).exists(), f"icon points at nothing: {icon}"
+    assert icon == str(exe)
+
+
+def test_the_menu_icon_is_never_taken_from_sys_executable(
+        registry, monkeypatch, tmp_path):
+    """Pinned separately from the path above, because the two agree in a source
+    checkout and only diverge inside a real compiled build."""
+    from ui.core import paths
+
+    exe = tmp_path / "PolyShield.exe"
+    exe.write_text("binary", encoding="utf-8")
+    monkeypatch.setattr(paths, "_FROZEN_OVERRIDE", True)
+    monkeypatch.setattr(sys, "argv", [str(exe)])
+    monkeypatch.setattr(sys, "executable", str(tmp_path / "does_not_exist.exe"))
+
+    shell_ext.register()
+
+    icon = registry.tree[("HKCU", r"Software\Classes\*\shell\PolyShield")]["Icon"]
+    assert icon != sys.executable
+    assert "does_not_exist" not in icon
+
+
 def test_register_removes_the_legacy_kicomav_keys(registry):
     """A rename left entries behind; both would show in the context menu."""
     for root in ("*", "Directory", "Drive"):
@@ -506,7 +549,10 @@ def test_the_command_survives_an_awkward_install_directory(
         registry, monkeypatch, exe_dir):
     """Every path in the command is quoted, so a directory with spaces, an
     ampersand or parentheses still produces one parseable command line."""
-    monkeypatch.setattr(shell_ext.sys, "executable", exe_dir + r"\python.exe")
+    # sys directly: shell_ext no longer imports it (the menu icon used to come
+    # from sys.executable and now comes from paths.running_executable). This
+    # always patched the one shared module object anyway.
+    monkeypatch.setattr(sys, "executable", exe_dir + r"\python.exe")
 
     shell_ext.register()
     cmd = registry.tree[("HKCU", r"Software\Classes\*\shell\PolyShield\command")][""]

@@ -64,8 +64,25 @@ def collect() -> dict:
         name for name, p in named.items()
         if resource == p.resolve() or resource in p.resolve().parents
     ) if paths.is_frozen() else []
+    # The third root (4c.1). Durable like app_root(), read-only like
+    # resource_root(), and equal to NEITHER under onefile -- which is the whole
+    # reason it exists. runtime\ and service\ live under it.
+    install = paths.install_root()
+    # Deliberately NOT asserting that runtime\ and service\ are present: this
+    # probe is its own standalone binary in its own .dist directory, so its
+    # install root is that directory and never contains the product layout.
+    # What IS checkable here is that the root is durable -- that it does not sit
+    # inside the extraction directory a onefile build deletes on exit.
+    install_is_disposable = bool(
+        paths.is_frozen() and resource in install.resolve().parents
+    )
     return {
         "frozen": paths.is_frozen(),
+        "install_root": str(install),
+        "install_root_exists": install.exists(),
+        "install_root_is_disposable": install_is_disposable,
+        "runtime_python": str(paths.runtime_python()),
+        "k2_exe": str(paths.k2_exe()),
         "nuitka_compiled": "__compiled__" in globals(),
         "sys_frozen": bool(getattr(sys, "frozen", False)),
         "executable": sys.executable,
@@ -103,6 +120,20 @@ def main() -> int:
     if info["nuitka_compiled"] and not info["frozen"]:
         print("FAIL: compiled by Nuitka but is_frozen() is False", file=sys.stderr)
         return 2
+
+    # install_root() names where the product is installed. If it resolves under
+    # the extraction directory then runtime\ and service\ -- and every
+    # scheduled-task command built from them -- point at a directory that is
+    # deleted when this process exits.
+    if info["install_root_is_disposable"]:
+        print("FAIL: install_root() resolves under the extraction directory: "
+              + info["install_root"], file=sys.stderr)
+        return 3
+
+    if not info["install_root_exists"]:
+        print("FAIL: install_root() does not exist: " + info["install_root"],
+              file=sys.stderr)
+        return 4
 
     return 0
 

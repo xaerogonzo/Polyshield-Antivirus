@@ -11,7 +11,7 @@ are noisy enough to disable.
 
 Pure file-local SQLite. No network. Auto-creates on first detection.
 
-Database: intelligence/pattern_stats.sqlite
+Database: telemetry/pattern_stats.sqlite
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from ui.core import paths
 
-_DB_PATH = paths.intelligence_dir() / "pattern_stats.sqlite"
+_DB_PATH = paths.telemetry_dir() / "pattern_stats.sqlite"
 _lock    = threading.Lock()
 
 

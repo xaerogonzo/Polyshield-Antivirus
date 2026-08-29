@@ -10,7 +10,7 @@ the four things a checkout quietly supplies: an interpreter, developer
 environment variables, a source tree, and an existing data root.
 
     kicomav_env\Scripts\python.exe tools\make_sandbox_wsb.py
-    start artifacts\PolyShield_Verify.wsb
+    WindowsSandbox.exe artifacts\PolyShield_Verify.wsb
 
 Results land in the mapped results folder, which is the only writable mapping,
 because everything else in the sandbox is discarded when it closes.
@@ -25,7 +25,8 @@ from xml.sax.saxutils import escape
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def build(dist: Path, results: Path, skip_service: bool) -> str:
+def build(dist: Path, results: Path, skip_service: bool,
+          skip_install: bool = False) -> str:
     verify = ROOT / "tools" / "sandbox_verify.ps1"
     for p in (dist, verify):
         if not p.exists():
@@ -35,6 +36,8 @@ def build(dist: Path, results: Path, skip_service: bool) -> str:
     args = "-DistDir C:\\PolyShield_dist -ResultsDir C:\\PolyShield_results"
     if skip_service:
         args += " -SkipService"
+    if skip_install:
+        args += " -SkipInstall"
 
     # -NoExit keeps the window up so a watching human sees the same result the
     # JSON records. The sandbox is discarded either way.
@@ -86,16 +89,21 @@ def main() -> int:
     ap.add_argument("--results", type=Path, default=ROOT / "artifacts" / "sandbox")
     ap.add_argument("--out", type=Path,
                     default=ROOT / "artifacts" / "PolyShield_Verify.wsb")
+    ap.add_argument("--skip-install", action="store_true",
+                    help="skip the install/uninstall cycle (4c.5); the build checks still run")
     ap.add_argument("--skip-service", action="store_true",
                     help="check only the compiled GUI half")
     a = ap.parse_args()
 
     a.out.parent.mkdir(parents=True, exist_ok=True)
-    a.out.write_text(build(a.dist.resolve(), a.results.resolve(), a.skip_service),
+    a.out.write_text(build(a.dist.resolve(), a.results.resolve(), a.skip_service, a.skip_install),
                      encoding="utf-8")
     print(f"wrote {a.out}")
     print(f"results will appear in {a.results.resolve()}")
-    print(f"\n  start \"\" \"{a.out}\"")
+    # WindowsSandbox.exe directly, not `start`. Shell-associating the .wsb
+    # silently did nothing when launched from a non-interactive shell:
+    # no window, no error, no sandbox.
+    print(f'\n  WindowsSandbox.exe "{a.out}"')
     return 0
 
 

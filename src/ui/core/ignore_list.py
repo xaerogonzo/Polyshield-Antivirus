@@ -84,7 +84,98 @@ def contains(hash_value: str) -> bool:
         return hash_value.lower() in _cache
 
 
+class ServiceRequired(RuntimeError):
+    """An ignore-list write needs the service, and the service is not reachable.
+
+    Deliberately loud, and deliberately not a silent ``return False``.  In a
+    distribution ``intelligence/`` is owned by the service (Users:Read), because
+    the ignore list is detection-*suppression* state: anything that can write it
+    can whitelist its own hash for every scan on the machine, including the
+    service's.  So the unelevated GUI asks the service to write it.
+
+    If that request cannot be made, the write did not happen.  Reporting it as a
+    plain failure would be indistinguishable from "the hash was already there",
+    and the user would believe a file had been whitelisted when it had not.
+    """
+
+
+def _writes_are_service_owned() -> bool:
+    """True when this process must ask the service to write intelligence/.
+
+    A source checkout owns its own project root, so the developer path is
+    unchanged.  A distribution's intelligence/ is service-owned -- see
+    docs/ARCHITECTURE.md, "The privilege boundary".
+    """
+    return paths.is_distribution()
+
+
+def _ask_service(cmd: str, **kwargs) -> bool:
+    """Send one ignore-list write to the service. Raises ServiceRequired."""
+    from ui.core import service_client            # local: keeps import cost off scans
+
+    try:
+        reply = service_client.send_command(cmd, **kwargs)
+    except Exception as exc:                       # socket refused, token unreadable
+        raise ServiceRequired(
+            f"PolyShield service is not reachable ({exc})") from exc
+    if not reply or not reply.get("ok"):
+        raise ServiceRequired(
+            (reply or {}).get("error") or "PolyShield service rejected the request")
+
+    # This process's Guardian cache still holds the pre-write set. The service
+    # refreshed its own; ours has to be dropped or the next scan in THIS process
+    # keeps using the stale answer.
+    _invalidate_cache()
+    return True
+
+
+def _invalidate_cache() -> None:
+    global _cache
+    with _lock:
+        _cache = None
+
+
 def add(
+    hash_value: str,
+    hash_type: str = "md5",
+    filename: str = "",
+    note: str = "",
+    original_reason: str = "",
+) -> bool:
+    """Insert a hash into the ignore list. Returns True on success.
+
+    Routes through the service when intelligence/ is service-owned; writes
+    directly in a source checkout.  Raises ServiceRequired if the write needed
+    the service and could not reach it.
+    """
+    if not hash_value:
+        return False
+    if _writes_are_service_owned():
+        return _ask_service(
+            "IGNORE_HASH", md5=hash_value.lower(), hash_type=hash_type,
+            filename=filename, note=note, original_reason=original_reason)
+    return add_local(hash_value, hash_type, filename, note, original_reason)
+
+
+def remove(hash_value: str) -> bool:
+    """Delete a single hash. Returns True if a row was deleted."""
+    if not hash_value:
+        return False
+    if _writes_are_service_owned():
+        return _ask_service("UNIGNORE_HASH", md5=hash_value.lower())
+    return remove_local(hash_value)
+
+
+def clear_all() -> int:
+    """Remove every entry. Returns the count of rows deleted."""
+    if _writes_are_service_owned():
+        _ask_service("CLEAR_IGNORED")
+        # The service owns the count; it is not worth a second round trip.
+        return 0
+    return clear_all_local()
+
+
+def add_local(
     hash_value: str,
     hash_type: str = "md5",
     filename: str = "",
@@ -139,7 +230,7 @@ def add(
     return True
 
 
-def remove(hash_value: str) -> bool:
+def remove_local(hash_value: str) -> bool:
     """Delete a single hash from the list. Returns True if a row was deleted."""
     if not hash_value:
         return False
@@ -161,7 +252,7 @@ def remove(hash_value: str) -> bool:
     return deleted
 
 
-def clear_all() -> int:
+def clear_all_local() -> int:
     """Remove every entry. Returns the count of rows deleted."""
     n = 0
     try:

@@ -1076,11 +1076,22 @@ class SettingsView(ctk.CTkScrollableFrame):
                     hh, parent, count_lbl)).grid(row=0, column=3, padx=(0, 8))
 
     def _ignored_remove_one(self, hash_value: str, parent, count_lbl):
-        ignore.remove(hash_value)
+        # intelligence/ is service-owned in a distribution, so this write may
+        # have to go through the service. SettingsView has no status callback --
+        # report on the list's own count label, as the other sections do.
+        try:
+            ignore.remove(hash_value)
+        except ignore.ServiceRequired as exc:
+            count_lbl.configure(text=f"Not removed — {exc}")
+            return
         self._ignored_render_list(parent, count_lbl)
 
     def _ignored_clear_all(self, parent, count_lbl):
-        ignore.clear_all()
+        try:
+            ignore.clear_all()
+        except ignore.ServiceRequired as exc:
+            count_lbl.configure(text=f"Not cleared — {exc}")
+            return
         self._ignored_render_list(parent, count_lbl)
 
     # ── Reusable collapsible / modal helpers (v1.10) ──────────────────────────

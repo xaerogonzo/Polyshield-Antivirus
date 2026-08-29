@@ -106,9 +106,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "Add-MpPreference -Exclus
 echo   [OK] Defender exclusions set (kicomav_env, python.exe, pythonw.exe)
 
 REM -- Step 5: Create C:\ProgramData\PolyShield and set ACLs -----------------
-REM  Token file lives here (readable by all users, writable only by SYSTEM +
-REM  LocalService). This prevents malware running in user context from forging
-REM  service commands by overwriting the token.
+REM  Token file lives here (readable by all users, writable only by SYSTEM
+REM  and Administrators). This prevents malware running in user context from
+REM  forging service commands by overwriting the token.
+REM
+REM  The service runs as LocalSystem -- pywin32 installs with no account
+REM  argument and that is its default. Until v1.16 this script granted
+REM  "NT AUTHORITY\LocalService" instead and reported that account to the user,
+REM  which was rights handed to an identity the service never runs under.
+REM  SYSTEM already covers LocalSystem, so no third grant is needed.
 echo  [5/8] Setting up C:\ProgramData\PolyShield ...
 if not exist "C:\ProgramData\PolyShield" (
     mkdir "C:\ProgramData\PolyShield"
@@ -118,29 +124,31 @@ if not exist "C:\ProgramData\PolyShield" (
 )
 icacls "C:\ProgramData\PolyShield" ^
     /grant "SYSTEM:(OI)(CI)F" ^
-    /grant "NT AUTHORITY\LocalService:(OI)(CI)M" ^
     /grant "Administrators:(OI)(CI)F" ^
     /grant "Users:(OI)(CI)R" ^
     /inheritance:r >nul 2>&1
-echo   [OK] ACLs set (SYSTEM=Full, LocalService=Modify, Users=Read-only)
+echo   [OK] ACLs set (SYSTEM=Full, Administrators=Full, Users=Read-only)
 
-REM -- Step 5: Grant LocalService access to project root --------------------
-REM  NT AUTHORITY\LocalService cannot access arbitrary user directories by
-REM  default. We grant Modify on the project root so the service can:
+REM -- Step 5: Grant the service account access to the project root ---------
+REM  The service runs as LocalSystem, which already has access here. The grant
+REM  is kept, addressed to SYSTEM, because it is what makes a source checkout
+REM  work if the account is ever narrowed to LocalService (the documented
+REM  intent, not the deployed reality -- see docs/WINDOWS_SERVICE.md). It lets
+REM  the service:
 REM    - Read config/ui_settings.json (watched folders list)
 REM    - Write config/service_events.json (event log)
 REM    - Write to quarantine/ (if auto-quarantine is on)
 REM    - Write to logs/ (scan reports)
-echo  [6/8] Granting LocalService access to project folders...
-icacls "!ROOT!" /grant "NT AUTHORITY\LocalService:(OI)(CI)M" >nul 2>&1
-echo   [OK] Project root: NT AUTHORITY\LocalService granted Modify
+echo  [6/8] Granting the service account access to project folders...
+icacls "!ROOT!" /grant "SYSTEM:(OI)(CI)F" >nul 2>&1
+echo   [OK] Project root: SYSTEM granted Full
 
-REM  Quarantine folder: LocalService can write; UI (running as the user)
+REM  Quarantine folder: the service writes here; the UI (running as the user)
 REM  also needs to list/read the directory to display the quarantine view.
 if not exist "!ROOT!\quarantine" mkdir "!ROOT!\quarantine"
 icacls "!ROOT!\quarantine" ^
-    /grant "NT AUTHORITY\LocalService:(OI)(CI)M" >nul 2>&1
-echo   [OK] quarantine\: LocalService=Modify (Users retain default access)
+    /grant "SYSTEM:(OI)(CI)F" >nul 2>&1
+echo   [OK] quarantine\: SYSTEM=Full (Users retain default access)
 
 REM -- Step 6: Install the Windows Service ----------------------------------
 echo  [7/8] Installing service with SCM...
@@ -186,7 +194,7 @@ echo  ^|    Installation complete!                            ^|
 echo  ^|-------------------------------------------------------^|
 echo  ^|                                                      ^|
 echo  ^|  Service:  PolyShield Realtime Protection            ^|
-echo  ^|  Account:  NT AUTHORITY\LocalService                 ^|
+echo  ^|  Account:  LocalSystem                               ^|
 echo  ^|  Port:     127.0.0.1:52614 (localhost only)          ^|
 echo  ^|  Log:      C:\ProgramData\PolyShield\service.log     ^|
 echo  ^|  Token:    C:\ProgramData\PolyShield\service_token.txt^|

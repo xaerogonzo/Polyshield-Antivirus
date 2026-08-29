@@ -10,18 +10,32 @@ import json
 import socket
 import threading
 import time
-from pathlib import Path
+
+from ui.core import paths
 
 _PORT = 52614
 _CONNECT_TIMEOUT = 0.5   # seconds — used for is_service_running() probe
 _CMD_TIMEOUT     = 5.0   # seconds — for regular command responses
 
-_TOKEN_FILE = Path(r"C:\ProgramData\PolyShield\service_token.txt")
+
+def _token_file():
+    r"""The IPC shared secret, resolved the same way the service resolves it.
+
+    Read on every call rather than bound at import: the service writes this
+    file on first start, so a client that cached the path -- or the absence of
+    the file -- before the service ever ran would keep failing afterwards.
+
+    Both sides went through a hard-coded ``C:\ProgramData`` literal until
+    v1.16, in two separate modules. They agreed only because someone kept them
+    agreeing; a token path the client and the server disagree about fails as
+    "unauthorized", which reads exactly like an attacker being turned away.
+    """
+    return paths.state_dir() / "service_token.txt"
 
 
 def _read_token() -> str:
     try:
-        return _TOKEN_FILE.read_text(encoding="utf-8").strip()
+        return _token_file().read_text(encoding="utf-8").strip()
     except Exception:
         return ""
 

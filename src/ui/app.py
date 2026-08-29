@@ -645,6 +645,49 @@ def main():
             sys.exit(1)
         sys.exit(0)
 
+    # Uninstall / rollback, before the single-instance lock for the same reason
+    # the diagnostics are: this has to work while the app is open, and an
+    # uninstaller that silently exits 0 because a window was up would leave the
+    # service and the Explorer verb behind.
+    #
+    # Lives on the GUI entry point because that is the binary a distribution
+    # actually has -- the Inno uninstaller calls PolyShield.exe --unregister
+    # before it deletes the files. Requires elevation for the service step,
+    # which an uninstaller already has.
+    if "--register-context-menu" in sys.argv[1:]:
+        # The installer asks the app to write its own Explorer verb rather than
+        # writing the keys itself: the command string is built by
+        # paths.app_launch_argv(), and a second implementation in an .iss file
+        # is a second thing to keep correct when the launch target changes.
+        # Per-user (HKCU), so it needs no elevation and lands in the profile of
+        # whoever is installing.
+        from ui.core import shell_ext as _shell_ext
+
+        ok, msg = _shell_ext.register()
+        print(msg)
+        sys.exit(0 if ok else 1)
+
+    if "--unregister" in sys.argv[1:]:
+        import json
+
+        from ui.core import integration as _integration
+
+        report = _integration.unregister_all(log=lambda line: print(line))
+        print(json.dumps(report, indent=2))
+        # Also written down. An uninstaller runs this hidden, and "the service
+        # is still registered afterwards" cannot otherwise be told apart from
+        # "this never ran" -- which are different bugs with different fixes.
+        try:
+            from ui.core import paths as _p
+
+            _dest = _p.logs_dir()
+            _dest.mkdir(parents=True, exist_ok=True)
+            (_dest / "unregister.json").write_text(
+                json.dumps(report, indent=2), encoding="utf-8")
+        except Exception:
+            pass            # diagnostics must never fail the uninstall
+        sys.exit(0 if report["ok"] else 1)
+
     # If another PolyShield window is already running, focus it and exit immediately.
     if not _acquire_instance_lock():
         sys.exit(0)
