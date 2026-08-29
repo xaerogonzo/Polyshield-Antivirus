@@ -337,7 +337,7 @@ step, after a clean-machine run passes.
 | | Deliverable | Gate |
 |---|---|---|
 | 4b.1 | GUI exe, simplest working config | Starts; durable data lands outside the extraction directory |
-| 4b.2 | Service exe (no `tk-inter`) | Installs and starts **without Tk**; same canonical data root as the GUI |
+| 4b.2 | Service exe (no `tk-inter`) | **BLOCKED** — pywin32 does not survive the build; see below. Compiles and is Tk-free, but faults during interpreter start-up |
 | 4b.3 | Scheduled-scan exe | Task runs (required — see `script_launch_argv`) |
 | 4b.4 | Optional engines, one at a time | Each individually verified, by detection and not by launch |
 | 4b.5 | Clean Windows Sandbox run | The full GUI / Service / clean-machine checklist |
@@ -351,6 +351,138 @@ and then fails elsewhere leaves the registration behind, and repeated attempts
 accumulate dirty service and context-menu state.
 `scripts/service/fix_service_crash.bat` and `shell_ext.unregister()` exist for
 this and belong in the retry path.
+
+### Three things a compiled build gets wrong that no test can catch (v1.15)
+
+All three were found by building and running, not by reasoning, and none of
+them is reachable from `tests/test_paths.py` — that file drives frozen
+behaviour by monkeypatching a predicate, which covers the *policy* while
+leaving the *environment* entirely unexamined. `tools/build_probe.py` exists
+for the environment half: it is compiled with the same flags as the entry
+points and exits non-zero when the build has resolved something wrongly.
+
+**1. `sys.executable` is not the executable.** A Nuitka standalone build
+reports a `python.exe` sitting beside the real binary, and **that file does not
+exist**:
+
+```
+sys.executable               <dist>/PolyShield.dist/python.exe    ABSENT
+sys.argv[0]                  <dist>/PolyShield.dist/PolyShield.exe
+__compiled__.original_argv0  <dist>/PolyShield.dist/PolyShield.exe
+__compiled__.containing_dir  <dist>                    (one level up)
+```
+
+Anything written into the registry or the SCM from `sys.executable` — the
+Explorer context-menu verb, the elevated relaunch, the service image path —
+points Windows at nothing, and does it silently. `paths.running_executable()`
+is the answer, preferring `original_argv0` because onefile re-executes the
+extracted binary: `argv[0]` is then the temporary copy, while `original_argv0`
+stays the exe the user actually launched.
+
+**2. The module tree is one level shallower.** A checkout is
+`src/ui/core/paths.py`, so the project root is `parents[3]`. A build has no
+`src/` level, so the same expression walks one *past* the directory the bundled
+data is in. `resource_root()` therefore uses `parents[2]` when frozen — derived
+from `__file__` rather than from `sys.executable`, which merely happens to
+yield the right directory while resting on a path to nothing, and which would
+be wrong for onefile besides.
+
+**3. Every `mkdir` assumed its parent existed.** True in a checkout, which
+always has a project root; false on a distribution's first run, where
+`%LOCALAPPDATA%\PolyShield` does not exist yet. `scanner.py`'s module-level
+`LOGS_DIR.mkdir(exist_ok=True)` raised `WinError 3` at import and took the app
+down before the first window was drawn.
+
+### The service is a second, separate resolver
+
+In a build the service and the UI are two executables that each resolve the
+data root independently, and they *must* agree — they read the same threat
+database, settings file and quarantine. The service is also the harder one to
+inspect: it runs as LocalService, with a different environment from the
+interactive user, and once installed there is no other way to ask it what it
+concluded.
+
+So `polyshield_service.py --paths` prints its resolution as JSON. It is the
+gate for the packaged service build, and the first thing worth running when an
+installed service misbehaves.
+
+`_exe_name_` / `_exe_args_` come from `paths.service_registration()`: the
+interpreter plus the script in a checkout, and the executable with **no**
+arguments in a build, where the exe *is* the service and its no-argument branch
+reaches the SCM dispatcher.
+
+The build refuses to ship a service image containing `tcl\` or `tk\`. `ui.core`
+is Tk-free today and the service imports nothing else, but a service that
+acquires a display dependency fails on a session-0 desktop for reasons its own
+logs will not explain — so it is enforced at build time rather than left as a
+property someone has to keep remembering. It also keeps roughly 900 Tcl/Tk data
+files out of the image.
+
+Note that every `ui.core` import in the service is *inside a method*. A static
+analyser sees none of them, so `--include-package=ui.core` is not
+belt-and-braces: without it the service compiles cleanly and then cannot start.
+
+### 4b.2 is BLOCKED: pywin32 does not survive this Nuitka build
+
+The service executable **compiles** and is Tk-free, and then fails before it
+reaches its own first line. Two builds, differing only in whether Tk was
+excluded, fail two different ways:
+
+| Build | Result |
+|---|---|
+| `--nofollow-import-to=tkinter,customtkinter,ui.views` | `ImportError: cannot import name 'MappingProxyType' from 'types'`, raised from `enum` → `re` → `ast` → `inspect` at startup |
+| the same build without those three flags | segmentation fault in the Nuitka runtime |
+
+The bisect result is what matters: **the exclusion flags are not the cause.**
+Removing them changed the failure rather than fixing it. Both builds die during
+interpreter start-up, before `polyshield_service.py` executes.
+
+What is different about this entry point, and nothing else in the build, is
+that it imports **pywin32** at module scope — `servicemanager`,
+`win32serviceutil`, `win32service`, `win32event`. The GUI (`src/ui/app.py`) and
+the path probe compile and run correctly with the same toolchain, the same
+Python and largely the same flags; neither touches pywin32.
+
+Nuitka 4.2 ships no pywin32 plugin (`--plugin-list` lists only
+`multiprocessing`), so there is no supported configuration to reach for. The
+environment is Anaconda CPython 3.13.12 with Nuitka 4.2 and the zig C backend.
+
+**Deliberately not pursued here.** Going further means Nuitka internals and an
+upstream report, or changing how the service hosts itself, or a different
+packager — and none of those is a path-resolution question. Per the standing
+scope guard on this phase: stop and report rather than broaden.
+
+What the attempt produced anyway, all of it independent of whether the service
+ever compiles:
+
+* `paths.running_executable()`, which fixes a real defect shipped in 4a —
+  `sys.executable` names a file that does not exist in a compiled build.
+* the `resource_root()` off-by-one fix, likewise.
+* `paths.service_registration()`, the correct `_exe_name_` / `_exe_args_` shape
+  for a frozen service, which will be needed whenever the service does build.
+* `polyshield_service.py --paths`, which prints the service's own view of where
+  data lives. Useful in a checkout today and the only way to interrogate an
+  installed LocalService later.
+* a build-time guarantee that the service image contains no `tcl\` or `tk\`.
+
+**Options, when this is picked up again**, roughly in order of how much they
+disturb:
+
+1. Ship the service as a source-mode component — the distribution installs a
+   small Python runtime for it while the GUI stays compiled. Keeps pywin32 out
+   of the compiler entirely.
+2. Try a different packager for the service binary only.
+3. Reduce the service to a thin host that shells out, so the pywin32 surface
+   inside the compiled binary is as small as possible.
+4. Report upstream with a minimal reproducer and wait.
+
+Option 1 is the least clever and the most likely to work; the service already
+resolves its own paths through `ui.core.paths`, so a source-mode service and a
+compiled GUI would still agree on the data root — which is the property that
+mattered.
+
+**Note for whoever resumes**: `PolyShieldService.exe install` was never run.
+Nothing was registered with the SCM, so there is no machine state to unwind.
 
 ### Engine matrix
 

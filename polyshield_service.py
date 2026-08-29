@@ -115,9 +115,14 @@ class PolyShieldService(win32serviceutil.ServiceFramework):
     # Start automatically with Windows — users should not need to manually
     # start the service after each reboot.
     _svc_start_type_   = win32service.SERVICE_AUTO_START
-    # Use venv python.exe directly — works with virtual environments
-    _exe_name_  = sys.executable
-    _exe_args_  = f'"{paths.resource_root() / "polyshield_service.py"}"'
+    # How the SCM should start us. In a checkout that is the venv interpreter
+    # plus this script; in a build it is the executable itself, which reaches
+    # the dispatcher through the no-argument branch at the bottom of this file.
+    # Resolved in ui.core.paths because sys.executable is NOT the answer in a
+    # frozen build -- Nuitka reports a python.exe there that does not exist,
+    # and a service registered against it would fail to start with a message
+    # about the image path rather than about anything real.
+    _exe_name_, _exe_args_ = paths.service_registration()
 
     def __init__(self, args):
         win32serviceutil.ServiceFramework.__init__(self, args)
@@ -847,6 +852,29 @@ class PolyShieldService(win32serviceutil.ServiceFramework):
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    if "--paths" in sys.argv[1:]:
+        # Diagnostic, and the gate for the packaged service build.
+        #
+        # The service and the UI have to agree on where data lives -- they read
+        # the same threat database, settings file and quarantine -- and in a
+        # frozen build they are two separate executables that each resolve it
+        # independently. Asking the service directly is the only way to check
+        # the one that runs as LocalService, which has a different environment
+        # from the interactive user and cannot be inspected any other way once
+        # it is installed.
+        import json
+        print(json.dumps({
+            "frozen":        paths.is_frozen(),
+            "executable":    str(paths.running_executable()),
+            "app_root":      str(paths.app_root()),
+            "resource_root": str(paths.resource_root()),
+            "intelligence":  str(paths.intelligence_dir()),
+            "config":        str(paths.config_dir()),
+            "events_file":   str(EVENTS_FILE),
+            "registration":  paths.service_registration(),
+        }, indent=2))
+        sys.exit(0)
+
     if len(sys.argv) == 1:
         # No args — started by Windows SCM. Use modern venv-compatible entry point.
         servicemanager.Initialize()

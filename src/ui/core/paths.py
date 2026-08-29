@@ -105,21 +105,69 @@ def resource_root() -> Path:
     project root is `parents[3]` -- but a build has no `src/` level, so the
     same expression walks past the directory the resources are actually in.
 
-    Measured, not reasoned about.  A standalone build reports
+    Measured, not reasoned about.  A standalone build lays the module tree out
+    at <dist>/PolyShield.dist/ui/core/paths.py, so:
 
-        sys.executable   <dist>/PolyShield.dist/python.exe
-        parents[3]       <dist>                       <- one too high
-        this function    <dist>/PolyShield.dist       <- where the data is
+        parents[3]   <dist>                    <- one too high, no src/ level
+        parents[2]   <dist>/PolyShield.dist    <- where the data actually is
 
-    and Nuitka puts the bundled data (customtkinter assets, the Tcl/Tk tree,
-    the tkdnd binaries) beside the executable in both standalone and onefile,
-    so taking its parent is right in both.  tools/build_probe.py is what caught
-    this: no unit test can, because the discrepancy is in a __file__ layout
-    that only exists inside a real compiled build.
+    Derived from __file__ rather than from sys.executable, which looks like the
+    obvious source and is not: Nuitka reports <dist>/PolyShield.dist/python.exe
+    there, and that file DOES NOT EXIST (measured -- see running_executable()).
+    Its parent happens to be the right directory, so a sys.executable version
+    works by luck while resting on a path to nothing.
+
+    Using the module tree also survives onefile, where the extracted modules
+    and their data land together in a temporary directory that sys.argv[0]
+    knows nothing about.
+
+    tools/build_probe.py is what caught the original off-by-one: no unit test
+    can, because the discrepancy is in a __file__ layout that exists only
+    inside a real compiled build.
     """
     if is_frozen():
-        return Path(sys.executable).resolve().parent
+        # A build has no src/ level, so the module tree is one shallower.
+        return Path(__file__).resolve().parents[2]
     return _MODULE_ROOT
+
+
+def running_executable() -> Path:
+    """The binary the user actually launched.
+
+    Emphatically **not** `sys.executable`.  In a Nuitka standalone build that
+    reports a `python.exe` sitting beside the real binary, and that file does
+    not exist -- measured, not assumed:
+
+        sys.executable              <dist>/PolyShield.dist/python.exe   absent
+        sys.argv[0]                 <dist>/PolyShield.dist/PolyShield.exe
+        __compiled__.original_argv0 <dist>/PolyShield.dist/PolyShield.exe
+
+    Registering `sys.executable` in the Explorer context menu, or as a Windows
+    service image path, points the OS at nothing -- and does it silently, which
+    is the failure class this whole phase exists to remove.
+
+    `original_argv0` is preferred over `sys.argv[0]` because onefile re-executes
+    the extracted binary: argv[0] is then the temporary copy, while
+    original_argv0 stays the exe the user actually double-clicked, which is the
+    one worth writing into the registry.
+    """
+    if is_frozen():
+        compiled = globals().get("__compiled__", None)
+        original = getattr(compiled, "original_argv0", None)
+        return Path(original or sys.argv[0]).resolve()
+    return Path(sys.executable).resolve()
+
+
+def service_registration() -> tuple[str, str]:
+    """`(_exe_name_, _exe_args_)` for the Windows service registration.
+
+    Source checkout: the interpreter, plus the script as its argument.
+    Frozen: the executable itself with no arguments -- the exe *is* the
+    service, and its no-argument branch hands control to the SCM dispatcher.
+    """
+    if is_frozen():
+        return str(running_executable()), ""
+    return sys.executable, f'"{resource_root() / "polyshield_service.py"}"'
 
 
 def app_root() -> Path:
@@ -249,7 +297,7 @@ def app_launch_argv(*args: str) -> list[str]:
     hard-coded their own `pythonw.exe` + `app.py` pair.
     """
     if is_frozen():
-        return [str(Path(sys.executable).resolve()), *args]
+        return [str(running_executable()), *args]
     # pythonw.exe unconditionally, matching the behaviour this replaced. An
     # exists() fallback to python.exe looks like an improvement and is out of
     # scope for this phase: it would swap a broken command for a console

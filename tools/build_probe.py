@@ -69,6 +69,17 @@ def collect() -> dict:
         "nuitka_compiled": "__compiled__" in globals(),
         "sys_frozen": bool(getattr(sys, "frozen", False)),
         "executable": sys.executable,
+        "executable_exists": Path(sys.executable).exists(),
+        "argv0": sys.argv[0],
+        "argv0_exists": Path(sys.argv[0]).exists(),
+        "compiled_attrs": sorted(
+            a for a in dir(globals().get("__compiled__", object()))
+            if not a.startswith("_")
+        ),
+        "containing_dir": getattr(globals().get("__compiled__", None),
+                                  "containing_dir", None),
+        "original_argv0": getattr(globals().get("__compiled__", None),
+                                  "original_argv0", None),
         "app_root": str(app),
         "app_root_resolved": str(app.resolve()),
         "resource_root": str(resource),

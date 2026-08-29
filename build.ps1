@@ -13,7 +13,7 @@
 # Milestones, and the order matters (docs/ARCHITECTURE.md, "Packaging"):
 #
 #   4b.1  GUI exe, simplest working config          <- implemented
-#   4b.2  service exe, no tk-inter                     not yet
+#   4b.2  service exe, no tk-inter                  <- implemented
 #   4b.3  scheduled-scan exe                           not yet
 #   4b.4  optional engines, one at a time              not yet
 #   4b.5  clean Windows Sandbox run                    not yet
@@ -28,7 +28,7 @@
 [CmdletBinding()]
 param(
     # gui | probe | all
-    [ValidateSet("gui", "probe", "all")]
+    [ValidateSet("gui", "service", "probe", "all")]
     [string]$Target = "all",
 
     # Skip the destructive clean. Only for iterating on a single target.
@@ -125,6 +125,21 @@ $guiArgs = $commonArgs + @(
     # It goes in at 4b.6 together with the icon.
 )
 
+$serviceArgs = $commonArgs + @(
+    # Every ui.core import in the service is inside a method, so a static
+    # analyser sees none of them. Naming the package is not belt-and-braces:
+    # without it the service compiles cleanly and then cannot start.
+    "--include-package=ui.core",
+    "--include-package=tools",
+    # A service must never need a display. ui.core is Tk-free already; these
+    # make that a build-time guarantee rather than a property someone has to
+    # keep remembering, and they keep ~900 Tcl/Tk data files out of the image.
+    "--nofollow-import-to=tkinter",
+    "--nofollow-import-to=customtkinter",
+    "--nofollow-import-to=ui.views",
+    "--output-filename=PolyShieldService.exe"
+)
+
 $probeArgs = $commonArgs + @(
     "--include-module=ui.core.paths",
     "--remove-output"
@@ -141,6 +156,21 @@ New-Item -ItemType Directory -Force -Path $DIST | Out-Null
 if ($Target -in @("gui", "all")) {
     Invoke-Nuitka -Script (Join-Path $ROOT "src\ui\app.py") `
                   -ExtraArgs $guiArgs -Label "PolyShield.exe (GUI)"
+}
+
+if ($Target -in @("service", "all")) {
+    Invoke-Nuitka -Script (Join-Path $ROOT "polyshield_service.py") `
+                  -ExtraArgs $serviceArgs -Label "PolyShieldService.exe"
+
+    # A service that drags in Tk is a service that can fail on a session-0
+    # desktop for reasons nothing in its own logs will explain.
+    $svcDist = Join-Path $DIST "polyshield_service.dist"
+    foreach ($forbidden in @("tcl", "tk")) {
+        if (Test-Path (Join-Path $svcDist $forbidden)) {
+            throw "Service build contains '$forbidden\' - it must not need a display."
+        }
+    }
+    Write-Host "  Service image is Tk-free." -ForegroundColor Green
 }
 
 if ($Target -in @("probe", "all")) {
