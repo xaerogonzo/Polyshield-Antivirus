@@ -331,7 +331,9 @@ Guardian AI scan_file()
 **Implementation:**
 - `pybloom-live` `ScalableBloomFilter(initial_capacity, error_rate=0.001)` persisted to `intelligence/nsrl_bloom.bin`
 - Bloom rebuild triggered after every NSRL import (`nsrl_bloom_stale=1` meta flag set at START of import, cleared after rebuild)
-- Crash-safety: if `tofile()` crashes mid-write, stale flag stays `1` → bloom not loaded until rebuilt
+- **Atomic publication (v1.15):** the filter is built to a sibling temp file, flushed, `fsync`ed and size-checked, then moved into place with `os.replace`. A sibling rather than `tempfile.mkstemp` for the reason recorded under `_make_staging_dir` — `os.replace` carries the ACL with the file, and a hardened scratch DACL would yield a filter only the publishing account can read, which `_load_nsrl_bloom()` reports as simply "no bloom". Before this, `open(_BLOOM_PATH, "wb")` truncated a valid ~150 MB filter *before* `tofile()` wrote a byte, so a crash mid-write destroyed the old one and the only recovery was re-importing the multi-GB source file.
+- **Publication order is the contract:** `import_nsrl` commits the `safe` rows → the filter is published → `nsrl_bloom_stale` is cleared **last**. This rules out both a filter advertised as current for a table it does not describe and the reverse.
+- Crash-safety: on any failure the stale flag stays `1` and the previously published filter is left intact → consumers fall back to SQLite. Safe rather than merely tolerable: a stale filter can only *omit* entries, never invent them, so a miss falls through to the SQLite truth.
 - Corruption recovery: `fromfile()` exception → delete `.bin`, set stale=1, return `None` (fall back to per-file SQLite)
 - Startup cost: loading `.bin` takes ~2 seconds (mmap-backed read); rebuild from 72M SQLite rows takes 2–5 min (done only when stale)
 - `fetchmany(10_000)` batching reduces Python/C boundary crossings ~7000× vs. single-row iteration

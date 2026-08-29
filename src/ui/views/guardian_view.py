@@ -118,7 +118,7 @@ class GuardianView(ctk.CTkFrame):
                                       sticky="w", padx=16, pady=(0, 8))
         else:
             not_installed_lines = [
-                "GuardianAI is not set up yet. Run setup_guardian.bat to get started.",
+                r"GuardianAI is not set up yet. Run scripts\components\setup_guardian.bat.",
                 "It will clone the GuardianAI repo and create a portable guardian_env/",
                 "in your project folder — no global Python installation needed.",
             ]
@@ -326,14 +326,34 @@ class GuardianView(ctk.CTkFrame):
 
     # ── Setup helper ──────────────────────────────────────────────────────────
 
-    @staticmethod
-    def _open_setup_bat():
+    # Resolved at class scope so a test can assert the path without launching
+    # anything, and so the one place that has to track scripts/ layout is
+    # obvious.  It moved to scripts/components/ in the scripts reorganisation
+    # and this reference was left behind -- see _open_setup_bat.
+    SETUP_BAT = (Path(__file__).resolve().parents[3]
+                 / "scripts" / "components" / "setup_guardian.bat")
+
+    def _open_setup_bat(self):
+        """Launch the GuardianAI setup script, or say why it could not.
+
+        Previously this pointed at scripts/setup_guardian.bat -- the pre-
+        reorganisation location -- and guarded the launch with a bare
+        `if bat.exists():`.  With the file one directory further down, the
+        button did nothing at all: no window, no error, no status line.  A
+        missing script is worth reporting; silently succeeding at nothing is
+        the one behaviour that leaves the user with no next step.
+        """
         import subprocess
-        from pathlib import Path
-        bat = Path(__file__).resolve().parents[3] / "scripts" / "setup_guardian.bat"
-        if bat.exists():
+
+        if not self.SETUP_BAT.exists():
+            self._status_cb(f"Setup script not found: {self.SETUP_BAT}")
+            return
+        try:
             # Run in a visible cmd window intentionally (user needs to see progress)
-            subprocess.Popen(["cmd", "/c", str(bat)])
+            subprocess.Popen(["cmd", "/c", str(self.SETUP_BAT)])
+            self._status_cb("Guardian AI: setup script launched")
+        except OSError as exc:
+            self._status_cb(f"Could not launch setup script: {exc}")
 
     # ── Drop & browse ─────────────────────────────────────────────────────────
 

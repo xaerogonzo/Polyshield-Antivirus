@@ -70,6 +70,7 @@ The suite is split by concern:
 | `test_system_surface.py` | The registry helpers, and `defender.get_status()` keeping its promise to always return a dict (v1.14) |
 | `test_winsec_probes.py` | The three live probes — Secure Boot / TPM / VBS, local accounts, and SmartScreen / CFA / ASR — driven through the `_run_ps` and `winreg` seams (v1.14) |
 | `test_settings_update_views.py` | The two largest views, tested for the decisions they make — pattern-label/profile truth shared with the engine, the false-positive figures shown as advice, busy/failure transitions, and an `ast` guard against the `after(…, configure, {…})` idiom (v1.15) |
+| `test_integration_edges.py` | Four small Windows-boundary modules — VirusTotal request/parse, the Explorer context-menu registry writes and the command Explorer runs, schtasks construction and parsing, and autorun path resolution (v1.15) |
 
 ### A frozen badge, and the guard for it (v1.15)
 
@@ -166,6 +167,178 @@ unrelated test happened to be running when it landed.
 The fixture replaces `update_view.threading.Thread` with a stub that records
 its target and never starts it. Anything a test actually wants to exercise is
 then called directly, on the main thread, where its assertions can see it.
+| `test_intel_feeds.py` | The importers that write the detection database — feed parsing, the "a bad download costs nothing" invariant, atomic bloom publication, and clearing reaching the live consumers (v1.15) |
+
+### A resolved path nobody can scan (v1.15)
+
+`startup_scanner._extract_path` pulls the executable out of a registry Run
+value. Every mistake it makes has the same shape and none of them are loud: the
+resolved path fails `Path.exists()`, `get_scannable_paths()` drops the entry,
+and a startup executable is simply never scanned. Autoruns are where
+persistence lives, so a miss there is not cosmetic.
+
+Three real values it got wrong:
+
+| Value | Resolved to | Why |
+|---|---|---|
+| `C:\Program Files\App\app.EXE --flag` | `C:\Program` | `split(".exe", 1)` was case-sensitive; the uppercase extension fell through to the first-token fallback |
+| `C:\my.exe.tools\app.exe` | `C:\my.exe` | split on the first *substring* match rather than at a token boundary |
+| `%ProgramFiles%\App\app.exe` | *(unchanged)* | environment variables were never expanded |
+
+The last is the most common: `%ProgramFiles%`, `%APPDATA%` and `%SystemRoot%`
+are ordinary things to find in a Run key.
+
+The table test covers the shapes, but the one that says what the bug *was* is
+`test_a_run_key_entry_reaches_the_scan_list_end_to_end` — it writes a fake Run
+value using all three problem shapes at once and asserts the executable comes
+out of `get_scannable_paths()`. Asserting the extraction alone would have
+missed that the consequence is a file dropping out of a scan.
+
+An unknown variable is still left unexpanded, which resolves to "does not
+exist" — the same outcome as before, so nothing regresses on a name we cannot
+map.
+
+### A button that did nothing (v1.15)
+
+`guardian_view` pointed at `scripts/setup_guardian.bat`; the file moved to
+`scripts/components/` in the scripts reorganisation. The launch was guarded by
+a bare `if bat.exists():` with no `else`, so clicking *Open setup_guardian.bat*
+produced no window, no error and no status line — indistinguishable from a
+click that never registered.
+
+`test_the_setup_script_is_where_the_button_looks_for_it` asserts against the
+**real** tree rather than a fixture. That is the point: a mocked path would
+have kept passing through exactly the drift that broke it. The path is now a
+class attribute (`GuardianView.SETUP_BAT`) so the test can read it without
+building a Tk page, and `_open_setup_bat` reports a missing script through the
+status callback instead of returning silently.
+
+### Absence and failure, in two more places (v1.15)
+
+Both are pinned as they are rather than changed, and both are worth knowing
+about before someone reads the tests as an endorsement:
+
+* `virustotal.lookup_hash` maps HTTP 404 to `{"error": "File not found in
+  VirusTotal database (never submitted)."}`. The lookup *worked*; the answer is
+  "never seen". `virustotal_view` renders it in red under "VirusTotal lookup
+  failed", and `scan_view` truncates it to 50 characters, cutting it mid-word.
+* `scheduler.get_task_info` returns `{"exists": False}` for any non-zero exit,
+  so an access-denied query is indistinguishable from "no task scheduled" —
+  and `SchedulerView` reads only `info.get("exists")`.
+
+Both are the distinction *Absent is not the same as unknown* draws below. Left
+alone because the consequence is a less informative screen rather than a wrong
+verdict, and because deciding what an unknown file should look like is a
+product call that would change rendering in views this work did not touch.
+
+### The command Explorer actually runs (v1.15)
+
+`shell_ext.register()` writes a command string into HKCU, and Phase 4a is going
+to repoint it at a frozen executable. The tests pin the shape first: every path
+quoted, exactly one `%1`, and an install directory containing spaces, an
+ampersand or parentheses still producing one parseable command line.
+
+`%1` is deliberately single-file — `app.py` reads exactly one path after
+`--scan`, and the verb is not registered for multi-select. That is the contract
+to preserve, not to extend.
+
+`is_registered()` now treats *every* read failure as "not registered", matching
+`win_security._reg_key_exists`. Catching `FileNotFoundError` alone was the
+outlier: it is called during `SettingsView._build()`, so a `PermissionError`
+from a policy-locked hive propagated out of a view constructor and took the
+page down rather than leaving a checkbox unticked.
+
+### A parser that promised a dict and raised instead (v1.15)
+
+`virustotal.parse_result` caught `(KeyError, TypeError)` — the two ways a
+*subscript* fails. A `"attributes": null`, or a stats block that arrives as a
+list, makes `.get()` / `.items()` / `.values()` the thing that fails, and
+`AttributeError` escaped.
+
+It escaped into `virustotal_view._apply_result`, which runs straight from a Tk
+callback, so the results panel stayed empty and the button stayed stuck on
+"Querying…" with nothing shown anywhere. Same class as the empty-archive
+`IndexError` in `fetch_malwarebazaar`: a function contracted to return a dict
+raising instead, past a caller that only inspects the returned value.
+
+### Removal is an intelligence change too (v1.15)
+
+`clear_malicious_db()` deleted every row from the `malicious` table and fired
+nothing. Import fired the `hashes` post-update hooks; clearing did not — so the
+database said empty while every already-running consumer kept the set it had
+loaded at start-up. `guardian_engine` went on reporting "Known Signature", and
+`process_monitor`, which does not merely report, went on terminating process
+trees and quarantining executables on hashes the user had just deleted. Nothing
+in the UI could tell that apart from the clear having failed.
+
+The test that pins it does not assert that a callback fired. It drives the two
+consumers through their real decision paths — `scan_file()` and
+`_check_process()` — on the *same instance* either side of the clear, because
+inspecting `virus_db` / `_known_bad` would pass while the live verdict stayed
+wrong. Run it against the unfixed function and the captured log says it
+plainly: `ProcessMonitor: THREAT PID=4242 … reason=known malicious hash`,
+emitted after the database was emptied.
+
+**The hooks fire even when zero rows were deleted.** That looks like a wasted
+call and is the opposite: a consumer holding a stale RAM set is *exactly* the
+case where the table is already empty and the consumer is not, so a rowcount
+guard would skip the only repair that case has. The contract of a function
+called "clear" is that consumers end up reflecting an empty database, not that
+`DELETE` happened to match something.
+
+### A bad download must cost the user nothing (v1.15)
+
+Every importer now follows **download → validate → import → commit → freshness**,
+and the tests assert the failure direction per feed rather than through one
+shared helper: a malformed MalwareBazaar response checks `malicious` and
+`last_mb_update`, a dead C2 fetch checks `ip_blocklist` and `last_c2_update`.
+
+Two shapes were wrong before. `fetch_malwarebazaar` returned
+`{"added": 0, "total_db": 0}` when the response parsed to nothing — describing a
+table that may hold millions as empty, which is what the Update Center logged
+back to the user. Reporting the *real* total instead would have been worse:
+`intel_updater._run_malwarebazaar` reads `(added=0, total>0)` as `UNCHANGED` and
+advances freshness, so a feed that returned nothing would have looked like a
+feed with nothing new. It returns an `error` for that reason, and
+`test_empty_feed_reaches_the_updater_as_failed_not_unchanged` pins the whole
+chain rather than the local return value.
+
+The other was `zf.namelist()[0]` on the full-list ZIP: an empty archive raised
+`IndexError` straight out of a function contracted to return a dict, past an
+adapter that only catches `res["error"]`.
+
+### Publishing a bloom filter without destroying the old one (v1.15)
+
+`_rebuild_nsrl_bloom` opened the live `nsrl_bloom.bin` `"wb"` — truncating a
+valid ~150–200 MB filter before `tofile()` had written a byte. A crash during
+that write left nothing usable, and the only recovery was re-importing a
+multi-GB NSRL file the user may no longer have.
+
+It now mirrors the atomic YARA generation model in the same module: build to a
+sibling temp file, flush, `fsync`, size-check, `os.replace`. A sibling rather
+than `tempfile.mkstemp` for the reason recorded under `_make_staging_dir` —
+`os.replace` carries the ACL along with the file, and a hardened scratch DACL
+would become a filter only the publishing account can read, which
+`_load_nsrl_bloom` reports as simply "no bloom".
+
+A full `fromfile()` round-trip is deliberately *not* done as validation: it
+would allocate a second filter of the same size while the first is still live,
+to re-prove what `tofile()` returning plus `fsync` already establishes.
+
+**The ordering is the contract, and is tested as ordering.** Two states are
+forbidden — a filter advertised as current for a table it does not describe, and
+the reverse — so `import_nsrl` commits the `safe` rows first, the filter is
+published second, and `nsrl_bloom_stale` is cleared last.
+`test_stale_is_cleared_only_after_the_filter_is_on_disk` reads the flag from
+inside the fake's `tofile()` to prove the write happened while still marked
+stale.
+
+On failure the flag stays `1` and the previous filter is untouched. That is the
+safe direction rather than a compromise: a stale filter can only *omit*
+entries, never invent them, so a miss falls through to the SQLite truth.
+`guardian_engine._load_nsrl_bloom` is what makes that hold — it checks the flag
+before loading and quarantines a filter it cannot parse — and it had no test of
+its own until now, which meant the safety property rested on unexercised code.
 
 ### The engine failure contract (v1.14)
 

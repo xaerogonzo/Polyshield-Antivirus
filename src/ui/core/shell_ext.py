@@ -79,9 +79,17 @@ def unregister() -> tuple[bool, str]:
 
 
 def is_registered() -> bool:
-    r"""Return True if the *\shell\PolyShield key exists in HKCU."""
+    r"""Return True if the *\shell\PolyShield key exists in HKCU.
+
+    Every failure to read the key reads as "not registered", matching
+    win_security._reg_key_exists.  Catching only FileNotFoundError was the
+    outlier: a PermissionError -- or any other OSError from a policy-locked or
+    corrupt hive -- is also an OSError, and this is called during
+    SettingsView._build(), so it propagated out of a view constructor and took
+    the whole page down rather than showing an unchecked box.
+    """
     try:
         with winreg.OpenKey(_HKCU, _shell_key("*")):
             return True
-    except FileNotFoundError:
+    except OSError:
         return False
