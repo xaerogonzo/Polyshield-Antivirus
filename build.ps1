@@ -13,7 +13,8 @@
 # Milestones, and the order matters (docs/ARCHITECTURE.md, "Packaging"):
 #
 #   4b.1  GUI exe, simplest working config          <- implemented
-#   4b.2  service exe, no tk-inter                  <- implemented
+#   4b.2  service, SOURCE-MODE (pywin32 will not    <- implemented
+#         survive the compiler; see ARCHITECTURE)
 #   4b.3  scheduled-scan exe                           not yet
 #   4b.4  optional engines, one at a time              not yet
 #   4b.5  clean Windows Sandbox run                    not yet
@@ -159,18 +160,46 @@ if ($Target -in @("gui", "all")) {
 }
 
 if ($Target -in @("service", "all")) {
-    Invoke-Nuitka -Script (Join-Path $ROOT "polyshield_service.py") `
-                  -ExtraArgs $serviceArgs -Label "PolyShieldService.exe"
+    # NOT compiled. pywin32 does not survive this Nuitka build: the executable
+    # links and then faults during interpreter start-up, two different ways
+    # depending on flags, before reaching its own first line. See
+    # docs/ARCHITECTURE.md, "4b.2 is BLOCKED". The service therefore ships as
+    # source beside the compiled GUI, run by a Python runtime staged next to it.
+    $svcDir = Join-Path $DIST "service"
+    Write-Host ""
+    Write-Host "  Staging source-mode service ..." -ForegroundColor Cyan
 
-    # A service that drags in Tk is a service that can fail on a session-0
-    # desktop for reasons nothing in its own logs will explain.
-    $svcDist = Join-Path $DIST "polyshield_service.dist"
-    foreach ($forbidden in @("tcl", "tk")) {
-        if (Test-Path (Join-Path $svcDist $forbidden)) {
-            throw "Service build contains '$forbidden\' - it must not need a display."
-        }
+    New-Item -ItemType Directory -Force -Path $svcDir | Out-Null
+    Copy-Item (Join-Path $ROOT "polyshield_service.py") $svcDir -Force
+    Copy-Item (Join-Path $ROOT "scheduled_scan.py")     $svcDir -Force
+
+    # Only the engine-side tree. ui/views is the GUI and would drag Tk into a
+    # component that must never need a display.
+    $svcSrc = Join-Path $svcDir "src"
+    New-Item -ItemType Directory -Force -Path $svcSrc | Out-Null
+    Copy-Item (Join-Path $ROOT "src\ui\core") (Join-Path $svcSrc "ui\core") -Recurse -Force
+    Copy-Item (Join-Path $ROOT "src\tools")   (Join-Path $svcSrc "tools")   -Recurse -Force
+    foreach ($initFor in @("ui")) {
+        $init = Join-Path $svcSrc "$initFor\__init__.py"
+        if (-not (Test-Path $init)) { New-Item -ItemType File -Path $init -Force | Out-Null }
     }
-    Write-Host "  Service image is Tk-free." -ForegroundColor Green
+    Get-ChildItem $svcSrc -Recurse -Directory -Filter "__pycache__" |
+        Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+
+    # The marker is the whole point of the staging: without it the service
+    # resolves app_root() to its own install directory, while the compiled GUI
+    # two folders away resolves it to %LOCALAPPDATA%\PolyShield -- and a
+    # service writing detections where the UI never looks is indistinguishable
+    # from a service that found nothing.
+    Set-Content -Path (Join-Path $svcDir ".polyshield-distribution") `
+                -Value "Shipped as source; see docs/ARCHITECTURE.md 4b.2." -NoNewline
+
+    if (Test-Path (Join-Path $svcSrc "ui\views")) {
+        throw "Staged service contains ui\views - it must not need a display."
+    }
+    Write-Host "  Service staged (source mode, no Tk) -> $svcDir" -ForegroundColor Green
+    Write-Host "  Runtime NOT staged: supply a Python with pywin32, psutil," -ForegroundColor DarkGray
+    Write-Host "  watchdog. See docs/ARCHITECTURE.md." -ForegroundColor DarkGray
 }
 
 if ($Target -in @("probe", "all")) {

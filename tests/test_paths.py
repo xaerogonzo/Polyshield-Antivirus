@@ -207,6 +207,68 @@ def test_a_blank_override_is_ignored(source, monkeypatch):
     assert paths.app_root() == ROOT
 
 
+# ══ Shipped as source, but still part of a distribution ══════════════════════
+
+@pytest.fixture
+def staged(monkeypatch, tmp_path):
+    """A source-mode component staged inside a distribution.
+
+    That is the shape the Windows service actually ships in: pywin32 does not
+    survive the Nuitka build, so the service runs from source beside a compiled
+    GUI (docs/ARCHITECTURE.md, "4b.2 is BLOCKED").
+    """
+    monkeypatch.setattr(paths, "_FROZEN_OVERRIDE", False)
+    monkeypatch.setattr(paths, "_MODULE_ROOT", tmp_path)
+    (tmp_path / paths.DISTRIBUTION_MARKER).write_text("staged", encoding="utf-8")
+    return tmp_path
+
+
+def test_a_checkout_is_not_a_distribution(source):
+    assert paths.is_distribution() is False
+    assert paths.app_root() == ROOT
+
+
+def test_a_frozen_build_is_always_a_distribution(frozen):
+    assert paths.is_distribution() is True
+
+
+def test_a_marker_makes_a_source_tree_a_distribution(staged):
+    assert paths.is_frozen() is False, "the service is genuinely not compiled"
+    assert paths.is_distribution() is True
+
+
+def test_a_staged_service_and_a_frozen_gui_agree_on_the_data_root(
+        staged, monkeypatch, tmp_path):
+    """The reason the marker exists at all.
+
+    Without it the service asks is_frozen(), gets False, and resolves app_root()
+    to the directory it was installed in -- while the compiled GUI two folders
+    away resolves it to %LOCALAPPDATA%\PolyShield. A service writing detections
+    somewhere the UI never looks is indistinguishable from a service that found
+    nothing.
+    """
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+
+    staged_root = paths.app_root()
+
+    monkeypatch.setattr(paths, "_FROZEN_OVERRIDE", True)
+    frozen_root = paths.app_root()
+
+    assert staged_root == frozen_root == tmp_path / "Local" / "PolyShield"
+    assert staged_root != staged, "must not resolve to its own install directory"
+
+
+def test_a_staged_component_keeps_its_own_resource_root(staged):
+    """Data is shared; the component's own files are not."""
+    assert paths.resource_root() == staged
+
+
+def test_the_environment_override_still_wins_over_the_marker(
+        staged, monkeypatch, tmp_path):
+    monkeypatch.setenv(paths.DATA_DIR_ENV, str(tmp_path / "chosen"))
+    assert paths.app_root() == tmp_path / "chosen"
+
+
 # ══ GUI and service converge ══════════════════════════════════════════════════
 
 _RESOLVE = textwrap.dedent(

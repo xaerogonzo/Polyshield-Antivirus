@@ -337,7 +337,7 @@ step, after a clean-machine run passes.
 | | Deliverable | Gate |
 |---|---|---|
 | 4b.1 | GUI exe, simplest working config | Starts; durable data lands outside the extraction directory |
-| 4b.2 | Service exe (no `tk-inter`) | **BLOCKED** — pywin32 does not survive the build; see below. Compiles and is Tk-free, but faults during interpreter start-up |
+| 4b.2 | Service, **source-mode** | Resolves the same canonical data root as the compiled GUI. Not compiled — pywin32 does not survive the build; see below |
 | 4b.3 | Scheduled-scan exe | Task runs (required — see `script_launch_argv`) |
 | 4b.4 | Optional engines, one at a time | Each individually verified, by detection and not by launch |
 | 4b.5 | Clean Windows Sandbox run | The full GUI / Service / clean-machine checklist |
@@ -422,7 +422,7 @@ Note that every `ui.core` import in the service is *inside a method*. A static
 analyser sees none of them, so `--include-package=ui.core` is not
 belt-and-braces: without it the service compiles cleanly and then cannot start.
 
-### 4b.2 is BLOCKED: pywin32 does not survive this Nuitka build
+### The service ships as source: pywin32 does not survive this Nuitka build
 
 The service executable **compiles** and is Tk-free, and then fails before it
 reaches its own first line. Two builds, differing only in whether Tk was
@@ -465,24 +465,35 @@ ever compiles:
   installed LocalService later.
 * a build-time guarantee that the service image contains no `tcl\` or `tk\`.
 
-**Options, when this is picked up again**, roughly in order of how much they
-disturb:
+**Resolution: option 1 — the service ships as source.** The distribution
+carries `polyshield_service.py`, `scheduled_scan.py` and the engine-side tree
+(`src/ui/core`, `src/tools`) beside the compiled GUI, run by a Python runtime
+staged next to them. `ui/views` is deliberately excluded and the build asserts
+its absence: the service must never need a display.
 
-1. Ship the service as a source-mode component — the distribution installs a
-   small Python runtime for it while the GUI stays compiled. Keeps pywin32 out
-   of the compiler entirely.
-2. Try a different packager for the service binary only.
-3. Reduce the service to a thin host that shells out, so the pywin32 surface
-   inside the compiled binary is as small as possible.
-4. Report upstream with a minimal reproducer and wait.
+The one thing this breaks, and how it is fixed, is worth being precise about.
+A source-mode service asks `is_frozen()`, gets `False`, and resolves
+`app_root()` to **the directory it was installed in** — while the compiled GUI
+two folders away resolves it to `%LOCALAPPDATA%\PolyShield`. A service writing
+detections somewhere the UI never looks is indistinguishable from a service that
+found nothing, which is exactly the failure this phase exists to prevent.
 
-Option 1 is the least clever and the most likely to work; the service already
-resolves its own paths through `ui.core.paths`, so a source-mode service and a
-compiled GUI would still agree on the data root — which is the property that
-mattered.
+So `app_root()` keys off `is_distribution()` rather than `is_frozen()`: a
+compiled build always qualifies, and a source component qualifies when a
+`.polyshield-distribution` marker sits beside it. Deliberately a **file** and
+not an environment variable — a Windows service inherits almost nothing from
+the installing user's environment, and a marker survives the service being
+started by the SCM at boot, from `services.msc`, or by a developer from a shell.
 
-**Note for whoever resumes**: `PolyShieldService.exe install` was never run.
-Nothing was registered with the SCM, so there is no machine state to unwind.
+Verified end to end: the staged service and the compiled build both report
+`%LOCALAPPDATA%\PolyShield`, while the service still reports `frozen: false`
+and keeps its own `resource_root`. Data is shared; a component's own files are
+not.
+
+**Runtime is not staged by the build.** Supply a Python with `pywin32`,
+`psutil` and `watchdog`; the project already keeps a portable one for the
+Windows Sandbox workflow (see docs/TESTING.md). Staging it is an installer
+concern rather than a compiler one.
 
 ### Engine matrix
 
@@ -605,9 +616,11 @@ resolves:
 
 1. `%POLYSHIELD_DATA_DIR%` if set — the seam for an installer, a portable
    launcher, or a deployment keeping data on another volume.
-2. Frozen: `%LOCALAPPDATA%\PolyShield`, writable in both portable and installed
-   layouts. **This is the line Phase 4b may revisit** if the distribution ships
-   as a folder; it is a one-line change here, which is the point.
+2. Any part of a distribution — compiled, or shipped-as-source beside a
+   compiled component (see *The service ships as source* above):
+   `%LOCALAPPDATA%\PolyShield`, writable in both portable and installed
+   layouts. Keyed off `is_distribution()`, not `is_frozen()`, because the
+   Windows service is a distribution component that is not compiled.
 3. Source checkout: the project root, unchanged.
 
 ### Classification

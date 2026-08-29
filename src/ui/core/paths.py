@@ -79,6 +79,10 @@ _FROZEN_OVERRIDE: bool | None = None
 #: touching code.
 DATA_DIR_ENV = "POLYSHIELD_DATA_DIR"
 
+#: Placed beside a component that ships INSIDE a distribution but runs from
+#: source.  See is_distribution().
+DISTRIBUTION_MARKER = ".polyshield-distribution"
+
 
 def is_frozen() -> bool:
     """True when running from a compiled build rather than a source checkout.
@@ -90,6 +94,35 @@ def is_frozen() -> bool:
     if _FROZEN_OVERRIDE is not None:
         return _FROZEN_OVERRIDE
     return bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
+
+
+def is_distribution() -> bool:
+    """True when this process is part of a shipped product, compiled or not.
+
+    A compiled build always is.  The reason this is not simply `is_frozen()` is
+    the Windows service: pywin32 does not survive the Nuitka build (see
+    docs/ARCHITECTURE.md), so the service ships as source beside a compiled
+    GUI.  It is therefore *not* frozen -- and if it asked `is_frozen()` where
+    its data lived it would answer "the directory I am installed in", while the
+    GUI two folders away answered the user's LocalAppData.
+
+    They must not disagree.  They read the same threat database, the same
+    settings file and the same quarantine; a service writing detections
+    somewhere the UI never looks is the whole failure this phase exists to
+    prevent, and it would look exactly like a service that found nothing.
+
+    A marker file beside the component is what says so.  Deliberately a file
+    rather than an environment variable: a Windows service inherits almost
+    nothing from the installing user's environment, and a marker survives the
+    service being started by the SCM at boot, from services.msc, or by a
+    developer from a shell.
+    """
+    if is_frozen():
+        return True
+    try:
+        return (_MODULE_ROOT / DISTRIBUTION_MARKER).exists()
+    except OSError:          # unreadable directory: assume a checkout
+        return False
 
 
 def resource_root() -> Path:
@@ -184,7 +217,8 @@ def app_root() -> Path:
 
       1. ``%POLYSHIELD_DATA_DIR%`` if set — the seam for an installer, a
          portable launcher, or a deployment that keeps data on another volume.
-      2. Frozen: ``%LOCALAPPDATA%\\PolyShield``, which is writable for the
+      2. Any part of a distribution -- compiled, or shipped-as-source beside a
+         compiled component (see is_distribution()) -- ``%LOCALAPPDATA%\\PolyShield``, which is writable for the
          running user in both a portable and an installed layout.
       3. Source checkout: the project root, unchanged from before.
 
@@ -196,7 +230,7 @@ def app_root() -> Path:
     if override:
         return Path(override).expanduser()
 
-    if is_frozen():
+    if is_distribution():
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
         if base:
             return Path(base) / "PolyShield"
