@@ -801,7 +801,9 @@ Key directories at a glance:
 - [x] **v1.15 — A failed intelligence update costs you nothing** (a feed that returns an error page, an empty response, or a corrupt archive is reported as a failure and leaves the existing database and its "last updated" time exactly as they were. Previously an empty MalwareBazaar response was reported to the Update Center as a database holding **0** hashes.)
 - [x] **v1.15 — The NSRL allow-list filter survives a failed rebuild** (`nsrl_bloom.bin` is published atomically. A crash or a full disk during the rebuild used to destroy the working ~150 MB filter, and the only way back was re-importing the multi-GB NSRL source file.)
 - [x] **v1.15 — C2 blocklist parsing fixes** (a port-less IPv6 indicator was truncated at its last colon and stored as an address that could never match; the Feodo export's uncommented column header was stored as an IP named `dst_ip`. Every feed record is now validated as a real address before it is written.)
-- [ ] Nuitka compiled build (Python → C++ for distribution) — see Roadmap
+- [x] **v1.15 — Nuitka compiled build** (`build.bat` produces `PolyShield.exe`: a 26 MB single file with no Python installation required. Verified on a clean Windows Sandbox with no Python, no developer environment variables and no source tree — 20 checks, all passing, including that settings written on one run are still there on the next.)
+- [x] **v1.15 — Your data lives outside the program** (the threat database, quarantine, logs and settings are kept under `%LOCALAPPDATA%\PolyShield` rather than beside the executable, so they survive an upgrade, and so the app works when installed somewhere only an administrator can write.)
+- [ ] Installer (stage the service runtime, register the service, Explorer context menu) — the build produces the pieces; assembling them into a setup program is the next step
 
 ---
 
