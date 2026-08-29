@@ -337,7 +337,7 @@ step, after a clean-machine run passes.
 | | Deliverable | Gate |
 |---|---|---|
 | 4b.1 | GUI exe, simplest working config | Starts; durable data lands outside the extraction directory |
-| 4b.2 | Service, **source-mode** | Resolves the same canonical data root as the compiled GUI. Not compiled — pywin32 does not survive the build; see below |
+| 4b.2 | Service, **source-mode** | Resolves the same canonical data root as the compiled GUI. Not compiled — only the GUI entry point survives the compiler; see below |
 | 4b.3 | Scheduled-scan exe | Task runs (required — see `script_launch_argv`) |
 | 4b.4 | Optional engines, one at a time | Each individually verified, by detection and not by launch |
 | 4b.5 | Clean Windows Sandbox run | The full GUI / Service / clean-machine checklist |
@@ -422,48 +422,58 @@ Note that every `ui.core` import in the service is *inside a method*. A static
 analyser sees none of them, so `--include-package=ui.core` is not
 belt-and-braces: without it the service compiles cleanly and then cannot start.
 
-### The service ships as source: pywin32 does not survive this Nuitka build
+### The service ships as source: only one entry point survives the compiler
 
-The service executable **compiles** and is Tk-free, and then fails before it
-reaches its own first line. Two builds, differing only in whether Tk was
-excluded, fail two different ways:
+**An earlier version of this section blamed pywin32. That was wrong**, and the
+correction is worth keeping because the wrong answer was the plausible one.
 
-| Build | Result |
-|---|---|
-| `--nofollow-import-to=tkinter,customtkinter,ui.views` | `ImportError: cannot import name 'MappingProxyType' from 'types'`, raised from `enum` → `re` → `ast` → `inspect` at startup |
-| the same build without those three flags | segmentation fault in the Nuitka runtime |
+The service links and then faults during interpreter start-up, before reaching
+its own first line, in one of two ways depending on flags:
 
-The bisect result is what matters: **the exclusion flags are not the cause.**
-Removing them changed the failure rather than fixing it. Both builds die during
-interpreter start-up, before `polyshield_service.py` executes.
+```
+ImportError: cannot import name 'MappingProxyType' from 'types'   (from enum, at start-up)
+Nuitka: A segmentation fault has occurred
+```
 
-What is different about this entry point, and nothing else in the build, is
-that it imports **pywin32** at module scope — `servicemanager`,
-`win32serviceutil`, `win32service`, `win32event`. The GUI (`src/ui/app.py`) and
-the path probe compile and run correctly with the same toolchain, the same
-Python and largely the same flags; neither touches pywin32.
+pywin32 at module scope was the obvious difference between the service and the
+GUI, so the first diagnosis stopped there. Then `tools/engine_probe.py` — which
+imports **no pywin32 at all** — failed identically. Six builds:
 
-Nuitka 4.2 ships no pywin32 plugin (`--plugin-list` lists only
-`multiprocessing`), so there is no supported configuration to reach for. The
-environment is Anaconda CPython 3.13.12 with Nuitka 4.2 and the zig C backend.
+| entry point | inclusion | result |
+|---|---|---|
+| `src/ui/app.py` (**inside** the package tree) | `--include-package=ui` | **works** |
+| `tools/build_probe.py` | `--include-module=ui.core.paths` | **works** |
+| `polyshield_service.py` | `--include-package=ui.core` | ImportError |
+| `polyshield_service.py` | `--include-package=ui.core`, no Tk exclusions | segfault |
+| `tools/engine_probe.py` | `--include-package=ui.core` | ImportError |
+| `tools/engine_probe.py` | `--include-package=ui` | segfault |
 
-**Deliberately not pursued here.** Going further means Nuitka internals and an
-upstream report, or changing how the service hosts itself, or a different
-packager — and none of those is a path-resolution question. Per the standing
-scope guard on this phase: stop and report rather than broaden.
+What actually correlates is the **entry point's location**, not its imports.
+The only script that compiles into a working binary is `src/ui/app.py`, which
+lives *inside* the `ui` package it pulls in. Entry points outside that tree —
+the repo root, `tools/` — fault whenever a whole package is included, and the
+one that works from `tools/` includes a single module rather than a package.
 
-What the attempt produced anyway, all of it independent of whether the service
-ever compiles:
+Environment: Anaconda CPython 3.13.12, Nuitka 4.2, zig C backend, `PYTHONPATH`
+set to `src` for the compile.
 
-* `paths.running_executable()`, which fixes a real defect shipped in 4a —
-  `sys.executable` names a file that does not exist in a compiled build.
-* the `resource_root()` off-by-one fix, likewise.
-* `paths.service_registration()`, the correct `_exe_name_` / `_exe_args_` shape
-  for a frozen service, which will be needed whenever the service does build.
-* `polyshield_service.py --paths`, which prints the service's own view of where
-  data lives. Useful in a checkout today and the only way to interrogate an
-  installed LocalService later.
-* a build-time guarantee that the service image contains no `tcl\` or `tk\`.
+**Not pursued further.** Narrowing this to a minimal reproducer for an upstream
+report is worth doing, and it is not a path-resolution question — which is what
+this phase is about. The scope guard says stop and report.
+
+**It does not block the product**, for two reasons. The GUI is the entry point
+that compiles, and the service was always going to ship as source once the
+first diagnosis landed — that decision stands on its own merits and its
+data-root convergence is verified either way. And the diagnostics that would
+otherwise have lived in `tools/` now live on the GUI entry point instead
+(`PolyShield.exe --paths`, `--engines`), which is the more honest place for
+them: they report what the *shipped product* resolved, not what a
+differently-built probe would have.
+
+`tools/engine_probe.py` remains as the source of the checks — `app.py` imports
+`CHECKS` from it — and runs directly from a checkout. It simply cannot be
+compiled into a standalone binary of its own.
+
 
 **Resolution: option 1 — the service ships as source.** The distribution
 carries `polyshield_service.py`, `scheduled_scan.py` and the engine-side tree
@@ -505,6 +515,47 @@ concern rather than a compiler one.
 | **ClamAV** | No — external install | No | `clamav_engine.is_available()` — `clamscan.exe` on disk | user-installed, `C:\Program Files\ClamAV` | Engine row reports unavailable |
 | **Speakeasy** | **No — see below** | No | import guard in `emulate_engine` | dev virtualenv only | Sandbox/Emulate view reports it is not installed |
 | **Sandboxie** | No — external install | No | `sandbox_engine` path probe | user-installed | Detonation button disabled |
+
+### Verified in the build (4b.4)
+
+`is_available()` is a claim, and for the subprocess engines it is a claim the
+engine cannot check for itself. So the shipped binary is asked directly, and
+anything claiming to be available is then asked to find something planted for
+it:
+
+```
+PolyShield.exe --engines
+```
+
+Results from `dist/app.dist/PolyShield.exe`:
+
+| Engine | Available | Detected | Detail |
+|---|---|---|---|
+| YARA | yes | **yes** | 1 rule file; a compiled rule matched a planted marker |
+| Guardian | no | — | no `guardianai` tree; it is a separately cloned repo |
+| K2 | no | — | not bundled, by decision (below) |
+| ClamAV | no | — | `clamscan.exe` not found |
+
+**YARA is the only detection engine inside the binary**, and it is verified by
+detection: the probe compiles a rule at runtime and matches it against a file
+planted with the marker. `--include-package=yara` is what puts it there.
+
+The other three report **honestly unavailable**, which is the half of the
+contract that matters for engines that do not ship. The gate fails only on the
+combination that must never ship — available, and then detecting nothing.
+
+ClamAV deserves a note, because it reports *available* from a checkout and
+*unavailable* from the build, and that difference is correct rather than a
+regression. `_find_exe()` consults the `clamav_path` setting first and then two
+standard install locations. The developer checkout has that setting pointing at
+a non-standard install; the build reads a fresh profile under
+`%LOCALAPPDATA%\PolyShield` that has no such key, and ClamAV is not at either
+standard path. A fresh install has not been configured yet, and says so.
+
+No EICAR anywhere in the probe: Defender quarantines it on write, which would
+fail the gate for a reason with nothing to do with the build. The planted
+samples are assembled from fragments at runtime, the same convention the test
+suite uses, so the probe is not itself a pattern match.
 
 ### Why K2 does not ship in the first build
 

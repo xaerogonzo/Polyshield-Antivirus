@@ -117,6 +117,10 @@ $guiArgs = $commonArgs + @(
     # tools/ is imported lazily by the Update Center; a static analyser cannot
     # see those imports, so they have to be named.
     "--include-package=tools",
+    # yara-python is a compiled wheel and the only detection engine that ships
+    # inside the binary. Verified by detection rather than by import: see the
+    # --engines gate below.
+    "--include-package=yara",
     # customtkinter ships its themes and fonts as package data. Without this the
     # app starts and renders with no theme at all.
     "--include-package-data=customtkinter",
@@ -227,6 +231,18 @@ if (Test-Path $probeExe) {
 
 $guiExe = Join-Path $DIST "app.dist\PolyShield.exe"
 if (Test-Path $guiExe) {
+    # Ask the shipped binary what it can actually detect. is_available() is a
+    # claim; for the subprocess engines it is a claim they cannot check. The
+    # gate fails only on the combination that must never ship -- an engine that
+    # says it is present and then finds nothing planted for it.
+    Write-Host ""
+    Write-Host "  Engines in the built binary:" -ForegroundColor Cyan
+    & $guiExe --engines
+    if ($LASTEXITCODE -ne 0) {
+        throw "Engine probe failed (exit $LASTEXITCODE) - an engine claims to be " +
+              "available and did not detect. The build must not ship."
+    }
+
     $mb = [math]::Round((Get-Item $guiExe).Length / 1MB, 1)
     Write-Host ""
     Write-Host "  $guiExe  ($mb MB)" -ForegroundColor Green
