@@ -311,6 +311,412 @@ service_client.block_ip(ip)
 
 ---
 
+## Packaging (v1.15, Phase 4b)
+
+The build is `build.ps1` (launched by `build.bat`), which is **tracked**: a
+release artifact that cannot be reproduced from the repository is not
+reproducible. Its output — `dist/` and Nuitka's `*.build` / `*.onefile-build`
+scratch directories — is ignored.
+
+Toolchain lives in `requirements-build.txt`, deliberately apart from both
+`requirements.txt` (nothing here is needed to *run* PolyShield) and
+`requirements-dev.txt` (CI runs tests and never builds; adding Nuitka there
+would cost every CI run a compiler download for nothing). It installs into
+`kicomav_env` rather than a build-only venv because Nuitka compiles what it can
+import — a separate environment would have to duplicate `requirements.txt` to
+see `customtkinter`, `watchdog` and the rest.
+
+### Milestones
+
+Correctness before optimization. Each milestone must produce a **runnable**
+artifact before the next packaging dimension is added; if a build breaks, stop
+at that milestone rather than changing several variables at once. Compression,
+UPX, onefile tuning, startup time and icon polish are all deferred to the last
+step, after a clean-machine run passes.
+
+| | Deliverable | Gate |
+|---|---|---|
+| 4b.1 | GUI exe, simplest working config | Starts; durable data lands outside the extraction directory |
+| 4b.2 | Service, **source-mode** | Resolves the same canonical data root as the compiled GUI. Not compiled — only the GUI entry point survives the compiler; see below |
+| 4b.3 | Scheduled-scan exe | Task runs (required — see `script_launch_argv`) |
+| 4b.4 | Optional engines, one at a time | Each individually verified, by detection and not by launch |
+| 4b.5 | Clean Windows Sandbox run | **20/20 pass** — see *Verified on a clean machine* |
+| 4b.6 | onefile + console mode | **20/20 on a clean machine**, onefile layout. 105 MB folder → 26 MB single file |
+
+**Failed milestones must be cleanly reversible.** A failed build must not
+become the base for the next attempt: rebuild `dist/` rather than building over
+it, treat staged files as disposable, and revert machine state before retrying.
+From 4b.2 on that matters concretely — a run that registers the Windows service
+and then fails elsewhere leaves the registration behind, and repeated attempts
+accumulate dirty service and context-menu state.
+`scripts/service/fix_service_crash.bat` and `shell_ext.unregister()` exist for
+this and belong in the retry path.
+
+### Three things a compiled build gets wrong that no test can catch (v1.15)
+
+All three were found by building and running, not by reasoning, and none of
+them is reachable from `tests/test_paths.py` — that file drives frozen
+behaviour by monkeypatching a predicate, which covers the *policy* while
+leaving the *environment* entirely unexamined. `tools/build_probe.py` exists
+for the environment half: it is compiled with the same flags as the entry
+points and exits non-zero when the build has resolved something wrongly.
+
+**1. `sys.executable` is not the executable.** A Nuitka standalone build
+reports a `python.exe` sitting beside the real binary, and **that file does not
+exist**:
+
+```
+sys.executable               <dist>/PolyShield.dist/python.exe    ABSENT
+sys.argv[0]                  <dist>/PolyShield.dist/PolyShield.exe
+__compiled__.original_argv0  <dist>/PolyShield.dist/PolyShield.exe
+__compiled__.containing_dir  <dist>                    (one level up)
+```
+
+Anything written into the registry or the SCM from `sys.executable` — the
+Explorer context-menu verb, the elevated relaunch, the service image path —
+points Windows at nothing, and does it silently. `paths.running_executable()`
+is the answer, preferring `original_argv0` because onefile re-executes the
+extracted binary: `argv[0]` is then the temporary copy, while `original_argv0`
+stays the exe the user actually launched.
+
+**2. The module tree is one level shallower.** A checkout is
+`src/ui/core/paths.py`, so the project root is `parents[3]`. A build has no
+`src/` level, so the same expression walks one *past* the directory the bundled
+data is in. `resource_root()` therefore uses `parents[2]` when frozen — derived
+from `__file__` rather than from `sys.executable`, which merely happens to
+yield the right directory while resting on a path to nothing, and which would
+be wrong for onefile besides.
+
+**3. Every `mkdir` assumed its parent existed.** True in a checkout, which
+always has a project root; false on a distribution's first run, where
+`%LOCALAPPDATA%\PolyShield` does not exist yet. `scanner.py`'s module-level
+`LOGS_DIR.mkdir(exist_ok=True)` raised `WinError 3` at import and took the app
+down before the first window was drawn.
+
+### The service is a second, separate resolver
+
+In a build the service and the UI are two executables that each resolve the
+data root independently, and they *must* agree — they read the same threat
+database, settings file and quarantine. The service is also the harder one to
+inspect: it runs as LocalService, with a different environment from the
+interactive user, and once installed there is no other way to ask it what it
+concluded.
+
+So `polyshield_service.py --paths` prints its resolution as JSON. It is the
+gate for the packaged service build, and the first thing worth running when an
+installed service misbehaves.
+
+`_exe_name_` / `_exe_args_` come from `paths.service_registration()`: the
+interpreter plus the script in a checkout, and the executable with **no**
+arguments in a build, where the exe *is* the service and its no-argument branch
+reaches the SCM dispatcher.
+
+The build refuses to ship a service image containing `tcl\` or `tk\`. `ui.core`
+is Tk-free today and the service imports nothing else, but a service that
+acquires a display dependency fails on a session-0 desktop for reasons its own
+logs will not explain — so it is enforced at build time rather than left as a
+property someone has to keep remembering. It also keeps roughly 900 Tcl/Tk data
+files out of the image.
+
+Note that every `ui.core` import in the service is *inside a method*. A static
+analyser sees none of them, so `--include-package=ui.core` is not
+belt-and-braces: without it the service compiles cleanly and then cannot start.
+
+### The service ships as source: only one entry point survives the compiler
+
+**An earlier version of this section blamed pywin32. That was wrong**, and the
+correction is worth keeping because the wrong answer was the plausible one.
+
+The service links and then faults during interpreter start-up, before reaching
+its own first line, in one of two ways depending on flags:
+
+```
+ImportError: cannot import name 'MappingProxyType' from 'types'   (from enum, at start-up)
+Nuitka: A segmentation fault has occurred
+```
+
+pywin32 at module scope was the obvious difference between the service and the
+GUI, so the first diagnosis stopped there. Then `tools/engine_probe.py` — which
+imports **no pywin32 at all** — failed identically. Six builds:
+
+| entry point | inclusion | result |
+|---|---|---|
+| `src/ui/app.py` (**inside** the package tree) | `--include-package=ui` | **works** |
+| `tools/build_probe.py` | `--include-module=ui.core.paths` | **works** |
+| `polyshield_service.py` | `--include-package=ui.core` | ImportError |
+| `polyshield_service.py` | `--include-package=ui.core`, no Tk exclusions | segfault |
+| `tools/engine_probe.py` | `--include-package=ui.core` | ImportError |
+| `tools/engine_probe.py` | `--include-package=ui` | segfault |
+
+What actually correlates is the **entry point's location**, not its imports.
+The only script that compiles into a working binary is `src/ui/app.py`, which
+lives *inside* the `ui` package it pulls in. Entry points outside that tree —
+the repo root, `tools/` — fault whenever a whole package is included, and the
+one that works from `tools/` includes a single module rather than a package.
+
+Environment: Anaconda CPython 3.13.12, Nuitka 4.2, zig C backend, `PYTHONPATH`
+set to `src` for the compile.
+
+**Not pursued further.** Narrowing this to a minimal reproducer for an upstream
+report is worth doing, and it is not a path-resolution question — which is what
+this phase is about. The scope guard says stop and report.
+
+**It does not block the product**, for two reasons. The GUI is the entry point
+that compiles, and the service was always going to ship as source once the
+first diagnosis landed — that decision stands on its own merits and its
+data-root convergence is verified either way. And the diagnostics that would
+otherwise have lived in `tools/` now live on the GUI entry point instead
+(`PolyShield.exe --paths`, `--engines`), which is the more honest place for
+them: they report what the *shipped product* resolved, not what a
+differently-built probe would have.
+
+`tools/engine_probe.py` remains as the source of the checks — `app.py` imports
+`CHECKS` from it — and runs directly from a checkout. It simply cannot be
+compiled into a standalone binary of its own.
+
+
+**Resolution: option 1 — the service ships as source.** The distribution
+carries `polyshield_service.py`, `scheduled_scan.py` and the engine-side tree
+(`src/ui/core`, `src/tools`) beside the compiled GUI, run by a Python runtime
+staged next to them. `ui/views` is deliberately excluded and the build asserts
+its absence: the service must never need a display.
+
+The one thing this breaks, and how it is fixed, is worth being precise about.
+A source-mode service asks `is_frozen()`, gets `False`, and resolves
+`app_root()` to **the directory it was installed in** — while the compiled GUI
+two folders away resolves it to `%LOCALAPPDATA%\PolyShield`. A service writing
+detections somewhere the UI never looks is indistinguishable from a service that
+found nothing, which is exactly the failure this phase exists to prevent.
+
+So `app_root()` keys off `is_distribution()` rather than `is_frozen()`: a
+compiled build always qualifies, and a source component qualifies when a
+`.polyshield-distribution` marker sits beside it. Deliberately a **file** and
+not an environment variable — a Windows service inherits almost nothing from
+the installing user's environment, and a marker survives the service being
+started by the SCM at boot, from `services.msc`, or by a developer from a shell.
+
+Verified end to end: the staged service and the compiled build both report
+`%LOCALAPPDATA%\PolyShield`, while the service still reports `frozen: false`
+and keeps its own `resource_root`. Data is shared; a component's own files are
+not.
+
+**Runtime is not staged by the build.** Supply a Python with `pywin32`,
+`psutil` and `watchdog`; the project already keeps a portable one for the
+Windows Sandbox workflow (see docs/TESTING.md). Staging it is an installer
+concern rather than a compiler one.
+
+### Verified on a clean machine (4b.5)
+
+`tools/make_sandbox_wsb.py` generates a Windows Sandbox config that maps the
+built `dist/` read-only, maps **no Python**, and runs `tools/sandbox_verify.ps1`
+unattended. Results land in the one writable mapping, because everything else
+in a sandbox is discarded when it closes.
+
+That is a different thing from `PolyShield_Sandbox.wsb`, which is a
+*development* sandbox: it maps the source tree, a portable Python and a pip
+cache so a person can work in there. For a release check those are exactly the
+four things that must be absent.
+
+The script asserts the machine is clean before it asserts anything else — no
+Python on PATH, no `PYTHONPATH` / `POLYSHIELD_DATA_DIR` / `VIRTUAL_ENV`, no
+pre-existing `%LOCALAPPDATA%\PolyShield`. Without that, every later result is
+ambiguous: the binary might be finding a developer's interpreter.
+
+**20 checks, 20 passed.** The ones worth naming:
+
+* the binary reports itself frozen, and its data root is **not** inside the build
+* `config/ intelligence/ logs/ quarantine/` are created on first run
+* a sentinel written into `ui_settings.json` **survives a restart** — which is
+  what proves the second launch read the durable location rather than
+  recreating it; checking that a directory exists on the second run proves
+  nothing
+* nothing durable was written into the build tree
+* **the source-mode service and the compiled GUI resolve the same data root**,
+  on a machine where neither had ever run
+
+`rules/` is deliberately *not* asserted. It is created when rules are
+downloaded, not at start-up, so a fresh install legitimately has none — and
+`yara_engine.is_available()` reports False for exactly that reason ("0 rule
+file(s)"), which is the honest answer rather than a missing directory. An
+earlier version of the script asserted it and failed, because the developer
+checkout it was written against already had one. On a clean machine all four
+engines report honestly unavailable.
+
+The service half needs a runtime staged beside it (`build.ps1 -Runtime <dir>`,
+with a Python carrying pywin32, psutil and watchdog). The build verifies the
+staged runtime can import all three rather than trusting the copy — a runtime
+missing pywin32 stages silently and then fails when the SCM starts the service,
+which is the worst place to find out.
+
+**Not covered here:** installing the service with the SCM. It needs elevation
+and registers an auto-start service, so it is a deliberate manual step; the
+sandbox is the right place to do it, being disposable.
+
+### One variable at a time (4b.6)
+
+Two changes, built and verified separately, because only one of them is
+cosmetic.
+
+**`--onefile` is not a size flag.** It changes runtime behaviour: the modules
+are unpacked into a temporary directory that is **different on every run** and
+deleted on exit. That is the case `resource_root()` was designed for and had
+never actually met. Measured, from the shipped binary:
+
+```
+executable     D:\...\dist\PolyShield.exe                 <- the original, not the temp copy
+resource_root  C:\Users\...\Temp\onefile_19912_..._FFX5Pi <- the extraction directory
+app_root       C:\Users\...\AppData\Local\PolyShield      <- durable, outside it
+```
+
+Both of the non-obvious choices in `paths.py` earned their keep here:
+
+* `running_executable()` prefers `__compiled__.original_argv0`, so the binary
+  reports the file the user launched rather than the temporary copy that
+  onefile re-executes. `sys.argv[0]` would have named the temp copy.
+* `resource_root()` derives from the module tree, not from the executable's
+  location. `Path(sys.executable).parent` would have returned `dist\` — beside
+  the launcher, nowhere near the extracted data.
+
+The clean-machine run was repeated against the onefile layout and passed
+**20/20**, including the sentinel round-trip. That check matters more here than
+it did for standalone: the extraction directory differs between the two
+launches, so a settings value surviving proves the durable root is genuinely
+independent of wherever the code happened to be unpacked.
+
+**`--windows-console-mode=attach`, not `disable`.** `disable` would take stdout
+with it, and this binary is also its own diagnostic tool — a support
+conversation starts with `PolyShield.exe --paths` or `--engines`. `attach` gives
+no console window when double-clicked and full output when run from a shell.
+
+Size: **26 MB single file**, against a 47 MB executable inside a 105 MB folder.
+
+**UPX is deliberately not used.** Packing an antivirus binary is a textbook
+heuristic trigger — the product would spend its life being quarantined by the
+competition, and by Defender on the build machine before it ever shipped. The
+compression onefile already applies through `zstandard` is not a packer and
+carries no such signature.
+
+**No icon ships.** `build.ps1` picks up an `icon.ico` beside it automatically
+and omits the flag when there is none, so adding branding later needs no code
+change.
+
+### Engine matrix
+
+| Engine | Ships? | Mandatory | Detected in a frozen build by | Lives where | UI when unavailable |
+|---|---|---|---|---|---|
+| **K2 (kicomav)** | **No — deferred to 4b.4, see below** | No (optional since v1.6.1) | `scanner.is_available()` — `paths.k2_exe().exists()` | dev virtualenv only | Engine row reports unavailable; pipeline runs without it |
+| **Guardian AI** | No — separately cloned repo | No | `guardian_engine.is_available()` | `guardianai/`, cloned by `scripts/components/setup_guardian.bat` | Guardian view offers the setup script |
+| **YARA** | Yes — `yara-python` is a wheel | No | `yara_engine.is_available()` (runtime present *and* rule files exist) | compiled in; rules under `rules/` (DATA) | Engine reports no rules rather than clean |
+| **ClamAV** | No — external install | No | `clamav_engine.is_available()` — `clamscan.exe` on disk | user-installed, `C:\Program Files\ClamAV` | Engine row reports unavailable |
+| **Speakeasy** | **No — see below** | No | import guard in `emulate_engine` | dev virtualenv only | Sandbox/Emulate view reports it is not installed |
+| **Sandboxie** | No — external install | No | `sandbox_engine` path probe | user-installed | Detonation button disabled |
+
+### Verified in the build (4b.4)
+
+`is_available()` is a claim, and for the subprocess engines it is a claim the
+engine cannot check for itself. So the shipped binary is asked directly, and
+anything claiming to be available is then asked to find something planted for
+it:
+
+```
+PolyShield.exe --engines
+```
+
+Results from `dist/app.dist/PolyShield.exe`:
+
+| Engine | Available | Detected | Detail |
+|---|---|---|---|
+| YARA | yes | **yes** | 1 rule file; a compiled rule matched a planted marker |
+| Guardian | no | — | no `guardianai` tree; it is a separately cloned repo |
+| K2 | no | — | not bundled, by decision (below) |
+| ClamAV | no | — | `clamscan.exe` not found |
+
+**YARA is the only detection engine inside the binary**, and it is verified by
+detection: the probe compiles a rule at runtime and matches it against a file
+planted with the marker. `--include-package=yara` is what puts it there.
+
+The other three report **honestly unavailable**, which is the half of the
+contract that matters for engines that do not ship. The gate fails only on the
+combination that must never ship — available, and then detecting nothing.
+
+ClamAV deserves a note, because it reports *available* from a checkout and
+*unavailable* from the build, and that difference is correct rather than a
+regression. `_find_exe()` consults the `clamav_path` setting first and then two
+standard install locations. The developer checkout has that setting pointing at
+a non-standard install; the build reads a fresh profile under
+`%LOCALAPPDATA%\PolyShield` that has no such key, and ClamAV is not at either
+standard path. A fresh install has not been configured yet, and says so.
+
+No EICAR anywhere in the probe: Defender quarantines it on write, which would
+fail the gate for a reason with nothing to do with the build. The planted
+samples are assembled from fragments at runtime, the same convention the test
+suite uses, so the probe is not itself a pattern match.
+
+### Why K2 does not ship in the first build
+
+`k2.exe` is **not a standalone binary.** It is a 108 KB setuptools console-script
+stub whose entire payload is:
+
+```python
+from kicomav.k2 import main
+sys.exit(main())
+```
+
+It resolves the interpreter from a path baked into its header, so copying it
+into a distribution accomplishes nothing. That rules out "bundle the exe" —
+there is no exe to bundle.
+
+The real obstacle is one layer down. `k2.py` locates its engines by filesystem
+path (`os.path.join(k2_pwd, "plugins")`) and `k2engine.set_plugins()` loads each
+of the 50 of them with
+
+```python
+SourceFileLoader(f"kicomav.plugins.{name}", plugin_path).load_module()
+```
+
+— that is, from **`.py` source files on disk**, listed in `plugins/kicom.lst`.
+Nuitka compiles Python modules into the binary; it does not leave them on disk
+for a runtime source loader. Shipping `plugins/` as data files alongside a
+compiled `kicomav` is *possible*, but each plugin then imports from the
+compiled `kicomav.kavcore`, which is precisely where mixed compiled/interpreted
+imports get fragile.
+
+What makes this worth deferring rather than attempting inside 4b.1 is the
+failure mode. `set_plugins()` swallows every per-plugin load error:
+
+```python
+except (IOError, ImportError, Exception):
+    ...
+    pass
+```
+
+So a build where the plugins fail to load produces a K2 that starts, exits
+zero, reports no threats, and is indistinguishable from a clean scan. **"The
+exe launches" proves nothing here**; only an EICAR detection through the
+packaged binary does.
+
+The decision, therefore: the first distribution **ships without K2**.
+`scanner.is_available()` has returned False for a missing K2 since v1.6.1 and
+the pipeline already runs without it, so the app degrades honestly rather than
+silently. Bundling it is a 4b.4 experiment gated on an EICAR detection test
+through the packaged build — and if the plugin loader cannot be made reliable,
+K2 stays out and the UI says so.
+
+### Why Speakeasy does not ship
+
+`speakeasy-emulator` pins `unicorn==1.0.2`, which imports `distutils.sysconfig`
+and `pkg_resources` at module scope and locates its native libraries through
+`pkg_resources.resource_filename()`. Both were removed from the standard library
+in Python 3.12+, which is why `requirements.txt` carries a two-sided
+`setuptools>=78.1.1,<82` pin whose upper bound exists solely because setuptools
+82 removed `pkg_resources`.
+
+A resource-filename lookup against a compiled package is the same class of
+problem as K2's plugin loader, on top of a GPL-2.0 dependency in an MIT
+application. `emulate_engine` already treats the import as optional and
+`test_emulate_report.py` covers the half that matters — the report parser —
+without an emulator. Speakeasy stays a source-checkout feature.
+
 ## Path Resolution (v1.15)
 
 `src/ui/core/paths.py` is the only module that decides where anything lives.
@@ -356,9 +762,11 @@ resolves:
 
 1. `%POLYSHIELD_DATA_DIR%` if set — the seam for an installer, a portable
    launcher, or a deployment keeping data on another volume.
-2. Frozen: `%LOCALAPPDATA%\PolyShield`, writable in both portable and installed
-   layouts. **This is the line Phase 4b may revisit** if the distribution ships
-   as a folder; it is a one-line change here, which is the point.
+2. Any part of a distribution — compiled, or shipped-as-source beside a
+   compiled component (see *The service ships as source* above):
+   `%LOCALAPPDATA%\PolyShield`, writable in both portable and installed
+   layouts. Keyed off `is_distribution()`, not `is_frozen()`, because the
+   Windows service is a distribution component that is not compiled.
 3. Source checkout: the project root, unchanged.
 
 ### Classification

@@ -102,6 +102,66 @@ def test_a_frozen_build_keeps_data_out_of_the_extraction_directory(
         assert resource not in named.parents, f"{named} is under the extraction dir"
 
 
+def test_frozen_resources_come_from_one_level_shallower(frozen):
+    """A build has no src/ level, so the module tree is one directory shallower.
+
+    A checkout is src/ui/core/paths.py -> parents[3] is the project root. A
+    build is <dist>/PolyShield.dist/ui/core/paths.py, so the same expression
+    walks one past the directory the bundled data is in: Nuitka put it in
+    PolyShield.dist while parents[3] gave <dist>, and every RESOURCE lookup
+    (scripts/, launch_ui.vbs, app.py) would have resolved somewhere that does
+    not contain them.
+
+    Found by tools/build_probe.py against a real build, because the layout that
+    exposes it exists nowhere else. This pins the rule; the probe proves it.
+    """
+    assert paths.resource_root() == ROOT / "src"
+    assert paths.resource_root() != ROOT
+
+
+def test_running_executable_is_not_sys_executable_when_frozen(frozen, monkeypatch):
+    """sys.executable is the obvious source and the wrong one.
+
+    A Nuitka standalone build reports a python.exe beside the real binary that
+    DOES NOT EXIST. Registering it in the Explorer context menu, or as a
+    service image path, points Windows at nothing -- silently.
+    """
+    monkeypatch.setattr(sys, "executable", r"C:\nope\python.exe")
+    monkeypatch.setattr(sys, "argv", [r"C:\app\PolyShield.exe", "--scan"])
+
+    assert paths.running_executable() == pathlib.Path(r"C:\app\PolyShield.exe")
+    assert "python.exe" not in str(paths.running_executable())
+
+
+def test_the_launcher_uses_the_real_binary_when_frozen(frozen, monkeypatch):
+    monkeypatch.setattr(sys, "executable", r"C:\nope\python.exe")
+    monkeypatch.setattr(sys, "argv", [r"C:\app\PolyShield.exe"])
+
+    argv = paths.app_launch_argv("--scan", r"C:\x.exe")
+    assert argv == [r"C:\app\PolyShield.exe", "--scan", r"C:\x.exe"]
+
+
+def test_the_service_registers_itself_as_its_own_image_when_frozen(
+        frozen, monkeypatch):
+    """The exe IS the service; its no-argument branch reaches the dispatcher."""
+    monkeypatch.setattr(sys, "argv", [r"C:\app\PolyShieldService.exe"])
+
+    exe, args = paths.service_registration()
+    assert exe == r"C:\app\PolyShieldService.exe"
+    assert args == "", "a frozen service takes no script argument"
+
+
+def test_the_service_registers_interpreter_plus_script_from_source(source):
+    exe, args = paths.service_registration()
+    assert exe.endswith("python.exe")
+    assert args.strip('"').endswith("polyshield_service.py")
+
+
+def test_source_resources_still_come_from_the_checkout(source):
+    """The frozen branch must not change where a checkout looks."""
+    assert paths.resource_root() == ROOT
+
+
 def test_a_frozen_build_writes_under_the_user_profile(frozen, monkeypatch, tmp_path):
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
     assert paths.app_root() == tmp_path / "Local" / "PolyShield"
@@ -145,6 +205,68 @@ def test_the_environment_override_wins_in_either_mode(monkeypatch, tmp_path, mod
 def test_a_blank_override_is_ignored(source, monkeypatch):
     monkeypatch.setenv(paths.DATA_DIR_ENV, "   ")
     assert paths.app_root() == ROOT
+
+
+# ══ Shipped as source, but still part of a distribution ══════════════════════
+
+@pytest.fixture
+def staged(monkeypatch, tmp_path):
+    """A source-mode component staged inside a distribution.
+
+    That is the shape the Windows service actually ships in: pywin32 does not
+    survive the Nuitka build, so the service runs from source beside a compiled
+    GUI (docs/ARCHITECTURE.md, "4b.2 is BLOCKED").
+    """
+    monkeypatch.setattr(paths, "_FROZEN_OVERRIDE", False)
+    monkeypatch.setattr(paths, "_MODULE_ROOT", tmp_path)
+    (tmp_path / paths.DISTRIBUTION_MARKER).write_text("staged", encoding="utf-8")
+    return tmp_path
+
+
+def test_a_checkout_is_not_a_distribution(source):
+    assert paths.is_distribution() is False
+    assert paths.app_root() == ROOT
+
+
+def test_a_frozen_build_is_always_a_distribution(frozen):
+    assert paths.is_distribution() is True
+
+
+def test_a_marker_makes_a_source_tree_a_distribution(staged):
+    assert paths.is_frozen() is False, "the service is genuinely not compiled"
+    assert paths.is_distribution() is True
+
+
+def test_a_staged_service_and_a_frozen_gui_agree_on_the_data_root(
+        staged, monkeypatch, tmp_path):
+    """The reason the marker exists at all.
+
+    Without it the service asks is_frozen(), gets False, and resolves app_root()
+    to the directory it was installed in -- while the compiled GUI two folders
+    away resolves it to %LOCALAPPDATA%\PolyShield. A service writing detections
+    somewhere the UI never looks is indistinguishable from a service that found
+    nothing.
+    """
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+
+    staged_root = paths.app_root()
+
+    monkeypatch.setattr(paths, "_FROZEN_OVERRIDE", True)
+    frozen_root = paths.app_root()
+
+    assert staged_root == frozen_root == tmp_path / "Local" / "PolyShield"
+    assert staged_root != staged, "must not resolve to its own install directory"
+
+
+def test_a_staged_component_keeps_its_own_resource_root(staged):
+    """Data is shared; the component's own files are not."""
+    assert paths.resource_root() == staged
+
+
+def test_the_environment_override_still_wins_over_the_marker(
+        staged, monkeypatch, tmp_path):
+    monkeypatch.setenv(paths.DATA_DIR_ENV, str(tmp_path / "chosen"))
+    assert paths.app_root() == tmp_path / "chosen"
 
 
 # ══ GUI and service converge ══════════════════════════════════════════════════
@@ -232,12 +354,13 @@ def test_the_source_launcher_runs_app_py_under_pythonw(source):
     assert argv[2:] == ["--scan", r"C:\x.exe"]
 
 
-def test_a_frozen_build_launches_itself(frozen):
+def test_a_frozen_build_launches_itself(frozen, monkeypatch):
     """There is no interpreter and no app.py; the executable *is* the GUI."""
+    monkeypatch.setattr(sys, "argv", [r"C:\app\PolyShield.exe"])
+
     argv = paths.app_launch_argv("--scan", r"C:\x.exe")
 
-    assert argv == [str(pathlib.Path(sys.executable).resolve()),
-                    "--scan", r"C:\x.exe"]
+    assert argv == [r"C:\app\PolyShield.exe", "--scan", r"C:\x.exe"]
     assert not any(a.endswith(".py") for a in argv)
 
 

@@ -20,8 +20,12 @@ def is_available() -> bool:
     """True if the bundled k2.exe is present. K2 is optional in v1.6.1+."""
     return Path(K2_EXE).exists()
 
-LOGS_DIR.mkdir(exist_ok=True)
-QUARANTINE_DIR.mkdir(exist_ok=True)
+# parents=True because on the first run of a distribution the data root
+# itself does not exist yet; a checkout always had one. Without it this
+# raises WinError 3 at import and takes the whole app down before the
+# first window is drawn.
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+QUARANTINE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _short_path(path: Path | str) -> str:
@@ -428,7 +432,7 @@ def get_update_cfg_info() -> dict:
 
 def _write_quarantine_meta(scanned_paths: list[str], timestamp: str):
     meta_dir = QUARANTINE_DIR / f".meta_{timestamp}"
-    meta_dir.mkdir(exist_ok=True)
+    meta_dir.mkdir(parents=True, exist_ok=True)
     meta = {
         "scan_timestamp": timestamp,
         "original_paths": scanned_paths,

@@ -1,0 +1,24 @@
+# Build toolchain for producing the distributable executables.
+#
+#   kicomav_env\Scripts\pip.exe install -r requirements-build.txt
+#   build.bat            (or: powershell -File build.ps1)
+#
+# Deliberately separate from requirements.txt: nothing here is needed to RUN
+# PolyShield, and a user installing the app should not pull a C toolchain.
+# Deliberately separate from requirements-dev.txt too, because CI runs the test
+# suite and never builds -- adding Nuitka there would cost every CI run a
+# compiler download for nothing.
+#
+# Nuitka must be installed into the SAME environment as the application's
+# runtime dependencies: it compiles what it can import, so a separate build
+# venv would have to duplicate requirements.txt to see customtkinter, watchdog
+# and the rest.
+
+nuitka>=2.0
+
+# ordered-set   — Nuitka uses it for deterministic module ordering; without it
+#                 Nuitka warns and falls back to a slower pure-Python path.
+# zstandard     — onefile payload compression. Without it Nuitka still builds,
+#                 but the payload ships uncompressed (~27% larger here).
+ordered-set>=4.1
+zstandard>=0.22

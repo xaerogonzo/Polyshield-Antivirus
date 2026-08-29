@@ -602,6 +602,49 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
 
 def main():
     # ── Single-instance guard ──────────────────────────────────────────────────
+    # Diagnostics, before the single-instance lock: these answer and exit, and
+    # taking the lock would make them fail whenever the app is already open.
+    #
+    # They live on the GUI entry point rather than in tools/ because this is
+    # the only entry point that survives the Nuitka build -- a standalone probe
+    # compiled from tools/ faults during interpreter start-up (see
+    # docs/ARCHITECTURE.md). Asking the shipped binary about itself is also the
+    # more honest question: it reports what the *product* resolved, not what a
+    # differently-built probe would have.
+    if "--paths" in sys.argv[1:] or "--engines" in sys.argv[1:]:
+        import json
+
+        from ui.core import paths as _paths
+
+        out = {
+            "frozen":        _paths.is_frozen(),
+            "distribution":  _paths.is_distribution(),
+            "executable":    str(_paths.running_executable()),
+            "app_root":      str(_paths.app_root()),
+            "resource_root": str(_paths.resource_root()),
+        }
+        if "--engines" in sys.argv[1:]:
+            from tools.engine_probe import CHECKS
+
+            out["engines"] = {}
+            for _name, _fn in CHECKS.items():
+                try:
+                    out["engines"][_name] = _fn()
+                except Exception as _exc:      # one engine must not hide the rest
+                    out["engines"][_name] = {
+                        "available": None, "detected": None,
+                        "detail": f"probe raised: {_exc!r}"}
+        print(json.dumps(out, indent=2))
+        # An engine that claims to be present and then detects nothing is the
+        # one combination that must never ship.
+        _liars = [n for n, r in out.get("engines", {}).items()
+                  if r.get("available") and r.get("detected") is False]
+        if _liars:
+            print("FAIL: available but did not detect: " + ", ".join(_liars),
+                  file=sys.stderr)
+            sys.exit(1)
+        sys.exit(0)
+
     # If another PolyShield window is already running, focus it and exit immediately.
     if not _acquire_instance_lock():
         sys.exit(0)

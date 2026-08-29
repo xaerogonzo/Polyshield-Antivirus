@@ -79,6 +79,10 @@ _FROZEN_OVERRIDE: bool | None = None
 #: touching code.
 DATA_DIR_ENV = "POLYSHIELD_DATA_DIR"
 
+#: Placed beside a component that ships INSIDE a distribution but runs from
+#: source.  See is_distribution().
+DISTRIBUTION_MARKER = ".polyshield-distribution"
+
 
 def is_frozen() -> bool:
     """True when running from a compiled build rather than a source checkout.
@@ -92,14 +96,111 @@ def is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False)) or "__compiled__" in globals()
 
 
+def is_distribution() -> bool:
+    """True when this process is part of a shipped product, compiled or not.
+
+    A compiled build always is.  The reason this is not simply `is_frozen()` is
+    the Windows service: pywin32 does not survive the Nuitka build (see
+    docs/ARCHITECTURE.md), so the service ships as source beside a compiled
+    GUI.  It is therefore *not* frozen -- and if it asked `is_frozen()` where
+    its data lived it would answer "the directory I am installed in", while the
+    GUI two folders away answered the user's LocalAppData.
+
+    They must not disagree.  They read the same threat database, the same
+    settings file and the same quarantine; a service writing detections
+    somewhere the UI never looks is the whole failure this phase exists to
+    prevent, and it would look exactly like a service that found nothing.
+
+    A marker file beside the component is what says so.  Deliberately a file
+    rather than an environment variable: a Windows service inherits almost
+    nothing from the installing user's environment, and a marker survives the
+    service being started by the SCM at boot, from services.msc, or by a
+    developer from a shell.
+    """
+    if is_frozen():
+        return True
+    try:
+        return (_MODULE_ROOT / DISTRIBUTION_MARKER).exists()
+    except OSError:          # unreadable directory: assume a checkout
+        return False
+
+
 def resource_root() -> Path:
     """Directory holding files that ship with the program.
 
     Read-only, and disposable: under a onefile build this is the temporary
     extraction directory, so anything written here is gone when the process
     exits.  Never put durable state under it.
+
+    Derived from sys.executable when frozen, NOT from this module's __file__.
+    The module path is one level too deep in a compiled build and produces a
+    root one level too high: a checkout has `src/ui/core/paths.py`, so the
+    project root is `parents[3]` -- but a build has no `src/` level, so the
+    same expression walks past the directory the resources are actually in.
+
+    Measured, not reasoned about.  A standalone build lays the module tree out
+    at <dist>/PolyShield.dist/ui/core/paths.py, so:
+
+        parents[3]   <dist>                    <- one too high, no src/ level
+        parents[2]   <dist>/PolyShield.dist    <- where the data actually is
+
+    Derived from __file__ rather than from sys.executable, which looks like the
+    obvious source and is not: Nuitka reports <dist>/PolyShield.dist/python.exe
+    there, and that file DOES NOT EXIST (measured -- see running_executable()).
+    Its parent happens to be the right directory, so a sys.executable version
+    works by luck while resting on a path to nothing.
+
+    Using the module tree also survives onefile, where the extracted modules
+    and their data land together in a temporary directory that sys.argv[0]
+    knows nothing about.
+
+    tools/build_probe.py is what caught the original off-by-one: no unit test
+    can, because the discrepancy is in a __file__ layout that exists only
+    inside a real compiled build.
     """
+    if is_frozen():
+        # A build has no src/ level, so the module tree is one shallower.
+        return Path(__file__).resolve().parents[2]
     return _MODULE_ROOT
+
+
+def running_executable() -> Path:
+    """The binary the user actually launched.
+
+    Emphatically **not** `sys.executable`.  In a Nuitka standalone build that
+    reports a `python.exe` sitting beside the real binary, and that file does
+    not exist -- measured, not assumed:
+
+        sys.executable              <dist>/PolyShield.dist/python.exe   absent
+        sys.argv[0]                 <dist>/PolyShield.dist/PolyShield.exe
+        __compiled__.original_argv0 <dist>/PolyShield.dist/PolyShield.exe
+
+    Registering `sys.executable` in the Explorer context menu, or as a Windows
+    service image path, points the OS at nothing -- and does it silently, which
+    is the failure class this whole phase exists to remove.
+
+    `original_argv0` is preferred over `sys.argv[0]` because onefile re-executes
+    the extracted binary: argv[0] is then the temporary copy, while
+    original_argv0 stays the exe the user actually double-clicked, which is the
+    one worth writing into the registry.
+    """
+    if is_frozen():
+        compiled = globals().get("__compiled__", None)
+        original = getattr(compiled, "original_argv0", None)
+        return Path(original or sys.argv[0]).resolve()
+    return Path(sys.executable).resolve()
+
+
+def service_registration() -> tuple[str, str]:
+    """`(_exe_name_, _exe_args_)` for the Windows service registration.
+
+    Source checkout: the interpreter, plus the script as its argument.
+    Frozen: the executable itself with no arguments -- the exe *is* the
+    service, and its no-argument branch hands control to the SCM dispatcher.
+    """
+    if is_frozen():
+        return str(running_executable()), ""
+    return sys.executable, f'"{resource_root() / "polyshield_service.py"}"'
 
 
 def app_root() -> Path:
@@ -116,7 +217,8 @@ def app_root() -> Path:
 
       1. ``%POLYSHIELD_DATA_DIR%`` if set — the seam for an installer, a
          portable launcher, or a deployment that keeps data on another volume.
-      2. Frozen: ``%LOCALAPPDATA%\\PolyShield``, which is writable for the
+      2. Any part of a distribution -- compiled, or shipped-as-source beside a
+         compiled component (see is_distribution()) -- ``%LOCALAPPDATA%\\PolyShield``, which is writable for the
          running user in both a portable and an installed layout.
       3. Source checkout: the project root, unchanged from before.
 
@@ -128,7 +230,7 @@ def app_root() -> Path:
     if override:
         return Path(override).expanduser()
 
-    if is_frozen():
+    if is_distribution():
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
         if base:
             return Path(base) / "PolyShield"
@@ -229,7 +331,7 @@ def app_launch_argv(*args: str) -> list[str]:
     hard-coded their own `pythonw.exe` + `app.py` pair.
     """
     if is_frozen():
-        return [str(Path(sys.executable).resolve()), *args]
+        return [str(running_executable()), *args]
     # pythonw.exe unconditionally, matching the behaviour this replaced. An
     # exists() fallback to python.exe looks like an improvement and is out of
     # scope for this phase: it would swap a broken command for a console

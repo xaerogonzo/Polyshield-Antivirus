@@ -64,9 +64,14 @@ build/
 .venv/
 venv/
 
-# Added by TokenSave Manager
-build.ps1
-build.bat
+# Build scripts are TRACKED: a release artifact that cannot be
+# reproduced from the repository is not reproducible. The template
+# versions were generated and ignored; the filled ones are source.
+# Their OUTPUT is what gets ignored.
+dist/
+*.build/
+*.dist/
+*.onefile-build/
 
 # UI capture output (goldens in tests/golden/ui are tracked)
 artifacts/
