@@ -15,15 +15,22 @@
 #   4b.1  GUI exe, simplest working config          <- implemented
 #   4b.2  service, SOURCE-MODE (pywin32 will not    <- implemented
 #         survive the compiler; see ARCHITECTURE)
-#   4b.3  scheduled-scan exe                           not yet
-#   4b.4  optional engines, one at a time              not yet
-#   4b.5  clean Windows Sandbox run                    not yet
-#   4b.6  size and startup tuning                      not yet
+#   4b.3  scheduled-scan exe                        <- not needed: it stages
+#         beside the service and shares its runtime
+#   4b.4  optional engines, one at a time           <- implemented (--engines)
+#   4b.5  clean Windows Sandbox run                 <- implemented
+#         (tools/make_sandbox_wsb.py)
+#   4b.6  size and startup tuning                   <- in progress
 #
-# CORRECTNESS BEFORE OPTIMIZATION. There is deliberately no --onefile, no
-# compression, no UPX and no icon here yet. Each of those is a variable, and
-# adding several at once turns "the build starts" into a bisect. They belong in
-# 4b.6, after a clean-machine run passes.
+# CORRECTNESS BEFORE OPTIMIZATION, and 4b.6 keeps to it: one variable per
+# build, each re-verified against the 4b.5 sandbox run before the next is
+# added. -Onefile is the first, because it is the only one that changes runtime
+# behaviour rather than just file size -- it introduces the temporary
+# extraction directory that resource_root() has to survive.
+#
+# UPX is deliberately NOT offered. Packing an antivirus binary is a textbook
+# Defender heuristic; the product would spend its life being quarantined by the
+# competition. See docs/ARCHITECTURE.md.
 # =============================================================================
 
 [CmdletBinding()]
@@ -43,7 +50,19 @@ param(
     #
     # Left empty the service is staged without a runtime, which is fine for a
     # GUI-only build and is reported rather than assumed.
-    [string]$Runtime = ""
+    [string]$Runtime = "",
+
+    # Build the GUI as a single self-extracting executable. This is the form
+    # that ships: 26 MB against a 105 MB folder. Off by default because a
+    # standalone tree is far easier to inspect when something is wrong -- you
+    # can look at what actually got bundled.
+    #
+    # It changes runtime behaviour, not just size: the modules are unpacked to
+    # a temporary directory that is DIFFERENT ON EVERY RUN and deleted on exit.
+    # resource_root() therefore has to come from the module tree rather than
+    # from the executable's location, and app_root() must not live under it.
+    # Verified on a clean machine, both layouts: see docs/ARCHITECTURE.md.
+    [switch]$Onefile
 )
 
 Set-StrictMode -Version Latest
@@ -134,11 +153,19 @@ $guiArgs = $commonArgs + @(
     # customtkinter ships its themes and fonts as package data. Without this the
     # app starts and renders with no theme at all.
     "--include-package-data=customtkinter",
-    "--output-filename=PolyShield.exe"
-    # NOT --windows-console-mode=disable yet: while the build is still being
-    # brought up, a startup traceback on the console is the whole diagnostic.
-    # It goes in at 4b.6 together with the icon.
+    "--output-filename=PolyShield.exe",
+    # attach, not disable. `disable` would take stdout with it, and this binary
+    # is also its own diagnostic tool -- PolyShield.exe --paths / --engines are
+    # what a support conversation starts with. `attach` gives no console window
+    # when double-clicked and full output when run from a shell.
+    "--windows-console-mode=attach"
 )
+if ($Onefile) { $guiArgs += "--onefile" }
+
+# An icon.ico beside this script is picked up automatically; none is committed,
+# so the build simply does not pass the flag rather than failing.
+$ICON = Join-Path $ROOT "icon.ico"
+if (Test-Path $ICON) { $guiArgs += "--windows-icon-from-ico=$ICON" }
 
 $serviceArgs = $commonArgs + @(
     # Every ui.core import in the service is inside a method, so a static
@@ -257,7 +284,9 @@ if (Test-Path $probeExe) {
     Write-Host "  Probe OK: frozen detected, data root outside the build." -ForegroundColor Green
 }
 
-$guiExe = Join-Path $DIST "app.dist\PolyShield.exe"
+# onefile drops a single exe at the top of dist\; standalone nests it.
+$guiExe = if ($Onefile) { Join-Path $DIST "PolyShield.exe" }
+          else { Join-Path $DIST "app.dist\PolyShield.exe" }
 if (Test-Path $guiExe) {
     # Ask the shipped binary what it can actually detect. is_available() is a
     # claim; for the subprocess engines it is a claim they cannot check. The

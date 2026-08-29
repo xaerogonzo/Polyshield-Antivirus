@@ -341,7 +341,7 @@ step, after a clean-machine run passes.
 | 4b.3 | Scheduled-scan exe | Task runs (required — see `script_launch_argv`) |
 | 4b.4 | Optional engines, one at a time | Each individually verified, by detection and not by launch |
 | 4b.5 | Clean Windows Sandbox run | **20/20 pass** — see *Verified on a clean machine* |
-| 4b.6 | Size and startup tuning | Still passes 4b.5 |
+| 4b.6 | onefile + console mode | **20/20 on a clean machine**, onefile layout. 105 MB folder → 26 MB single file |
 
 **Failed milestones must be cleanly reversible.** A failed build must not
 become the base for the next attempt: rebuild `dist/` rather than building over
@@ -551,6 +551,54 @@ which is the worst place to find out.
 **Not covered here:** installing the service with the SCM. It needs elevation
 and registers an auto-start service, so it is a deliberate manual step; the
 sandbox is the right place to do it, being disposable.
+
+### One variable at a time (4b.6)
+
+Two changes, built and verified separately, because only one of them is
+cosmetic.
+
+**`--onefile` is not a size flag.** It changes runtime behaviour: the modules
+are unpacked into a temporary directory that is **different on every run** and
+deleted on exit. That is the case `resource_root()` was designed for and had
+never actually met. Measured, from the shipped binary:
+
+```
+executable     D:\...\dist\PolyShield.exe                 <- the original, not the temp copy
+resource_root  C:\Users\...\Temp\onefile_19912_..._FFX5Pi <- the extraction directory
+app_root       C:\Users\...\AppData\Local\PolyShield      <- durable, outside it
+```
+
+Both of the non-obvious choices in `paths.py` earned their keep here:
+
+* `running_executable()` prefers `__compiled__.original_argv0`, so the binary
+  reports the file the user launched rather than the temporary copy that
+  onefile re-executes. `sys.argv[0]` would have named the temp copy.
+* `resource_root()` derives from the module tree, not from the executable's
+  location. `Path(sys.executable).parent` would have returned `dist\` — beside
+  the launcher, nowhere near the extracted data.
+
+The clean-machine run was repeated against the onefile layout and passed
+**20/20**, including the sentinel round-trip. That check matters more here than
+it did for standalone: the extraction directory differs between the two
+launches, so a settings value surviving proves the durable root is genuinely
+independent of wherever the code happened to be unpacked.
+
+**`--windows-console-mode=attach`, not `disable`.** `disable` would take stdout
+with it, and this binary is also its own diagnostic tool — a support
+conversation starts with `PolyShield.exe --paths` or `--engines`. `attach` gives
+no console window when double-clicked and full output when run from a shell.
+
+Size: **26 MB single file**, against a 47 MB executable inside a 105 MB folder.
+
+**UPX is deliberately not used.** Packing an antivirus binary is a textbook
+heuristic trigger — the product would spend its life being quarantined by the
+competition, and by Defender on the build machine before it ever shipped. The
+compression onefile already applies through `zstandard` is not a packer and
+carries no such signature.
+
+**No icon ships.** `build.ps1` picks up an `icon.ico` beside it automatically
+and omits the flag when there is none, so adding branding later needs no code
+change.
 
 ### Engine matrix
 

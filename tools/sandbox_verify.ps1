@@ -54,8 +54,18 @@ Add-Check "no developer environment variables" ($devVars.Count -eq 0) `
 $appData = Join-Path $env:LOCALAPPDATA "PolyShield"
 Add-Check "no pre-existing data root" (-not (Test-Path $appData)) $appData
 
-$gui = Join-Path $DistDir "app.dist\PolyShield.exe"
-Add-Check "GUI binary present" (Test-Path $gui) $gui
+# Both layouts are verified by the same script: a onefile build is a single exe
+# at the top of dist\, a standalone build is an exe inside app.dist\. Preferring
+# onefile when both exist means a release check exercises what actually ships.
+$onefile  = Join-Path $DistDir "PolyShield.exe"
+$standalone = Join-Path $DistDir "app.dist\PolyShield.exe"
+if (Test-Path $onefile) {
+    $gui = $onefile;    $layout = "onefile"
+} else {
+    $gui = $standalone; $layout = "standalone"
+}
+$results.layout = $layout
+Add-Check "GUI binary present ($layout)" (Test-Path $gui) $gui
 if (-not (Test-Path $gui)) {
     $results.checks = $checks
     $results | ConvertTo-Json -Depth 6 |
@@ -131,9 +141,12 @@ if (Test-Path $cfg) {
     Add-Check "settings survive a restart" $false "no settings file was written"
 }
 
-# Nothing durable may have been written into the build tree.
+# Nothing durable may have been written into the build tree. Under onefile that
+# tree is a temporary extraction directory which is deleted on exit, so this is
+# the check that would have caught data being written into it.
+$buildTree = if ($layout -eq "onefile") { $DistDir } else { Join-Path $DistDir "app.dist" }
 $strays = @("logs", "quarantine", "intelligence", "config") |
-    Where-Object { Test-Path (Join-Path (Join-Path $DistDir "app.dist") $_) }
+    Where-Object { Test-Path (Join-Path $buildTree $_) }
 Add-Check "build tree stayed read-only in effect" ($strays.Count -eq 0) `
     ($(if ($strays) { $strays -join ", " } else { "no data directories in the build" }))
 
