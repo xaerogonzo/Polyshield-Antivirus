@@ -340,7 +340,7 @@ step, after a clean-machine run passes.
 | 4b.2 | Service, **source-mode** | Resolves the same canonical data root as the compiled GUI. Not compiled — only the GUI entry point survives the compiler; see below |
 | 4b.3 | Scheduled-scan exe | Task runs (required — see `script_launch_argv`) |
 | 4b.4 | Optional engines, one at a time | Each individually verified, by detection and not by launch |
-| 4b.5 | Clean Windows Sandbox run | The full GUI / Service / clean-machine checklist |
+| 4b.5 | Clean Windows Sandbox run | **20/20 pass** — see *Verified on a clean machine* |
 | 4b.6 | Size and startup tuning | Still passes 4b.5 |
 
 **Failed milestones must be cleanly reversible.** A failed build must not
@@ -504,6 +504,53 @@ not.
 `psutil` and `watchdog`; the project already keeps a portable one for the
 Windows Sandbox workflow (see docs/TESTING.md). Staging it is an installer
 concern rather than a compiler one.
+
+### Verified on a clean machine (4b.5)
+
+`tools/make_sandbox_wsb.py` generates a Windows Sandbox config that maps the
+built `dist/` read-only, maps **no Python**, and runs `tools/sandbox_verify.ps1`
+unattended. Results land in the one writable mapping, because everything else
+in a sandbox is discarded when it closes.
+
+That is a different thing from `PolyShield_Sandbox.wsb`, which is a
+*development* sandbox: it maps the source tree, a portable Python and a pip
+cache so a person can work in there. For a release check those are exactly the
+four things that must be absent.
+
+The script asserts the machine is clean before it asserts anything else — no
+Python on PATH, no `PYTHONPATH` / `POLYSHIELD_DATA_DIR` / `VIRTUAL_ENV`, no
+pre-existing `%LOCALAPPDATA%\PolyShield`. Without that, every later result is
+ambiguous: the binary might be finding a developer's interpreter.
+
+**20 checks, 20 passed.** The ones worth naming:
+
+* the binary reports itself frozen, and its data root is **not** inside the build
+* `config/ intelligence/ logs/ quarantine/` are created on first run
+* a sentinel written into `ui_settings.json` **survives a restart** — which is
+  what proves the second launch read the durable location rather than
+  recreating it; checking that a directory exists on the second run proves
+  nothing
+* nothing durable was written into the build tree
+* **the source-mode service and the compiled GUI resolve the same data root**,
+  on a machine where neither had ever run
+
+`rules/` is deliberately *not* asserted. It is created when rules are
+downloaded, not at start-up, so a fresh install legitimately has none — and
+`yara_engine.is_available()` reports False for exactly that reason ("0 rule
+file(s)"), which is the honest answer rather than a missing directory. An
+earlier version of the script asserted it and failed, because the developer
+checkout it was written against already had one. On a clean machine all four
+engines report honestly unavailable.
+
+The service half needs a runtime staged beside it (`build.ps1 -Runtime <dir>`,
+with a Python carrying pywin32, psutil and watchdog). The build verifies the
+staged runtime can import all three rather than trusting the copy — a runtime
+missing pywin32 stages silently and then fails when the SCM starts the service,
+which is the worst place to find out.
+
+**Not covered here:** installing the service with the SCM. It needs elevation
+and registers an auto-start service, so it is a deliberate manual step; the
+sandbox is the right place to do it, being disposable.
 
 ### Engine matrix
 

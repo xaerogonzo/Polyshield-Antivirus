@@ -33,7 +33,17 @@ param(
     [string]$Target = "all",
 
     # Skip the destructive clean. Only for iterating on a single target.
-    [switch]$NoClean
+    [switch]$NoClean,
+
+    # A Python runtime to stage beside the source-mode service. The service
+    # cannot be compiled (see docs/ARCHITECTURE.md), so a distribution has to
+    # carry an interpreter for it. Prepare one with:
+    #
+    #   <python>\python.exe -m pip install pywin32 psutil watchdog
+    #
+    # Left empty the service is staged without a runtime, which is fine for a
+    # GUI-only build and is reported rather than assumed.
+    [string]$Runtime = ""
 )
 
 Set-StrictMode -Version Latest
@@ -202,8 +212,26 @@ if ($Target -in @("service", "all")) {
         throw "Staged service contains ui\views - it must not need a display."
     }
     Write-Host "  Service staged (source mode, no Tk) -> $svcDir" -ForegroundColor Green
-    Write-Host "  Runtime NOT staged: supply a Python with pywin32, psutil," -ForegroundColor DarkGray
-    Write-Host "  watchdog. See docs/ARCHITECTURE.md." -ForegroundColor DarkGray
+
+    if ($Runtime) {
+        if (-not (Test-Path (Join-Path $Runtime "python.exe"))) {
+            throw "No python.exe under -Runtime '$Runtime'."
+        }
+        $rtDest = Join-Path $DIST "runtime"
+        Copy-Item $Runtime $rtDest -Recurse -Force
+        # Asserted, not assumed: a runtime missing pywin32 stages silently and
+        # then fails when the SCM starts the service, which is the worst place
+        # to find out.
+        $probe = & (Join-Path $rtDest "python.exe") -c `
+            "import win32serviceutil, psutil, watchdog; print('ok')" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Staged runtime cannot import the service's dependencies: $probe"
+        }
+        Write-Host "  Runtime staged and verified -> $rtDest" -ForegroundColor Green
+    } else {
+        Write-Host "  Runtime NOT staged: pass -Runtime <dir> with a Python that" -ForegroundColor DarkGray
+        Write-Host "  has pywin32, psutil and watchdog. See docs/ARCHITECTURE.md." -ForegroundColor DarkGray
+    }
 }
 
 if ($Target -in @("probe", "all")) {
