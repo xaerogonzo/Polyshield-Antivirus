@@ -26,6 +26,10 @@ from ui.core import guardian_engine as ge
 import ui.theme as theme
 from ui.core import paths
 
+#: Below this, k2 is running on the signatures compiled into its plugin
+#: modules alone -- the downloaded rule archives are missing.
+_K2_BASELINE_ONLY = 100
+
 _TAG_OK        = "ok"
 _TAG_ERR       = "err"
 _TAG_INFO      = "info"
@@ -171,6 +175,17 @@ class UpdateView(ctk.CTkScrollableFrame):
         self._k2_files = ctk.CTkLabel(info_row, text="—",
                                           font=ctk.CTkFont(size=12))
         self._k2_files.grid(row=1, column=1, sticky="w", padx=8)
+
+        # The count the engine reports, not the number of files downloaded.
+        # k2 carries ~23 signatures in its plugins and the other ~1240 arrive in
+        # archives -- and it reports success when it cannot fetch them, so an
+        # install can end up at under 2% detection with nothing saying so.
+        ctk.CTkLabel(info_row, text="Signatures:",
+                     font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
+            row=2, column=0, sticky="w")
+        self._k2_sigs = ctk.CTkLabel(info_row, text="checking…",
+                                     font=ctk.CTkFont(size=12))
+        self._k2_sigs.grid(row=2, column=1, sticky="w", padx=8)
 
         # Buttons + status badge
         btn_row = ctk.CTkFrame(card, fg_color="transparent")
@@ -778,6 +793,23 @@ class UpdateView(ctk.CTkScrollableFrame):
             self._k2_files.configure(text=str(len(lines)))
         except Exception:
             pass
+
+        # Off the UI thread: --vlist starts k2 and enumerates every plugin.
+        def _count():
+            n = sc.get_signature_count()
+            if not self.winfo_exists():
+                return
+            if n == 0:
+                text, colour = "unavailable", "#ff5555"
+            elif n < _K2_BASELINE_ONLY:
+                text = f"{n:,} — built-in only; run Update Now to download the rest"
+                colour = "#ffb86c"
+            else:
+                text, colour = f"{n:,}", theme.color("text")
+            self.after(0, lambda t=text, c=colour:
+                       self._k2_sigs.configure(text=t, text_color=c))
+
+        threading.Thread(target=_count, daemon=True).start()
 
     def _refresh_guardian_info(self):
         guardian_dir = paths.guardian_dir()

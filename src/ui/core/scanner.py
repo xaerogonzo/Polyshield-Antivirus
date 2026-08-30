@@ -480,6 +480,36 @@ def get_infected_paths(report_path: str) -> list[str]:
         return []
 
 
+def get_signature_count() -> int:
+    """How many virus names k2 can actually name, via `k2 --vlist`.
+
+    Counting the lines of update.cfg says how many FILES were downloaded, which
+    is 3 whether or not they contain anything. This asks the engine.
+
+    It matters because k2 carries only ~23 signatures in its plugin modules and
+    the other ~1240 arrive in rule archives it downloads -- and `k2 --update`
+    reports SUCCESS when it cannot reach its source, leaving a scanner at under
+    2% of its detection with nothing anywhere saying so. Measured on a clean
+    install: "[No updates available]", exit 0, an empty rules directory.
+
+    Returns 0 when k2 cannot run at all.
+    """
+    try:
+        r = subprocess.run(
+            pathsmod.k2_argv("--vlist", "--no-color"),
+            capture_output=True, text=True, timeout=60,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            stdin=subprocess.DEVNULL, env=_k2_env(),
+        )
+        return sum(1 for ln in (r.stdout or "").splitlines()
+                   if "[kicomav.plugins." in ln)
+    except Exception:
+        # 0 means "k2 could not be asked", which the caller renders as
+        # "unavailable" rather than as a signature count. Distinct from a small
+        # count, which means k2 ran and has only its built-in signatures.
+        return 0
+
+
 def get_update_cfg_info() -> dict:
     """Read k2 own update.cfg and return version metadata."""
     cfg_path = paths.k2_rules_dir() / "update.cfg"

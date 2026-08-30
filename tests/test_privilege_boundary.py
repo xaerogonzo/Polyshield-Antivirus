@@ -402,3 +402,56 @@ def test_an_absent_k2_reports_absent_rather_than_clean(monkeypatch):
 
     assert out["available"] is False
     assert out["detected"] is None
+
+
+# == k2 signature count: the number that reveals a crippled install ===========
+
+def _count_with(monkeypatch, stdout, raises=False):
+    from ui.core import scanner
+    import subprocess as sp
+
+    class _R:
+        pass
+
+    def _run(*a, **k):
+        if raises:
+            raise OSError("k2 could not be started")
+        r = _R()
+        r.stdout = stdout
+        r.stderr = ""
+        r.returncode = 0
+        return r
+
+    monkeypatch.setattr(scanner, "_k2_env", lambda: {})
+    monkeypatch.setattr(sp, "run", _run)
+    return scanner.get_signature_count()
+
+
+def test_a_seeded_k2_reports_its_full_signature_count(monkeypatch):
+    listing = "\n".join(f"Trojan.X.{i}  [kicomav.plugins.pdf]" for i in range(1263))
+
+    assert _count_with(monkeypatch, listing) == 1263
+
+
+def test_an_unseeded_k2_reports_only_its_built_in_signatures(monkeypatch):
+    """The failure this number exists to expose.
+
+    k2 answers an unreachable update source with "[No updates available]" and
+    exit 0, leaving the rule archives absent. It then scans with the ~23
+    signatures compiled into its plugin modules -- under 2% of its detection --
+    and nothing else in the product reports that as wrong.
+    """
+    listing = "\n".join(f"Trojan.X.{i}  [kicomav.plugins.rtf]" for i in range(23))
+
+    n = _count_with(monkeypatch, listing)
+
+    assert n == 23
+    assert n < 100, "the Update Center renders anything under 100 as built-in only"
+
+
+def test_a_k2_that_cannot_run_is_reported_as_unavailable_not_as_zero_signatures(
+        monkeypatch):
+    """0 means "could not ask", which the UI shows as unavailable. That is a
+    different statement from "ran and found few", and they have different fixes.
+    """
+    assert _count_with(monkeypatch, "", raises=True) == 0

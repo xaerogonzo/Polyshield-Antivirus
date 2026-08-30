@@ -67,7 +67,7 @@ settings** unless you tick the box asking it not to — a quarantined file may b
 the only copy you have left.
 
 Verified on a machine with no Python, no developer tools and no source tree:
-46 checks covering install, reinstall over a broken previous attempt, and
+47 checks covering install, reinstall over a broken previous attempt, and
 uninstall.
 
 ### Or run from source

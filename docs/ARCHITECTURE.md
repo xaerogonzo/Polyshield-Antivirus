@@ -347,7 +347,7 @@ step, after a clean-machine run passes.
 | 4c.2 | The runtime builds itself, with K2 | Hash pinned, `import site` asserted, pywin32 off System32, k2 plugins counted |
 | 4c.3 | Distribution-mode fixes | Menu icon resolves; dev-only sections say so; teardown is idempotent |
 | 4c.4 | `PolyShield-Setup.exe` | Compiles; ACL boundary verified on a real tree; rollback wired |
-| 4c.5 | Clean-machine verification | **46 checks, 0 failures** on a machine with nothing: install, reinstall over a dirty machine, uninstall |
+| 4c.5 | Clean-machine verification | **47 checks, 0 failures** on a machine with nothing: install, reinstall over a dirty machine, uninstall |
 
 **Failed milestones must be cleanly reversible.** A failed build must not
 become the base for the next attempt: rebuild `dist/` rather than building over
@@ -509,7 +509,7 @@ without touching a generated file, and works in a distribution that has no
 
 ### Verification that can fail (v1.16, 4c.5)
 
-`tools/sandbox_verify.ps1` grew from 20 checks to 46. The additions are not
+`tools/sandbox_verify.ps1` grew from 20 checks to 47. The additions are not
 more of the same: the original set verified the **build**, and these verify the
 **installer**, which registers a service and rewrites ACLs and has to be able
 to undo both.
@@ -610,16 +610,33 @@ indistinguishable from a run that failed. `Add-Check` now appends to
 is attempted. That is what localised the hang to the uninstall step, and what
 made the last three iterations diagnosable rather than guesswork.
 
-Final state: **46 checks, 0 failures**, on a machine with no Python, no
+Final state: **47 checks, 0 failures**, on a machine with no Python, no
 developer environment variables, and no source tree — through install, reinstall
 over a deliberately dirty machine, and uninstall.
 
-One thing the run reports rather than asserts: `rules_seeded: false`. k2 ships
-its 23 plugin-resident signatures and the ~1240 that arrive in downloaded rule
-archives are not present on a fresh install, because `seed_k2_rules.ps1` is
-non-fatal and its download did not complete in the sandbox. The gate is set at
-20 deliberately — it measures what the *build* controls — so this is visible in
-the artifact rather than hidden by a passing check.
+**`k2 --update` reports success when it cannot reach its source.** Measured on
+a clean install: `[No updates available]`, exit 0, an empty rules directory, and
+23 signatures instead of 1263 — a scanner at under 2% of its detection with
+nothing anywhere saying so. k2 carries only ~23 signatures in its plugin
+modules; the other ~1240 arrive in archives it downloads.
+
+`installer/seed_k2_rules.ps1` therefore does not trust the exit code. It waits
+for the update source to become reachable — an installer running seconds after a
+machine boots is racing the network stack — runs the update, and then **counts
+what the engine can actually name**, before and after. Everything it concludes
+goes to `<data root>\logs\k2_seed.log`, because the step runs `runhidden` and a
+failure there is otherwise invisible by construction.
+
+If the archives are still missing it says so and exits 0: an install without a
+network is ordinary, and the Update Center can fetch them later. What it does
+not do is finish quietly.
+
+The same number is surfaced in the product. The Update Center's K2 card shows
+the count `k2 --vlist` reports rather than the number of files downloaded —
+three files whether or not they contain anything — and renders a count under 100
+as *"built-in only; run Update Now to download the rest"*.
+
+Verified in the sandbox: `signatures before: 23` → `signatures after: 1263`.
 
 Run it with `python tools\make_sandbox_wsb.py` and open the generated `.wsb`.
 `--skip-install` keeps the build checks and skips the install cycle.

@@ -437,6 +437,33 @@ if (-not $SkipInstall) {
         if (-not $results.installed_engines) { $results.installed_engines_raw = $enginesRaw }
         Add-Check "no engine claims availability it cannot back up" $enginesOk "exit $LASTEXITCODE"
         $k2 = $results.installed_engines.k2
+        # Whether the installer actually seeded k2's rule archives. K2 carries
+        # only 23 of its ~1263 signatures in its plugin modules; the rest arrive
+        # in archives it downloads, so an install that skips this ships the
+        # primary signature engine at under 2% of its detection -- and nothing
+        # in the running product reports that as wrong.
+        #
+        # The seed step runs `runhidden`, so it says what it did in a log rather
+        # than on a screen nobody is looking at.
+        $seedLog = Join-Path $dataDir "logs\k2_seed.log"
+        if (Test-Path $seedLog) {
+            $results.k2_seed_log = (Get-Content $seedLog -Raw)
+            Copy-Item $seedLog (Join-Path $ResultsDir "k2_seed.log") -Force -EA SilentlyContinue
+        } else {
+            $results.k2_seed_log = "NOT WRITTEN - seed_k2_rules.ps1 never ran"
+        }
+        $seedUpdateLog = Join-Path $dataDir "logs\k2_seed_update.log"
+        if (Test-Path $seedUpdateLog) {
+            Copy-Item $seedUpdateLog (Join-Path $ResultsDir "k2_seed_update.log") -Force -EA SilentlyContinue
+        }
+        $k2Rules = Join-Path $dataDir "k2\rules"
+        $k2Manifest = Join-Path $k2Rules "update.cfg"
+        $seeded = Test-Path $k2Manifest
+        Add-Check "the installer seeded k2 rule archives" $seeded `
+            ($(if ($seeded) {
+                   "$((Get-ChildItem $k2Rules -Recurse -File -EA SilentlyContinue).Count) file(s)"
+               } else { "no update.cfg -- see k2_seed.log" }))
+
         Add-Check "k2 ships and detects" `
             ([bool]$k2 -and $k2.available -and $k2.detected) `
             ($(if ($k2) { $k2.detail } else { "k2 not reported" }))
