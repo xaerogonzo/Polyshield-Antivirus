@@ -133,6 +133,14 @@ class SchedulerView(ctk.CTkFrame):
             justify="left",
         ).grid(row=0, column=0, padx=16, pady=12, sticky="w")
 
+    # app.py lists "scheduler" in _AUTO_REFRESH, which calls refresh() on every
+    # navigation to this page.  The work has always lived in
+    # refresh_task_info() — also called from __init__ and after create/delete —
+    # so navigating here raised AttributeError into Tk's error handler and the
+    # task status silently stayed as it was drawn at build time.
+    def refresh(self):
+        self.refresh_task_info()
+
     def refresh_task_info(self):
         info = sch.get_task_info()
         if info.get("exists"):

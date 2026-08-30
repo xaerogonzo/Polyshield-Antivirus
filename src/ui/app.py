@@ -129,7 +129,8 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
         self.minsize(960, 620)
         self._active_view: str | None = None
         self._nav_buttons: dict[str, ctk.CTkButton] = {}
-        self._views: dict[str, ctk.CTkFrame] = {}
+        self._views: dict[str, ctk.CTkFrame] = {}          # built on first show
+        self._view_factories: dict = {}                    # filled by _build()
         self._tray_icon: "pystray.Icon | None" = None
         self._bg_label = None   # CTkLabel for background image (created on first use)
         self._bg_ctk_img = None
@@ -150,7 +151,7 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
 
         if initial_scan_path and Path(initial_scan_path).exists():
             self._navigate("scan")
-            self._views["scan"].load_paths([initial_scan_path])
+            self.get_view("scan").load_paths([initial_scan_path])
         else:
             self._navigate("dashboard")
 
@@ -172,7 +173,14 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
                     poll_interval=int(cfg.get("process_monitor_poll_interval") or 1),
                 )
                 self._process_monitor.start()
-                self._views["process"].attach_monitor(self._process_monitor)
+                # ProcessView is built eagerly here, not lazily on first
+                # navigation, because its _on_alert() is where
+                # process_monitor_auto_terminate actually kills a flagged
+                # process.  A view that does not exist cannot terminate
+                # anything, so lazy-building this one would silently disable
+                # auto-terminate for anyone who never opens the Processes
+                # page.  It costs ~38 Tk windows and no USER handles.
+                self.get_view("process").attach_monitor(self._process_monitor)
         except Exception:
             pass   # WMI / pywin32 unavailable — graceful degradation
 
@@ -257,37 +265,67 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
                                          text_color="#555577")
         self._status_lbl.pack(side="left", padx=12)
 
-        # Instantiate all views
-        self._views = {
-            "dashboard":  DashboardView(self._content,
-                                        status_callback=self._set_status,
-                                        navigate_callback=self._navigate),
-            "scan":       ScanView(self._content, self._set_status,
-                                   navigate_callback=self._navigate),
-            "defender":   DefenderView(self._content, self._set_status),
-            "winsec":     WinSecView(self._content, self._set_status),
-            "network":    NetworkView(self._content, self._set_status),
-            "watcher":    WatcherView(self._content, self._set_status,
-                                       navigate_callback=self._navigate),
-            "process":    ProcessView(self._content, self._set_status),
-            "service":    ServiceView(self._content, self._set_status,
-                                      navigate_callback=self._navigate),
-            "scheduler":  SchedulerView(self._content, self._set_status),
-            "guardian":   GuardianView(self._content, self._set_status),
-            "virustotal": VirusTotalView(self._content, self._set_status),
-            "behavioral": BehavioralView(self._content, self._set_status,
-                                         navigate_callback=self._navigate),
-            "update":     UpdateView(self._content, self._set_status),
-            "quarantine": QuarantineView(self._content, self._set_status),
-            "history":    HistoryView(self._content, self._set_status),
-            "settings":   SettingsView(self._content),
-            "display":    DisplayView(self._content, status_callback=self._set_status,
-                                      app_ref=self),
-            "help":       HelpView(self._content, self._set_status),
+        # -- View factories: each page is built the first time it is shown --
+        #
+        # Constructing all 18 up front cost 4,996 Tk windows, 3,715 USER
+        # handles (37% of the 10,000 per-process quota) and 107.7 MB of
+        # private bytes before the user had clicked anything, for 17 pages
+        # that were not on screen.  Building on first show: 279 / 307 /
+        # 39.0 MB.  That is what tipped a memory-constrained
+        # Windows Sandbox into "Tk_GetPixmap: Error from CreateDIBSection /
+        # Not enough memory resources": Tk allocates an offscreen DIB for
+        # every canvas redraw, and there was nothing left to allocate from.
+        # Measured with tools/uishot's hidden desktop; see docs/ARCHITECTURE.md
+        # "Views are built on first show".
+        #
+        # Zero-argument factories rather than a list of classes: the
+        # constructors take different keyword arguments, and a lambda keeps
+        # that difference in one place instead of in a dispatch chain.
+        self._view_factories = {
+            "dashboard":  lambda: DashboardView(self._content,
+                                                status_callback=self._set_status,
+                                                navigate_callback=self._navigate),
+            "scan":       lambda: ScanView(self._content, self._set_status,
+                                           navigate_callback=self._navigate),
+            "defender":   lambda: DefenderView(self._content, self._set_status),
+            "winsec":     lambda: WinSecView(self._content, self._set_status),
+            "network":    lambda: NetworkView(self._content, self._set_status),
+            "watcher":    lambda: WatcherView(self._content, self._set_status,
+                                              navigate_callback=self._navigate),
+            "process":    lambda: ProcessView(self._content, self._set_status),
+            "service":    lambda: ServiceView(self._content, self._set_status,
+                                              navigate_callback=self._navigate),
+            "scheduler":  lambda: SchedulerView(self._content, self._set_status),
+            "guardian":   lambda: GuardianView(self._content, self._set_status),
+            "virustotal": lambda: VirusTotalView(self._content, self._set_status),
+            "behavioral": lambda: BehavioralView(self._content, self._set_status,
+                                                 navigate_callback=self._navigate),
+            "update":     lambda: UpdateView(self._content, self._set_status),
+            "quarantine": lambda: QuarantineView(self._content, self._set_status),
+            "history":    lambda: HistoryView(self._content, self._set_status),
+            "settings":   lambda: SettingsView(self._content),
+            "display":    lambda: DisplayView(self._content,
+                                              status_callback=self._set_status,
+                                              app_ref=self),
+            "help":       lambda: HelpView(self._content, self._set_status),
         }
-        for view in self._views.values():
-            view.grid(row=0, column=0, sticky="nsew")
-            view.grid_remove()
+
+    def get_view(self, key: str):
+        """Return the view for *key*, constructing it on first request.
+
+        Anything that reaches into a page it did not navigate to must come
+        through here.  ``self._views[key]`` is only populated for pages that
+        have already been shown, so indexing it directly turns "hand this file
+        to the VirusTotal page" into a silent no-op the first time.
+        """
+        view = self._views.get(key)
+        if view is not None and view.winfo_exists():
+            return view
+        view = self._view_factories[key]()
+        view.grid(row=0, column=0, sticky="nsew")
+        view.grid_remove()
+        self._views[key] = view
+        return view
 
     def _navigate(self, key: str):
         if self._active_view:
@@ -295,14 +333,15 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
             self._nav_buttons[self._active_view].configure(
                 fg_color="transparent", text_color="#cdd6f4")
 
+        view = self.get_view(key)
         self._active_view = key
-        self._views[key].grid()
+        view.grid()
         self._nav_buttons[key].configure(fg_color=theme.color("nav_active"), text_color="#ffffff")
 
         if key in _HAS_ON_SHOW:
-            self._views[key].on_show()
+            view.on_show()
         elif key in _AUTO_REFRESH:
-            self._views[key].refresh()
+            view.refresh()
 
     def _apply_bg_image(self) -> None:
         """Composite and display a background image behind all content widgets.
