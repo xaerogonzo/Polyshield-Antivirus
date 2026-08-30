@@ -676,6 +676,20 @@ def run_updates(
             result["finished"] = _utcnow().isoformat(timespec="seconds")
             return result
 
+        # In a distribution the service owns updates even when it is NOT
+        # running.  intelligence/ is service-owned on disk (Users:Read), so a
+        # UI-side run would not be merely redundant -- it would fail inside
+        # each importer with a permission error, and those surface in the
+        # Update Center looking like network failures. Say the real thing once.
+        if owner != "service" and paths.is_distribution():
+            result["status"] = FAILED
+            result["error"] = ("the PolyShield service is required to update "
+                               "intelligence, and it is not running")
+            log_fn("The PolyShield service is not running - it is the only "
+                   "writer for intelligence data in an installed build.")
+            result["finished"] = _utcnow().isoformat(timespec="seconds")
+            return result
+
         try:
             _acquire_file_lock(owner)
         except _LockBusy as exc:

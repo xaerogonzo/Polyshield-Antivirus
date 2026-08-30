@@ -1142,6 +1142,7 @@ class _ThreatActionsMixin:
         """Background-thread bulk ignore (computes MD5 per file)."""
         def _run():
             ok = 0
+            err = ""
             for p in paths:
                 try:
                     with open(p, "rb") as f:
@@ -1153,13 +1154,28 @@ class _ThreatActionsMixin:
                               or "")
                     if ignore.add(md5, "md5", Path(p).name, note, reason):
                         ok += 1
+                except ignore.ServiceRequired as exc:
+                    # intelligence/ is service-owned in a distribution. Nothing
+                    # was written, and every remaining file fails identically --
+                    # so stop rather than retrying N times for the same reason.
+                    # Caught BEFORE the bare handler below, which would swallow
+                    # it and report "Added 0/3" as though the files were clean.
+                    err = str(exc)
+                    break
                 except Exception:
                     pass
             if self.winfo_exists():
-                self.after(0, lambda: self._on_ignore_done(paths, ok))
+                self.after(0, lambda: self._on_ignore_done(paths, ok, err))
         threading.Thread(target=_run, daemon=True).start()
 
-    def _on_ignore_done(self, paths: list[str], ok: int):
+    def _on_ignore_done(self, paths: list[str], ok: int, err: str = ""):
+        if err:
+            # Nothing was ignored, so nothing may be marked resolved: a file
+            # shown as "ignored" that is still flagged on the next scan is
+            # worse than a visible error.
+            self._log_append(f"[IGNORE] Failed - {err}", _TAG_WARN)
+            self._status_cb("Could not ignore: PolyShield service unavailable.")
+            return
         for p in paths:
             self._mark_resolved(p, "ignored")
             self._threat_checked.discard(p)

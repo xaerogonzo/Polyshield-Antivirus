@@ -52,6 +52,26 @@ Commercial AV products have telemetry, ad-ware components, and they replace Defe
 
 ## Quick start
 
+### Install it (no Python needed)
+
+Run **`PolyShield-Setup-<version>.exe`**. It needs administrator rights, and it:
+
+- installs the program to `C:\Program Files\PolyShield`
+- creates `C:\ProgramData\PolyShield` with per-folder permissions, so an
+  ordinary program cannot rewrite the threat data the service trusts
+- registers the PolyShield service and starts it
+- adds *Scan with PolyShield* to the Explorer right-click menu
+
+Uninstalling removes all of that. **It keeps your quarantine, logs and
+settings** unless you tick the box asking it not to — a quarantined file may be
+the only copy you have left.
+
+Verified on a machine with no Python, no developer tools and no source tree:
+47 checks covering install, reinstall over a broken previous attempt, and
+uninstall.
+
+### Or run from source
+
 **Prerequisites**: Windows 10 / 11, Python 3.11+, administrator rights for the Windows Service install.
 
 ```powershell
@@ -60,7 +80,16 @@ cd Polyshield-Antivirus
 .\scripts\install.bat
 ```
 
-The installer creates the portable venvs, installs the engines, and offers to register the Windows Service. The UI launches via `launch_ui.vbs` (or `scripts\dev\launch_ui.bat` for a console window).
+This creates the portable venvs, installs the engines, and offers to register the Windows Service. The UI launches via `launch_ui.vbs` (or `scripts\dev\launch_ui.bat` for a console window).
+
+### Or build the installer yourself
+
+```powershell
+.uild.bat -BuildRuntime -Onefile -Target all
+.uild.bat -Target installer
+```
+
+Needs [Inno Setup](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`); the build says so if it is missing.
 
 Full step-by-step install guide, daily workflow, and troubleshooting → **[docs/USAGE.md](docs/USAGE.md)**
 

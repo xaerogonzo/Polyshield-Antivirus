@@ -20,7 +20,8 @@
 #   4b.4  optional engines, one at a time           <- implemented (--engines)
 #   4b.5  clean Windows Sandbox run                 <- implemented
 #         (tools/make_sandbox_wsb.py)
-#   4b.6  size and startup tuning                   <- in progress
+#   4b.6  size and startup tuning                   <- implemented
+#   4c.2  the runtime builds itself (-BuildRuntime) <- implemented
 #
 # CORRECTNESS BEFORE OPTIMIZATION, and 4b.6 keeps to it: one variable per
 # build, each re-verified against the 4b.5 sandbox run before the next is
@@ -36,7 +37,7 @@
 [CmdletBinding()]
 param(
     # gui | probe | all
-    [ValidateSet("gui", "service", "probe", "all")]
+    [ValidateSet("gui", "service", "probe", "installer", "all")]
     [string]$Target = "all",
 
     # Skip the destructive clean. Only for iterating on a single target.
@@ -51,6 +52,12 @@ param(
     # Left empty the service is staged without a runtime, which is fine for a
     # GUI-only build and is reported rather than assumed.
     [string]$Runtime = "",
+
+    # Build the runtime instead of being handed one. Downloads the pinned
+    # python.org embeddable distribution, enables the one line that makes it
+    # able to import anything, and installs the service dependencies plus
+    # kicomav. See New-StagedRuntime.
+    [switch]$BuildRuntime,
 
     # Build the GUI as a single self-extracting executable. This is the form
     # that ships: 26 MB against a 105 MB folder. Off by default because a
@@ -96,7 +103,10 @@ function Reset-Dist {
         Remove-Item $DIST -Recurse -Force -ErrorAction Stop
     } catch {
         throw ("Could not clear dist\ ($($_.Exception.Message)). " +
-               "Close any running PolyShield.exe and retry; do not build over it.")
+               "Close any running PolyShield.exe and retry; do not build over it. " +
+               "A Windows Sandbox started from tools\make_sandbox_wsb.py also " +
+               "holds dist\ open -- it maps the directory read-only, and the " +
+               "handle survives until the sandbox itself is closed.")
     }
 }
 
@@ -126,6 +136,149 @@ function Invoke-Nuitka {
     }
 
     if ($code -ne 0) { throw "Nuitka failed (exit $code) building $Label" }
+}
+
+# ---------- Runtime construction (4c.2) --------------------------------------
+# The service does not survive the compiler, so a distribution carries an
+# interpreter for it -- and, since 4c.1, k2.exe rides that same runtime rather
+# than shipping a second copy of Python.
+#
+# Until now -Runtime took a directory the developer had prepared by hand, which
+# means the release artifact depended on a machine state nobody recorded. This
+# builds it, from a pinned download, with every assumption asserted.
+
+#: python.org embeddable distribution. Pinned by hash: the build must fail
+#: closed on a changed file rather than staging whatever arrived.
+$RUNTIME_VERSION = "3.12.7"
+$RUNTIME_SHA256  = "0D57BB6CB078B74D23DBFE91F77D6780D45BED328911609F1F7EE2BA1606BF44"
+$RUNTIME_PKGS    = @("pywin32", "psutil", "watchdog", "kicomav")
+
+function Get-Sha256 {
+    param([string]$Path)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        return [System.BitConverter]::ToString($sha.ComputeHash($stream)).Replace("-", "")
+    } finally {
+        $stream.Dispose()
+        $sha.Dispose()
+    }
+}
+
+function New-StagedRuntime {
+    param([string]$Dest)
+
+    $tag = "python-$RUNTIME_VERSION-embed-amd64"
+    $url = "https://www.python.org/ftp/python/$RUNTIME_VERSION/$tag.zip"
+    $zip = Join-Path ([System.IO.Path]::GetTempPath()) "$tag.zip"
+
+    Write-Host ""
+    Write-Host "  Building runtime ($RUNTIME_VERSION) ..." -ForegroundColor Cyan
+
+    if (-not (Test-Path $zip)) {
+        Write-Host "  [runtime] downloading $tag.zip" -ForegroundColor DarkGray
+        Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
+    }
+
+    # .NET rather than Get-FileHash / Expand-Archive: both live in modules that
+    # are auto-loaded from $env:PSModulePath, and a Windows PowerShell 5.1 child
+    # launched from a PowerShell 7 session inherits PS7 module paths and cannot
+    # find them. Measured -- "The term Get-FileHash is not recognized" from a
+    # build started inside pwsh. The build must not depend on which shell
+    # happened to launch it.
+    $got = Get-Sha256 $zip
+    if ($got -ne $RUNTIME_SHA256) {
+        Remove-Item $zip -Force -ErrorAction SilentlyContinue
+        throw ("Runtime hash mismatch for $tag.zip`n" +
+               "  expected $RUNTIME_SHA256`n" +
+               "  got      $got`n" +
+               "Verify against python.org before changing the pin.")
+    }
+    Write-Host "  [runtime] hash verified" -ForegroundColor DarkGray
+
+    if (Test-Path $Dest) { Remove-Item $Dest -Recurse -Force }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [System.IO.Compression.ZipFile]::ExtractToDirectory($zip, $Dest)
+
+    # THE load-bearing line. The embeddable distribution ships `import site`
+    # COMMENTED OUT, and with it commented out a ._pth file replaces sys.path
+    # wholesale: Lib\site-packages never joins it, so nothing pip installs here
+    # can be imported at all. pywin32 then fails at SCM start as error 1053,
+    # and every explanation of 1053 in our own docs points somewhere else.
+    #
+    # Measured, both ways: with the line commented, sys.path holds only
+    # python312.zip and the runtime directory, and `import pythoncom` raises
+    # ModuleNotFoundError.
+    $pth = Get-ChildItem $Dest -Filter "python*._pth" | Select-Object -First 1
+    if (-not $pth) { throw "No python*._pth in the expanded runtime." }
+    (Get-Content $pth.FullName) -replace '^\s*#\s*import\s+site\s*$', 'import site' |
+        Set-Content $pth.FullName -Encoding ASCII
+    if (-not (Select-String -Path $pth.FullName -Pattern '^import site$' -Quiet)) {
+        throw "Could not enable 'import site' in $($pth.Name); the runtime would import nothing."
+    }
+    Write-Host "  [runtime] import site enabled" -ForegroundColor DarkGray
+
+    # pip is absent from the embeddable distribution. Installed with the build
+    # environment's own pip rather than fetching get-pip.py -- one less
+    # unpinned download, and pip is importable from site-packages once the
+    # line above is in place.
+    $sitePackages = Join-Path $Dest "Lib\site-packages"
+    & $PYTHON -m pip install --quiet --disable-pip-version-check `
+        --target $sitePackages pip
+    if ($LASTEXITCODE -ne 0) { throw "Could not seed pip into the runtime." }
+
+    $rtPython = Join-Path $Dest "python.exe"
+    & $rtPython -m pip install --quiet --disable-pip-version-check `
+        --no-warn-script-location @RUNTIME_PKGS
+    if ($LASTEXITCODE -ne 0) { throw "Could not install $($RUNTIME_PKGS -join ', ')." }
+
+    Write-Host "  [runtime] installed: $($RUNTIME_PKGS -join ', ')" -ForegroundColor DarkGray
+    return $Dest
+}
+
+function Test-StagedRuntime {
+    param([string]$Dir)
+
+    $rtPython = Join-Path $Dir "python.exe"
+    if (-not (Test-Path $rtPython)) { throw "No python.exe under '$Dir'." }
+
+    # Asserted, not assumed: a runtime missing the service's dependencies
+    # stages silently and then fails when the SCM starts the service, which is
+    # the worst possible place to find out.
+    $probe = & $rtPython -c @"
+import json, os, sys
+import win32serviceutil, psutil, watchdog, kicomav
+import pythoncom
+print(json.dumps({
+    'pythoncom': pythoncom.__file__,
+    'site_packages_on_path': any('site-packages' in p for p in sys.path),
+}))
+"@ 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Staged runtime cannot import the service dependencies: $probe"
+    }
+    $info = $probe | Select-Object -Last 1 | ConvertFrom-Json
+
+    # pywin32 must load its DLLs from the runtime's own pywin32_system32, NOT
+    # from System32. That is what lets the installer skip pywin32_postinstall
+    # entirely -- so the uninstaller never has to reason about who else on the
+    # machine is using a shared copy in a system directory.
+    if ($info.pythoncom -notlike "*pywin32_system32*") {
+        throw ("pywin32 resolved $($info.pythoncom), outside the runtime. " +
+               "The build must not depend on a System32 installation.")
+    }
+    Write-Host "  [runtime] pywin32 loads from the runtime, not System32" -ForegroundColor DarkGray
+
+    # K2 keeps its signatures inside its plugins and is asked to list them: a
+    # plugin tree that did not survive still starts, exits zero and reports
+    # every scan clean. See tools/engine_probe.py.
+    $k2 = Join-Path $Dir "Scripts\k2.exe"
+    if (-not (Test-Path $k2)) { throw "No k2.exe in the staged runtime." }
+    $sigs = (& $k2 --vlist --no-color 2>&1 | Select-String -Pattern "\[kicomav\.plugins\." ).Count
+    if ($sigs -lt 100) {
+        throw "Staged k2 lists only $sigs signature(s); its plugin tree did not survive."
+    }
+    Write-Host "  [runtime] k2: $sigs signatures across the loaded plugins" -ForegroundColor DarkGray
 }
 
 # ---------- Targets -----------------------------------------------------------
@@ -217,6 +370,21 @@ if ($Target -in @("service", "all")) {
     # Only the engine-side tree. ui/views is the GUI and would drag Tk into a
     # component that must never need a display.
     $svcSrc = Join-Path $svcDir "src"
+
+    # Removed before copying, not merged onto. Copy-Item -Recurse copies the
+    # source INTO an existing destination rather than merging with it, so a
+    # second run produced dist\service\src\ui\core\core\ and left the
+    # original tree STALE -- a distribution shipping last week source under
+    # this week version number, silently. Only -NoClean builds hit it, which
+    # is exactly the iteration path where it is least likely to be noticed.
+    #
+    # Found by installer\register_service.ps1 -PreflightOnly, which asks the
+    # staged service to resolve its own paths and got an AttributeError for a
+    # function that had been added days earlier.
+    foreach ($sub in @("ui\core", "tools")) {
+        $dest = Join-Path $svcSrc $sub
+        if (Test-Path $dest) { Remove-Item $dest -Recurse -Force }
+    }
     New-Item -ItemType Directory -Force -Path $svcSrc | Out-Null
     Copy-Item (Join-Path $ROOT "src\ui\core") (Join-Path $svcSrc "ui\core") -Recurse -Force
     Copy-Item (Join-Path $ROOT "src\tools")   (Join-Path $svcSrc "tools")   -Recurse -Force
@@ -240,30 +408,89 @@ if ($Target -in @("service", "all")) {
     }
     Write-Host "  Service staged (source mode, no Tk) -> $svcDir" -ForegroundColor Green
 
-    if ($Runtime) {
+    $rtDest = Join-Path $DIST "runtime"
+    if ($BuildRuntime) {
+        New-StagedRuntime -Dest $rtDest | Out-Null
+        Test-StagedRuntime -Dir $rtDest
+        Write-Host "  Runtime built and verified -> $rtDest" -ForegroundColor Green
+    } elseif ($Runtime) {
         if (-not (Test-Path (Join-Path $Runtime "python.exe"))) {
             throw "No python.exe under -Runtime '$Runtime'."
         }
-        $rtDest = Join-Path $DIST "runtime"
         Copy-Item $Runtime $rtDest -Recurse -Force
-        # Asserted, not assumed: a runtime missing pywin32 stages silently and
-        # then fails when the SCM starts the service, which is the worst place
-        # to find out.
-        $probe = & (Join-Path $rtDest "python.exe") -c `
-            "import win32serviceutil, psutil, watchdog; print('ok')" 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "Staged runtime cannot import the service's dependencies: $probe"
-        }
+        Test-StagedRuntime -Dir $rtDest
         Write-Host "  Runtime staged and verified -> $rtDest" -ForegroundColor Green
     } else {
-        Write-Host "  Runtime NOT staged: pass -Runtime <dir> with a Python that" -ForegroundColor DarkGray
-        Write-Host "  has pywin32, psutil and watchdog. See docs/ARCHITECTURE.md." -ForegroundColor DarkGray
+        Write-Host "  Runtime NOT staged: pass -BuildRuntime to build one, or" -ForegroundColor DarkGray
+        Write-Host "  -Runtime <dir> to stage one you prepared. Without it the" -ForegroundColor DarkGray
+        Write-Host "  service cannot run and k2 does not ship." -ForegroundColor DarkGray
     }
 }
 
 if ($Target -in @("probe", "all")) {
     Invoke-Nuitka -Script (Join-Path $ROOT "tools\build_probe.py") `
                   -ExtraArgs $probeArgs -Label "build_probe.exe"
+}
+
+if ($Target -eq "installer") {
+    # ISCC is an external toolchain, so its absence is reported the way the
+    # Nuitka pre-flight reports its own rather than failing somewhere obscure.
+    $isccCandidates = @(
+        (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe"),
+        (Join-Path $env:ProgramFiles "Inno Setup 6\ISCC.exe"),
+        # winget installs Inno per-user by default, which is where it actually
+        # landed on the machine this was first run on -- measured, after a
+        # "Successfully installed" that put nothing in either Program Files.
+        (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe")
+    )
+    $ISCC = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $ISCC) {
+        $found = Get-Command ISCC.exe -ErrorAction SilentlyContinue
+        if ($found) { $ISCC = $found.Source }
+    }
+    if (-not $ISCC) {
+        throw ("Inno Setup not found. Install it and retry:" + [Environment]::NewLine +
+               "    winget install JRSoftware.InnoSetup" + [Environment]::NewLine +
+               "Looked in: " + ($isccCandidates -join "; ") + " and PATH.")
+    }
+
+    # The payload has to be complete before it is packaged: an installer built
+    # from a half-built dist\ produces a setup program that installs a product
+    # which cannot start, and does it without complaining.
+    $required = @(
+        (Join-Path $DIST "PolyShield.exe"),
+        (Join-Path $DIST "runtime\python.exe"),
+        (Join-Path $DIST "service\polyshield_service.py"),
+        (Join-Path $DIST "service\.polyshield-distribution")
+    )
+    $missing = $required | Where-Object { -not (Test-Path $_) }
+    if ($missing) {
+        throw ("dist\ is incomplete; build it first with" + [Environment]::NewLine +
+               "    build.bat -BuildRuntime -Onefile -Target all" + [Environment]::NewLine +
+               "Missing: " + ($missing -join "; "))
+    }
+
+    Write-Host ""
+    Write-Host "  Compiling the installer ..." -ForegroundColor Cyan
+    $iss = Join-Path $ROOT "installer\polyshield.iss"
+
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $ISCC $iss 2>&1 | ForEach-Object { Write-Host $_ }
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    if ($code -ne 0) { throw "ISCC failed (exit $code)." }
+
+    $setup = Get-ChildItem $DIST -Filter "PolyShield-Setup-*.exe" |
+             Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($setup) {
+        $mb = [math]::Round($setup.Length / 1MB, 1)
+        Write-Host ""
+        Write-Host "  $($setup.FullName)  ($mb MB)" -ForegroundColor Green
+    }
 }
 
 # ---------- Gate --------------------------------------------------------------
@@ -294,7 +521,28 @@ if (Test-Path $guiExe) {
     # says it is present and then finds nothing planted for it.
     Write-Host ""
     Write-Host "  Engines in the built binary:" -ForegroundColor Cyan
-    & $guiExe --engines
+    # PIPED, and that is not cosmetic. --windows-console-mode=attach produces a
+    # GUI-subsystem binary, and PowerShell does not wait for those: the bare
+    # `& $guiExe --engines` this replaced returned instantly, left
+    # $LASTEXITCODE holding the PREVIOUS command's value, and printed the
+    # engine probe's "FAIL:" line asynchronously after "Build complete".
+    #
+    # So this gate -- the one whose comment says the build must not ship --
+    # never fired once between 4b.4 and 4c.5. Measured: unpiped 0, piped 1,
+    # Start-Process -Wait 1, for the same binary and the same failure.
+    # Consuming the output stream is what makes PowerShell wait for it.
+    # ErrorActionPreference relaxed for the same reason Invoke-Nuitka relaxes
+    # it: the probe writes its verdict to stderr, and with "Stop" in force
+    # PowerShell turns that line into a NativeCommandError and aborts with its
+    # own message instead of the one below.
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $engineOut = & $guiExe --engines 2>&1 | Out-String
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    Write-Host $engineOut
     if ($LASTEXITCODE -ne 0) {
         throw "Engine probe failed (exit $LASTEXITCODE) - an engine claims to be " +
               "available and did not detect. The build must not ship."

@@ -10,7 +10,7 @@ PolyShield is licensed under the MIT License (see [LICENSE](LICENSE)) and bundle
 - **Project**: [hanul93/kicomav](https://github.com/hanul93/kicomav)
 - **License**: MIT
 - **Author**: Kei Choi
-- **How PolyShield uses it**: K2 ships as part of the `kicomav` PyPI package and is invoked as `k2.exe`, a subprocess. K2 is the primary signature-detection engine.
+- **How PolyShield uses it**: K2 ships as part of the `kicomav` PyPI package and is invoked as a subprocess. In a source checkout that is the `k2.exe` console script; an installed build runs `<runtime>\python.exe -m kicomav.k2`, because the console script embeds the absolute interpreter path it was installed against and does not survive being relocated. K2 is the primary signature-detection engine. Its rule archives are downloaded by `k2 --update` and are not redistributed here.
 
 ### Guardian AI
 - **Project**: [MattEmilien/GuardianAI](https://github.com/MattEmilien/GuardianAI)

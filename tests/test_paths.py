@@ -90,7 +90,7 @@ def test_a_frozen_build_keeps_data_out_of_the_extraction_directory(
     resource_root() is the extraction directory under a onefile build -- it is
     deleted when the process exits. Nothing durable may resolve beneath it.
     """
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "AppData" / "Local"))
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
 
     data = paths.app_root()
     resource = paths.resource_root()
@@ -162,9 +162,29 @@ def test_source_resources_still_come_from_the_checkout(source):
     assert paths.resource_root() == ROOT
 
 
-def test_a_frozen_build_writes_under_the_user_profile(frozen, monkeypatch, tmp_path):
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
-    assert paths.app_root() == tmp_path / "Local" / "PolyShield"
+def test_a_distribution_writes_under_the_machine_shared_root(
+        frozen, monkeypatch, tmp_path):
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
+    assert paths.app_root() == tmp_path / "ProgramData" / "PolyShield"
+
+
+def test_a_distribution_root_is_not_under_any_user_profile(
+        frozen, monkeypatch, tmp_path):
+    r"""The v1.15 regression, pinned so it cannot come back.
+
+    %LOCALAPPDATA% resolves differently for the interactive user and for
+    NT AUTHORITY\LocalService, so a root defined from it puts the GUI and the
+    service in two different directories -- including the two cross-process
+    lock files, which then guard nothing.
+    """
+    profile = tmp_path / "Users" / "someone" / "Local"
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
+    monkeypatch.setenv("LOCALAPPDATA", str(profile))
+
+    root = paths.app_root()
+
+    assert root == tmp_path / "ProgramData" / "PolyShield"
+    assert profile not in root.parents and root != profile
 
 
 def test_the_data_root_is_not_defined_as_beside_the_executable(
@@ -174,19 +194,29 @@ def test_the_data_root_is_not_defined_as_beside_the_executable(
     Pinned because it is the obvious implementation and the one that produces a
     build that works from dist\\ and fails for every real installation.
     """
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
     assert paths.app_root() != pathlib.Path(sys.executable).resolve().parent
 
 
-def test_a_frozen_build_with_no_profile_still_returns_a_real_directory(
+def test_no_programdata_derives_the_root_from_the_system_drive(
+        frozen, monkeypatch):
+    """Derived rather than hard-coded to C:, which is wrong on a machine that
+    boots from another volume."""
+    monkeypatch.delenv("PROGRAMDATA", raising=False)
+    monkeypatch.setenv("SystemDrive", "X:")
+
+    assert paths.app_root() == pathlib.Path("X:\\") / "ProgramData" / "PolyShield"
+
+
+def test_a_stripped_environment_still_returns_a_real_directory(
         frozen, monkeypatch):
     """A service account can have a stripped environment.
 
     Beside the executable is a poor durable root, but it is a real directory --
     and better than the extraction directory that is about to be deleted.
     """
-    monkeypatch.delenv("LOCALAPPDATA", raising=False)
-    monkeypatch.delenv("APPDATA", raising=False)
+    monkeypatch.delenv("PROGRAMDATA", raising=False)
+    monkeypatch.delenv("SystemDrive", raising=False)
 
     assert paths.app_root() == pathlib.Path(sys.executable).resolve().parent
 
@@ -243,18 +273,18 @@ def test_a_staged_service_and_a_frozen_gui_agree_on_the_data_root(
 
     Without it the service asks is_frozen(), gets False, and resolves app_root()
     to the directory it was installed in -- while the compiled GUI two folders
-    away resolves it to %LOCALAPPDATA%\PolyShield. A service writing detections
+    away resolves it to the shared data root. A service writing detections
     somewhere the UI never looks is indistinguishable from a service that found
     nothing.
     """
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "Local"))
+    monkeypatch.setenv("PROGRAMDATA", str(tmp_path / "ProgramData"))
 
     staged_root = paths.app_root()
 
     monkeypatch.setattr(paths, "_FROZEN_OVERRIDE", True)
     frozen_root = paths.app_root()
 
-    assert staged_root == frozen_root == tmp_path / "Local" / "PolyShield"
+    assert staged_root == frozen_root == tmp_path / "ProgramData" / "PolyShield"
     assert staged_root != staged, "must not resolve to its own install directory"
 
 
@@ -317,16 +347,30 @@ def _resolve_in_subprocess(which: str, frozen: bool, env_extra: dict) -> dict:
 
 @pytest.mark.parametrize("frozen", [False, True])
 def test_the_gui_and_the_service_agree_on_where_data_lives(frozen, tmp_path):
-    """The invariant that matters most, in both modes.
+    r"""The invariant that matters most, in both modes.
 
     Compared canonically rather than against a literal: the two are separate
     processes that may start from different working directories, and what has
     to hold is that they land on the same directory -- they read the same
     threat database, the same settings file and the same quarantine.
+
+    Until v1.16 this test passed BOTH subprocesses the same %LOCALAPPDATA%,
+    which held constant the one variable that actually differs in production.
+    The assertion could not fail no matter what app_root() returned, and it did
+    not: a distribution resolved %LOCALAPPDATA%\PolyShield in each process, so
+    the GUI and the service used two different directories -- including for the
+    two cross-process lock files, which then granted both processes the lock at
+    once. See docs/ARCHITECTURE.md, "The shared data root".
     """
-    env = {"LOCALAPPDATA": str(tmp_path / "Local")}
-    gui = _resolve_in_subprocess("gui", frozen, env)
-    service = _resolve_in_subprocess("service", frozen, env)
+    # DIFFERENT %LOCALAPPDATA% per process, because that is what a real
+    # installation has: the GUI runs as the interactive user, the service runs
+    # as NT AUTHORITY\LocalService, whose profile is
+    # C:\Windows\ServiceProfiles\LocalService.
+    shared = {"PROGRAMDATA": str(tmp_path / "ProgramData")}
+    gui = _resolve_in_subprocess("gui", frozen, {
+        **shared, "LOCALAPPDATA": str(tmp_path / "user" / "Local")})
+    service = _resolve_in_subprocess("service", frozen, {
+        **shared, "LOCALAPPDATA": str(tmp_path / "service" / "Local")})
 
     assert gui["app_root"] == service["app_root"]
     assert gui["intelligence"] == service["intelligence"]
@@ -337,7 +381,7 @@ def test_the_gui_and_the_service_agree_on_where_data_lives(frozen, tmp_path):
 def test_neither_executable_puts_data_under_the_extraction_directory(
         which, tmp_path):
     got = _resolve_in_subprocess(
-        which, True, {"LOCALAPPDATA": str(tmp_path / "Local")})
+        which, True, {"PROGRAMDATA": str(tmp_path / "ProgramData")})
 
     resource = pathlib.Path(got["resource_root"])
     for key in ("app_root", "intelligence", "config"):
@@ -364,25 +408,132 @@ def test_a_frozen_build_launches_itself(frozen, monkeypatch):
     assert not any(a.endswith(".py") for a in argv)
 
 
-def test_a_helper_script_has_no_frozen_target_yet(frozen):
-    """Loud rather than wrong.
-
-    A frozen build has no interpreter and no .py files, so scheduled_scan.py
-    needs its own executable or a subcommand -- a Phase 4b decision. Returning
-    the source command anyway would register a scheduled task that fails at
-    02:00 some months later with nobody watching, which is the exact failure
-    class this phase exists to prevent.
-    """
-    with pytest.raises(paths.FrozenLaunchUndecided):
-        paths.script_launch_argv("scheduled_scan.py", r"C:\Users\me")
-
-
 def test_the_source_helper_script_command_is_unchanged(source):
     argv = paths.script_launch_argv("scheduled_scan.py", r"C:\Users\me")
 
     assert argv[0].endswith("python.exe")
     assert argv[1].endswith("scheduled_scan.py")
     assert argv[2] == r"C:\Users\me"
+
+
+@pytest.fixture
+def installed(monkeypatch, tmp_path):
+    r"""A frozen GUI sitting in a realistic install directory.
+
+    <install>\PolyShield.exe
+    <install>\runtime\python.exe
+    <install>\service\scheduled_scan.py
+    """
+    install = tmp_path / "Program Files" / "PolyShield"
+    (install / "runtime" / "Scripts").mkdir(parents=True)
+    (install / "service").mkdir(parents=True)
+    (install / "PolyShield.exe").write_text("exe", encoding="utf-8")
+    (install / "runtime" / "python.exe").write_text("py", encoding="utf-8")
+    (install / "runtime" / "Scripts" / "k2.exe").write_text("k2", encoding="utf-8")
+    (install / "service" / "scheduled_scan.py").write_text("#", encoding="utf-8")
+
+    monkeypatch.setattr(paths, "_FROZEN_OVERRIDE", True)
+    monkeypatch.setattr(sys, "argv", [str(install / "PolyShield.exe")])
+    return install
+
+
+# ══ install_root: the third lifetime ══════════════════════════════════════════
+
+def test_a_frozen_build_installs_beside_its_executable(installed):
+    assert paths.install_root() == installed
+
+
+def test_a_checkout_installs_at_the_project_root(source):
+    assert paths.install_root() == ROOT
+
+
+def test_a_staged_component_looks_one_level_up(staged):
+    r"""The row worth reading twice.
+
+    A staged service is a distribution but is NOT frozen, and its interpreter is
+    the staged runtime\python.exe -- so running_executable().parent would answer
+    <install>\runtime, one directory to the side, silently. Its own module root
+    is <install>\service, so the install root is one level up from that.
+    """
+    assert paths.install_root() == staged.parent
+    assert paths.install_root() != staged, "must not be its own install root"
+
+
+def test_the_install_root_is_not_the_disposable_one(installed, monkeypatch):
+    r"""Under onefile, resource_root() is a temp directory deleted on exit.
+
+    install_root() is where the user actually installed the product, and the
+    two are different places -- which is the whole reason this accessor exists.
+    """
+    extraction = pathlib.Path(r"C:\Users\me\AppData\Local\Temp\ONEFIL~1")
+    monkeypatch.setattr(paths, "resource_root", lambda: extraction)
+
+    assert paths.install_root() != paths.resource_root()
+    assert extraction not in paths.install_root().parents
+
+
+# ══ What lives under it ═══════════════════════════════════════════════════════
+
+def test_a_distribution_finds_k2_in_the_staged_runtime(installed):
+    """K2 is a setuptools console stub: it needs the kicomav package and an
+    interpreter, so it rides the runtime rather than shipping a second copy."""
+    assert paths.k2_exe() == installed / "runtime" / "Scripts" / "k2.exe"
+    assert paths.k2_exe().exists()
+
+
+def test_a_checkout_still_finds_k2_in_the_virtualenv(source):
+    assert paths.k2_exe() == ROOT / "kicomav_env" / "Scripts" / "k2.exe"
+
+
+def test_a_distribution_uses_the_staged_interpreter(installed):
+    assert paths.runtime_python() == installed / "runtime" / "python.exe"
+
+
+def test_a_checkout_uses_the_virtualenv_interpreter(source):
+    assert paths.runtime_python() == paths.venv_python()
+
+
+# ══ Launch targets ════════════════════════════════════════════════════════════
+
+def test_a_distribution_runs_helper_scripts_from_the_staged_runtime(installed):
+    r"""The 4b.3 decision, made.
+
+    Previously this raised FrozenLaunchUndecided, so scheduler.create_task()
+    was dead in a shipped build. A scheduled scan now runs the same staged
+    runtime the service does; that is why no second executable was needed.
+    """
+    argv = paths.script_launch_argv("scheduled_scan.py", r"C:\Users\me")
+
+    assert argv == [
+        str(installed / "runtime" / "python.exe"),
+        str(installed / "service" / "scheduled_scan.py"),
+        r"C:\Users\me",
+    ]
+
+
+def test_the_scheduled_command_survives_the_process_that_wrote_it(
+        installed, monkeypatch):
+    """This command is written into the Windows Task Scheduler and has to be
+    valid months later, long after any onefile extraction directory is gone."""
+    extraction = pathlib.Path(r"C:\Users\me\AppData\Local\Temp\ONEFIL~1")
+    monkeypatch.setattr(paths, "resource_root", lambda: extraction)
+
+    argv = paths.script_launch_argv("scheduled_scan.py", r"C:\Users\me")
+
+    assert not any(str(extraction) in a for a in argv)
+
+
+def test_a_distribution_with_no_staged_runtime_says_so(installed):
+    """A GUI-only build. Reporting beats registering a task that cannot run."""
+    (installed / "runtime" / "python.exe").unlink()
+
+    with pytest.raises(paths.StagedRuntimeMissing):
+        paths.script_launch_argv("scheduled_scan.py", r"C:\Users\me")
+
+
+def test_the_old_exception_name_still_resolves(installed):
+    """FrozenLaunchUndecided was renamed once its condition stopped existing."""
+    assert paths.FrozenLaunchUndecided is paths.StagedRuntimeMissing
 
 
 def test_bootstrap_is_a_no_op_when_frozen(frozen, monkeypatch):
@@ -518,3 +669,43 @@ def test_the_scan_would_catch_a_reintroduced_root(tmp_path):
     clean.write_text("from ui.core import paths\n"
                      "_D = paths.intelligence_dir()\n", encoding="utf-8")
     assert _derives_a_root(clean) is False
+
+
+# ══ k2 is invoked as a module, not as a relocatable stub ══════════════════════
+
+def test_a_distribution_runs_k2_as_a_module(installed):
+    r"""k2.exe embeds the absolute path of the interpreter it was installed
+    against, so relocating the runtime -- which is what installing does --
+    leaves it pointing at a directory that is not on the machine.
+
+    It then fails in the worst available way: exit 1, nothing on stdout, nothing
+    on stderr. A caller counting results reads that as a clean scan.
+
+    Measured twice: on a real install it listed 0 signatures, and on the build
+    machine the same relocated stub printed 23 until the original
+    dist\runtime was hidden, at which point it printed none.
+    """
+    argv = paths.k2_argv("--vlist")
+
+    assert argv[0] == str(installed / "runtime" / "python.exe")
+    assert argv[1:3] == ["-m", "kicomav.k2"]
+    assert argv[-1] == "--vlist"
+    assert not any(a.endswith("k2.exe") for a in argv), (
+        "the console stub does not survive being relocated")
+
+
+def test_a_checkout_still_runs_the_console_script(source):
+    argv = paths.k2_argv("--update")
+
+    assert argv[0].endswith("k2.exe")
+    assert argv[1:] == ["--update"]
+
+
+def test_k2_availability_follows_what_actually_runs(installed, monkeypatch):
+    """In a distribution the interpreter is what has to exist, not the stub."""
+    from ui.core import scanner
+
+    assert scanner.is_available() is True
+
+    (installed / "runtime" / "python.exe").unlink()
+    assert scanner.is_available() is False

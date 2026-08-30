@@ -6,9 +6,7 @@ Registers "Scan with PolyShield" on files, folders, and drives using:
   HKCU\Software\Classes\Directory\shell\PolyShield\
   HKCU\Software\Classes\Drive\shell\PolyShield\
 """
-import sys
 import winreg
-from pathlib import Path
 from ui.core import paths
 
 _MENU_LABEL = "Scan with PolyShield"
@@ -58,8 +56,14 @@ def register() -> tuple[bool, str]:
             key_path = _shell_key(root)
             with winreg.CreateKey(_HKCU, key_path) as key:
                 winreg.SetValueEx(key, "", 0, winreg.REG_SZ, _MENU_LABEL)
+                # running_executable(), NOT sys.executable. In a Nuitka build
+                # the latter names a python.exe beside the real binary that
+                # DOES NOT EXIST, so Explorer silently shows no icon -- the
+                # same trap documented in paths.running_executable(). The
+                # command value next to it was already routed correctly, which
+                # is what made this easy to miss.
                 winreg.SetValueEx(key, "Icon", 0, winreg.REG_SZ,
-                                  str(Path(sys.executable)))
+                                  str(paths.running_executable()))
             with winreg.CreateKey(_HKCU, key_path + r"\command") as cmd_key:
                 winreg.SetValueEx(cmd_key, "", 0, winreg.REG_SZ, cmd)
         return True, "Context menu registered successfully."

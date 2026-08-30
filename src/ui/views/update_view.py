@@ -26,6 +26,10 @@ from ui.core import guardian_engine as ge
 import ui.theme as theme
 from ui.core import paths
 
+#: Below this, k2 is running on the signatures compiled into its plugin
+#: modules alone -- the downloaded rule archives are missing.
+_K2_BASELINE_ONLY = 100
+
 _TAG_OK        = "ok"
 _TAG_ERR       = "err"
 _TAG_INFO      = "info"
@@ -171,6 +175,17 @@ class UpdateView(ctk.CTkScrollableFrame):
         self._k2_files = ctk.CTkLabel(info_row, text="—",
                                           font=ctk.CTkFont(size=12))
         self._k2_files.grid(row=1, column=1, sticky="w", padx=8)
+
+        # The count the engine reports, not the number of files downloaded.
+        # k2 carries ~23 signatures in its plugins and the other ~1240 arrive in
+        # archives -- and it reports success when it cannot fetch them, so an
+        # install can end up at under 2% detection with nothing saying so.
+        ctk.CTkLabel(info_row, text="Signatures:",
+                     font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
+            row=2, column=0, sticky="w")
+        self._k2_sigs = ctk.CTkLabel(info_row, text="checking…",
+                                     font=ctk.CTkFont(size=12))
+        self._k2_sigs.grid(row=2, column=1, sticky="w", padx=8)
 
         # Buttons + status badge
         btn_row = ctk.CTkFrame(card, fg_color="transparent")
@@ -779,6 +794,23 @@ class UpdateView(ctk.CTkScrollableFrame):
         except Exception:
             pass
 
+        # Off the UI thread: --vlist starts k2 and enumerates every plugin.
+        def _count():
+            n = sc.get_signature_count()
+            if not self.winfo_exists():
+                return
+            if n == 0:
+                text, colour = "unavailable", "#ff5555"
+            elif n < _K2_BASELINE_ONLY:
+                text = f"{n:,} — built-in only; run Update Now to download the rest"
+                colour = "#ffb86c"
+            else:
+                text, colour = f"{n:,}", theme.color("text")
+            self.after(0, lambda t=text, c=colour:
+                       self._k2_sigs.configure(text=t, text_color=c))
+
+        threading.Thread(target=_count, daemon=True).start()
+
     def _refresh_guardian_info(self):
         guardian_dir = paths.guardian_dir()
         if not guardian_dir.is_dir():
@@ -813,8 +845,39 @@ class UpdateView(ctk.CTkScrollableFrame):
         except Exception:
             pass
 
+    # Development-environment sections
+    #
+    # Two of the five update sections drive the *development* environment:
+    # Speakeasy is pip-installed into kicomav_env, and Guardian AI is a git
+    # clone. A distribution has neither, so paths.venv_pip() and
+    # paths.guardian_dir() name directories that are simply not there.
+    #
+    # They did report -- Popen raised and the handler logged str(exc) -- but
+    # what reached the log was "[WinError 2] The system cannot find the file
+    # specified", which reads as a broken installation rather than as a section
+    # that does not apply to this one.
+
+    _NOT_IN_BUILD = ("not available in an installed build: it updates the "
+                     "development environment, which a distribution does not ship")
+
+    def _dev_only_unavailable(self, section: str, tag: str) -> bool:
+        """True (and logged) when `section` cannot run in this installation."""
+        if not paths.is_distribution():
+            return False
+        self._log_section_header(section, tag)
+        self._log_append(f"  [SKIP] {section} is {self._NOT_IN_BUILD}.\n", _TAG_ERR)
+        self._status_cb(f"{section}: not available in an installed build")
+        return True
+
     def _refresh_speakeasy_info(self):
         """Read installed speakeasy-emulator version via pip show (background)."""
+        if paths.is_distribution():
+            # pip show interrogates the development virtualenv. Reporting "not
+            # installed" from a build states something about the product that
+            # this check cannot actually determine.
+            self._speakeasy_version_lbl.configure(text="n/a in an installed build")
+            return
+
         def _run():
             pip = str(paths.venv_pip())
             try:
@@ -904,8 +967,9 @@ class UpdateView(ctk.CTkScrollableFrame):
             return
         guardian_dir = paths.guardian_dir()
         if not guardian_dir.is_dir():
-            self._log_append("  [SKIP] guardianai/ not installed — run setup_guardian.bat first.\n",
-                             _TAG_ERR)
+            remedy = (self._NOT_IN_BUILD if paths.is_distribution()
+                      else "run scripts\\components\\setup_guardian.bat first")
+            self._log_append(f"  [SKIP] Guardian AI is {remedy}.\n", _TAG_ERR)
             if self._upd_all:
                 self._run_intel_recent()
             return
@@ -1261,6 +1325,9 @@ class UpdateView(ctk.CTkScrollableFrame):
     def _run_speakeasy_update(self):
         if self._upd_speakeasy:
             return
+        if self._dev_only_unavailable("Speakeasy Emulator", _TAG_SPEAKEASY):
+            return
+
         self._upd_speakeasy = True
         self._set_speakeasy_busy(True)
         self._log_section_header("Speakeasy Emulator", _TAG_SPEAKEASY)

@@ -62,7 +62,7 @@ Scan view "▼ Scan Pipeline" panel
   ↓  all five engines are peers in pipeline_order; K2 is no longer "primary"
   ↓  default order shown below; user reorders any row with ↑/↓
 
-[1. K2 Engine]    — toggleable; proprietary signature DB via k2.exe subprocess
+[1. K2 Engine]    — toggleable; signature DB via a k2 subprocess (paths.k2_argv)
                     pause/resume via NtSuspendProcess; produces JSON report
                     can be removed entirely (k2.exe doesn't even need to exist)
 [2. Defender]     — MpCmdRun.exe -ScanType 3; scans dirs as units, not per-file
@@ -342,6 +342,12 @@ step, after a clean-machine run passes.
 | 4b.4 | Optional engines, one at a time | Each individually verified, by detection and not by launch |
 | 4b.5 | Clean Windows Sandbox run | **20/20 pass** — see *Verified on a clean machine* |
 | 4b.6 | onefile + console mode | **20/20 on a clean machine**, onefile layout. 105 MB folder → 26 MB single file |
+| 4c.0 | Shared data root + privilege boundary | GUI and LocalService resolve the same root; intelligence writes routed |
+| 4c.1 | `install_root()` and the launch seams | All three roots correct in a real build; scheduled scans runnable again |
+| 4c.2 | The runtime builds itself, with K2 | Hash pinned, `import site` asserted, pywin32 off System32, k2 plugins counted |
+| 4c.3 | Distribution-mode fixes | Menu icon resolves; dev-only sections say so; teardown is idempotent |
+| 4c.4 | `PolyShield-Setup.exe` | Compiles; ACL boundary verified on a real tree; rollback wired |
+| 4c.5 | Clean-machine verification | **47 checks, 0 failures** on a machine with nothing: install, reinstall over a dirty machine, uninstall |
 
 **Failed milestones must be cleanly reversible.** A failed build must not
 become the base for the next attempt: rebuild `dist/` rather than building over
@@ -388,8 +394,8 @@ yield the right directory while resting on a path to nothing, and which would
 be wrong for onefile besides.
 
 **3. Every `mkdir` assumed its parent existed.** True in a checkout, which
-always has a project root; false on a distribution's first run, where
-`%LOCALAPPDATA%\PolyShield` does not exist yet. `scanner.py`'s module-level
+always has a project root; false on a distribution's first run, where the
+shared data root does not exist yet. `scanner.py`'s module-level
 `LOGS_DIR.mkdir(exist_ok=True)` raised `WinError 3` at import and took the app
 down before the first window was drawn.
 
@@ -421,6 +427,445 @@ files out of the image.
 Note that every `ui.core` import in the service is *inside a method*. A static
 analyser sees none of them, so `--include-package=ui.core` is not
 belt-and-braces: without it the service compiles cleanly and then cannot start.
+
+### The runtime builds itself (v1.16, 4c.2)
+
+`-Runtime <dir>` took a directory the developer had prepared by hand, so the
+release artifact depended on a machine state nobody had recorded.
+`build.bat -BuildRuntime` constructs it instead, from a hash-pinned python.org
+embeddable distribution, and asserts every property the service depends on:
+
+```
+[runtime] hash verified
+[runtime] import site enabled
+[runtime] installed: pywin32, psutil, watchdog, kicomav
+[runtime] pywin32 loads from the runtime, not System32
+[runtime] k2: 1263 signatures across the loaded plugins
+```
+
+**`import site` is one commented-out line away from a runtime that imports
+nothing.** The official `python-3.12.7-embed-amd64.zip` ships
+`python312._pth` containing `#import site`. A `._pth` file replaces `sys.path`
+wholesale, so with that line commented the path holds only `python312.zip` and
+the runtime directory — `Lib\site-packages` never joins it and *nothing pip
+installs there can be imported*. Measured both ways: commented, `sys.path` has
+two entries and `import pythoncom` raises `ModuleNotFoundError`; uncommented,
+six entries and pywin32 loads. The service would have failed at SCM start as
+**error 1053**, and every explanation of 1053 in these docs points elsewhere.
+The build enables the line and then asserts it took.
+
+**pywin32 needs no System32 installation.** `pywin32_postinstall -install`
+copies `pywintypes3XX.dll` / `pythoncom3XX.dll` into System32 — shared,
+system-owned state an uninstaller must not casually remove. It is unnecessary
+here: `pywin32.pth` imports `pywin32_bootstrap`, which calls
+`os.add_dll_directory()` on the runtime's own `pywin32_system32\`. Proven
+rather than assumed, by a version mismatch that removes all doubt — this
+machine has only `pythoncom313.dll` in System32 while the runtime is 3.12, and
+the runtime resolved `…\dist\runtime\Lib\site-packages\pywin32_system32\pythoncom312.dll`.
+The build fails if pywin32 ever resolves outside the runtime, so the installer
+can skip `pywin32_postinstall` entirely and the uninstaller never has to reason
+about who else on the machine shares a copy.
+
+**K2 ships, and its capability is measured rather than claimed.** K2 has no
+signature data file: its ~1263 virus names live inside the 51 modules under
+`kicomav/plugins/`, which pip installs with the package. `k2 --update` does
+**not** add signatures — it fetches `whitelist.txt` and two YARA archives.
+K2 loads those plugins with `SourceFileLoader` and swallows every per-plugin
+failure, so a build that lost them still starts, still exits zero and still
+reports every scan clean. `k2 --vlist` prints what actually loaded, and both
+the build gate and `tools/engine_probe.py` require a non-trivial count.
+Deliberately not detection-by-sample: EICAR is the obvious sample and Defender
+deletes it between the write and the scan — measured, the file was gone before
+k2 opened it.
+
+**The build must not depend on which shell launched it.** `Get-FileHash` and
+`Expand-Archive` live in auto-loaded modules, and a Windows PowerShell 5.1
+child launched from a PowerShell 7 session inherits PS7 module paths and cannot
+find them — measured, as *"The term Get-FileHash is not recognized"* from a
+build started inside pwsh. Both are now .NET calls.
+
+### k2 prunes the directory it is pointed at
+
+`k2 --update` performs orphan detection: it downloads a manifest and **deletes
+every file in its rules directory that the manifest does not list**
+(`kavcore/k2updater.py`, `remove_orphan_files`). It finds that directory
+through `%SYSTEM_RULES_BASE%`.
+
+`config/.env` — generated by `install.bat` from `config/.env.template` — set
+that to PolyShield's own `rules\`, which is also where
+`download_yara_community()` publishes the YARA Forge generations. So every
+*Update Center → K2 Engine Signatures* click deleted `rules\community\`, the
+`.active` pointer included, and `yara_engine` then reported "no rules" with
+nothing to explain it. Observed twice on a live tree before the cause was
+found; the first diagnosis blamed the working directory, which was wrong — k2
+never consults `cwd` for this.
+
+k2 now gets `paths.k2_rules_dir()` (`<data>\k2\rules`), a tree it owns alone,
+passed in the environment by `scanner._k2_env()`. Passing it there rather than
+rewriting `.env` matters: kicomav calls `load_dotenv(override=False)`, so a
+value already in the environment wins — which repairs existing installations
+without touching a generated file, and works in a distribution that has no
+`.env` at all.
+
+### Verification that can fail (v1.16, 4c.5)
+
+`tools/sandbox_verify.ps1` grew from 20 checks to 47. The additions are not
+more of the same: the original set verified the **build**, and these verify the
+**installer**, which registers a service and rewrites ACLs and has to be able
+to undo both.
+
+**The root invariant, tested the way it actually breaks.** The old check ran
+`polyshield_service.py --paths` as the interactive user and compared it with
+the GUI, also run by the interactive user -- it compared a process with itself
+and could not fail. The service runs as `LocalSystem`, whose profile is
+`C:\Windows\system32\config\systemprofile`, and that is the account whose
+answer matters. `Invoke-AsSystem` runs it through `schtasks /ru SYSTEM` so the
+comparison is between the two identities that actually differ. The unit test had
+the same defect and was corrected the same way: `tests/test_paths.py` now hands
+the two subprocesses *different* `%LOCALAPPDATA%` values.
+
+**The privilege boundary, probed without elevation.** `setup_data_root.ps1
+-Verify` refuses to run elevated. An administrator can write everywhere the
+root grants `Administrators:F`, so the probe would report the whole tree
+writable and fail for a reason that says nothing about the boundary -- and if
+the expectations were ever inverted it would *pass* while proving nothing. The
+sandbox drops to a basic-user token with `runas /trustlevel:0x20000`.
+
+**A dirty machine, on purpose.** Rather than racing a kill against the
+installer, the retry path is tested deterministically: a service is registered
+under PolyShield's name pointing at a binary that does not exist, and the
+installer has to recover from it. Installing twice over an existing install is
+checked separately for idempotency.
+
+**Retention, proved with something recognisable.** A sentinel file is written
+into `quarantine\` before uninstall and checked afterwards. "The directory
+still exists" is not the same claim.
+
+**A scheduled scan is created end to end**, through the staged runtime with the
+service tree on `sys.path` -- the 4c.1 fix, in the shape a real install has.
+The registered command is then checked to name `runtime\python.exe` rather than
+anything under a onefile extraction directory, which is gone the moment the
+process that wrote it exits. It also makes the "scheduled task removed" check
+after uninstall mean something: before this, no task was ever created, so that
+check passed vacuously.
+
+#### What eleven runs found
+
+The harness was written, then run against a real install eleven times. Nothing
+below was predicted; each was found by running it.
+
+**The shipped binary did not contain the phase's central fix.** The first run
+disagreed on the data root — because `dist\PolyShield.exe` had never been
+rebuilt after 4c.0. Only `-Target service` had been run. The binary still had
+the old `%LOCALAPPDATA%` root, no `--unregister`, and no context-menu flag.
+Everything else in this phase was correct and none of it was in the product.
+
+**The build's engine gate had never fired.** `--windows-console-mode=attach`
+produces a GUI-subsystem binary, and PowerShell does not wait for those, so
+`& $guiExe --engines` returned instantly with `$LASTEXITCODE` holding the
+*previous* command's value and the probe's `FAIL:` line arriving after
+"Build complete". Measured: unpiped `0`, piped `1`, `Start-Process -Wait` `1`,
+same binary and same failure. The gate whose comment reads "The build must not
+ship" was a no-op from 4b.4 until here. Consuming the output stream is what
+makes PowerShell wait.
+
+**`k2.exe` does not survive being installed.** It is a setuptools console stub
+that embeds the ABSOLUTE PATH of the interpreter it was pip-installed against.
+Installing relocates the runtime, and the stub then points at a directory that
+is not on the machine — failing with **exit 1 and nothing on stdout or stderr**,
+which a caller counting results reads as a clean scan. Reproduced on the build
+machine by hiding `dist\runtime`: the same relocated stub that had just printed
+23 signatures printed none. `paths.k2_argv()` now runs
+`<runtime>\python.exe -m kicomav.k2`, which has no embedded path.
+
+**A windowless process cannot spawn `sc.exe` with an inherited stdin.** An
+uninstaller runs the exe with `runhidden`, so it has no console and its standard
+handles are invalid; `sc.exe` failed with `[WinError 6] The handle is invalid`
+before doing anything, and the uninstall reported success while the service was
+still RUNNING. `capture_output` covers stdout and stderr — stdin is the one left
+inherited, and it now gets `subprocess.DEVNULL`. The same bug made
+`get_task_info()` report no scheduled task for one that existed, so the
+uninstaller skipped deleting it. The context-menu step succeeded throughout,
+because it uses `winreg` and spawns nothing.
+
+**Restart Manager hung a silent uninstall.** `CloseApplications=yes` applies to
+uninstall as well as install; a `/VERYSILENT` uninstall sat idle at 0% CPU
+indefinitely and produced no report at all. Turning it off then broke *reinstall*
+— a running service holds the staged runtime open and Inno failed with exit 5 —
+so the installer now stops the service in `CurStepChanged(ssInstall)`, before
+any file is replaced.
+
+**Three checks passed for the wrong reason, and one asserted the defect.**
+`data root under LOCALAPPDATA` asserted exactly what 4c.0 made wrong, and would
+have gone green again the moment the bug came back. The ACL probe returned no
+output from a detached `runas`, and an empty result satisfied a "contains no
+[FAIL]" test. `schtasks /query` for a *missing* task prints an error containing
+the task name, so a `-notmatch` test reported the task present precisely when it
+had been removed. Reading a registry default value as a property named
+`(default)` returned `System.Object[]`, which is truthy.
+
+**A run that hangs writes no report at all**, which from outside is
+indistinguishable from a run that failed. `Add-Check` now appends to
+`progress.log` as it goes, and the findings are written before the richer report
+is attempted. That is what localised the hang to the uninstall step, and what
+made the last three iterations diagnosable rather than guesswork.
+
+Final state: **47 checks, 0 failures**, on a machine with no Python, no
+developer environment variables, and no source tree — through install, reinstall
+over a deliberately dirty machine, and uninstall.
+
+**`k2 --update` reports success when it cannot reach its source.** Measured on
+a clean install: `[No updates available]`, exit 0, an empty rules directory, and
+23 signatures instead of 1263 — a scanner at under 2% of its detection with
+nothing anywhere saying so. k2 carries only ~23 signatures in its plugin
+modules; the other ~1240 arrive in archives it downloads.
+
+`installer/seed_k2_rules.ps1` therefore does not trust the exit code. It waits
+for the update source to become reachable — an installer running seconds after a
+machine boots is racing the network stack — runs the update, and then **counts
+what the engine can actually name**, before and after. Everything it concludes
+goes to `<data root>\logs\k2_seed.log`, because the step runs `runhidden` and a
+failure there is otherwise invisible by construction.
+
+If the archives are still missing it says so and exits 0: an install without a
+network is ordinary, and the Update Center can fetch them later. What it does
+not do is finish quietly.
+
+The same number is surfaced in the product. The Update Center's K2 card shows
+the count `k2 --vlist` reports rather than the number of files downloaded —
+three files whether or not they contain anything — and renders a count under 100
+as *"built-in only; run Update Now to download the rest"*.
+
+Verified in the sandbox: `signatures before: 23` → `signatures after: 1263`.
+
+Run it with `python tools\make_sandbox_wsb.py` and open the generated `.wsb`.
+`--skip-install` keeps the build checks and skips the install cycle.
+
+### The installer (v1.16, 4c.4)
+
+`installer/polyshield.iss`, compiled by `build.bat -Target installer` into
+`dist\PolyShield-Setup-<version>.exe` (52.5 MB from a 126 MB payload). Tracked,
+for the same reason `build.ps1` is.
+
+Three steps, and the order is the design:
+
+1. **`setup_data_root.ps1`** creates `%ProgramData%\PolyShield` with explicit
+   per-subtree ACLs, **before the application first runs**. If the unelevated
+   GUI creates `intelligence\` first it inherits the root ACL, and the privilege
+   boundary exists only in this document. `settings.py` and `intel_updater.py`
+   both `mkdir(parents=True)` on their own, so this is not hypothetical.
+2. **`register_service.ps1`** registers the service from the staged runtime.
+3. The app writes its **own** Explorer verb (`--register-context-menu`), so the
+   command string has one implementation — `paths.app_launch_argv()` — rather
+   than a second copy inside an `.iss` file.
+
+Directories are created *before* the root is locked down. Locking first makes
+creating them depend on the caller being an Administrator, which is true of the
+installer and needlessly untrue of a rollback retry.
+
+`-Verify` re-runs the boundary as a probe: it tries to write into every
+subdirectory as the **current** user and fails if any is on the wrong side.
+Run it unelevated — an administrator can write anywhere and would see a
+boundary that is not there. Measured on a real tree: `intelligence\`,
+`rules\community\`, `state\`, `guardianai\`, `k2\` read-only; `config\`,
+`logs\`, `telemetry\`, `quarantine\`, `rules\user_rules\` writable. That is the
+half of the invariant no unit test can reach, because it is a property of the
+installed directory rather than of the code.
+
+**Rollback.** A failed or cancelled install runs `PolyShield.exe --unregister`
+from `DeinitializeSetup`, which is reached on every exit. `unregister_all()`
+treats absent as success, so it is safe after a failure at any point — including
+before anything was registered. Without it, a run that registers the service and
+then fails leaves the registration behind, and repeated attempts accumulate.
+
+**Uninstall** removes program state always and user data only on request. The
+threat database, quarantine, logs and settings are **kept** by default behind an
+unticked checkbox: quarantine may hold the only copy of a file somebody wants
+back, and an uninstaller that deletes it silently is one nobody can undo.
+
+**No System32.** No `pywin32_postinstall`. The staged runtime carries its own
+`pywin32_system32\` and `build.ps1` fails if pywin32 ever resolves outside it,
+so the uninstaller never has to reason about who else on the machine shares a
+system DLL.
+
+**The service is required, not optional.** Intelligence updates, the ignore
+list and k2 signature updates are all service-owned in a distribution, so a
+service-less install would have no way to update its threat data.
+
+#### Two bugs this phase found by running things
+
+**The service account was not what everything said it was.** `sc qc` reports
+`LocalSystem`; the docs and `setup_service.bat` both said
+`NT AUTHORITY\LocalService`, and the script granted ACLs to that account —
+rights handed to an identity nothing runs under. `pywin32` installs with no
+account argument and LocalSystem is its default. Corrected in the docs and the
+script; narrowing the account is deliberate work with its own verification,
+because process termination, watched-folder reads and autonomous quarantine
+currently work only because the account is wider than documented.
+
+**`-NoClean` service builds shipped stale source.** `Copy-Item -Recurse` copies
+*into* an existing destination rather than merging, so the second build produced
+`dist\service\src\ui\core\core\` and left the original tree untouched — a
+distribution carrying last week's `paths.py` under this week's version number,
+silently. Only the iteration path hit it, which is where it was least likely to
+be noticed. Found by `register_service.ps1 -PreflightOnly` on its first run: it
+asks the staged service to resolve its own paths, and got an `AttributeError`
+for a function added days earlier. The staging now clears each destination
+first, and the pre-flight is the standing check.
+
+### Undoing an install (v1.16, 4c.3)
+
+`src/ui/core/integration.py` removes the three things that outlive the process:
+the Windows service, the Explorer verb, and the scheduled task. It exists as a
+module rather than as steps inside the installer because a *failed* install
+needs the same operation a successful uninstall does -- this document already
+records that a run which registers the service and then fails elsewhere leaves
+the registration behind, and that repeated attempts accumulate dirty state.
+
+Three properties, each load-bearing and none obvious:
+
+- **Absent is success.** A rollback runs after an unknown amount of the install
+  has happened, so "it was not there" is at least as common as "it was". `sc`
+  1060 and a missing scheduled task are both reported as done.
+- **Every step is attempted even when an earlier one fails.** They are
+  independent, and the service step is the one needing elevation -- so an
+  unelevated caller still gets the verb and the task cleaned up. Verified:
+  `--unregister` without elevation reports `Access is denied` for the service
+  and completes the other two.
+- **The service is stopped before it is deleted.** Deleting a running service
+  only marks it for deletion; it lingers until the last handle closes, and the
+  next install then fails with *"marked for deletion"*, which reads as a
+  corrupt system rather than as a reboot away.
+
+Reached as `PolyShield.exe --unregister`, alongside `--paths` and `--engines`,
+and handled *before* the single-instance lock for the same reason those are: an
+uninstaller that silently exits 0 because a window happened to be open would
+leave the service and the verb behind.
+
+Nothing here touches user data. `tests/test_integration_teardown.py` fails if
+the module so much as names `app_root`, `quarantine_dir`, `rmtree` or `unlink`.
+
+### Sections that only apply to a checkout (4c.3)
+
+Two of the five Update Center sections drive the *development* environment:
+Speakeasy is pip-installed into `kicomav_env`, and Guardian AI is a git clone.
+A distribution has neither. They did report -- `Popen` raised and the handler
+logged `str(exc)` -- but what reached the log was *"[WinError 2] The system
+cannot find the file specified"*, which reads as a broken installation rather
+than as a section that does not apply to this one. Both now say so, and the
+Guardian remedy no longer names a `scripts\` directory a distribution does not
+ship.
+
+The Explorer menu **icon** came from `sys.executable`, which in a Nuitka build
+names a `python.exe` beside the real binary that does not exist -- so Explorer
+silently showed no icon. The *command* beside it was already routed through
+`paths` and was correct, which is what made the icon easy to miss.
+
+### The shared data root, and why it is not the user profile (v1.16)
+
+Until v1.16 `app_root()` resolved a distribution to `%LOCALAPPDATA%\PolyShield`.
+That was wrong, and wrong in a way neither gate could see.
+
+The service runs as `NT AUTHORITY\LocalService`, whose profile is
+`C:\Windows\ServiceProfiles\LocalService`. So the two components resolved two
+different directories:
+
+```
+GUI           C:\Users\<user>\AppData\Local\PolyShield
+LocalService  C:\Windows\ServiceProfiles\LocalService\AppData\Local\PolyShield
+```
+
+A source checkout does not have the problem, because `setup_service.bat` grants
+LocalService Modify on the project root. That is a *permission* fix, and it
+cannot be applied here — two different paths are not a permission problem.
+
+**Why this was worse than a split cache.** Two of the files underneath are
+cross-process locks: `config/ui_settings.json.lock` (`settings.py`) and
+`intelligence/.update.lock` (`intel_updater.py`). Both exist precisely because
+two processes write the file. A lock at a path each process resolves
+differently does not merely fail to protect: it hands **both** processes the
+lock at once, and what it guards is a SQLite write.
+
+**Neither gate could catch it**, and both are worth knowing about as a class:
+
+- `tests/test_paths.py` passed *the same* `%LOCALAPPDATA%` to both subprocesses.
+  It held constant the one variable that differs in production, so the assertion
+  could not fail no matter what `app_root()` returned. It now passes deliberately
+  different values.
+- `tools/sandbox_verify.ps1` runs `polyshield_service.py --paths` as the
+  interactive user, not as LocalService — so it compared a process against
+  itself. `polyshield_service.py` even documents that diagnostic as "the only
+  way to check the one that runs as LocalService"; that was the intent, not what
+  the invocation delivered.
+
+A distribution now resolves `%ProgramData%\PolyShield`, which is where the
+service already kept `service_token.txt` and `service.log` — two absolute
+literals that lived outside `paths.py` entirely, in two different modules, and
+agreed only because someone kept them agreeing. They now resolve through
+`state_dir()`.
+
+### The privilege boundary (v1.16)
+
+`%ProgramData%` is not user-writable by default, and for most of this tree that
+default is correct. The invariant is narrower than "the GUI cannot write":
+
+> An unprivileged process cannot modify authoritative intelligence that the
+> privileged service trusts when making detection decisions.
+
+The split is on **reach**, not on sensitivity:
+
+| | Owner | Why |
+|---|---|---|
+| `intelligence/`, `rules/community/`, `guardianai/` | service | detection **input** — poisoning it disables protection machine-wide |
+| `state/` | service | the IPC token, the log, the event feed |
+| `quarantine/` | user | remediation **output**, never read to reach a verdict |
+| `config/`, `logs/`, `telemetry/`, `rules/user_rules/` | user | settings, reports, FP-rate stats, user-authored rules |
+
+Quarantine deliberately stays user-writable, and the reason that holds
+regardless of the service account is that it is remediation *output*, never
+detection *input*: nothing consults it to decide what is malicious. That is a
+property of the code rather than a promise, so
+`tests/test_privilege_boundary.py` fails if any module outside
+`quarantine.py`, `scanner.py` and `paths.py` so much as names the directory.
+
+A second reason binds only under the account this project *intends* to use.
+Quarantine has to read and move files inside the interactive user profile, and
+`LocalService` cannot reach those without a manual per-folder `icacls` (see
+WINDOWS_SERVICE.md, *Service can't access watched folder*). The service in fact
+runs as `LocalSystem`, which can — so that argument does not bind today, and
+binds again the moment the account is narrowed to the documented one. Routing
+quarantine through the service would then break the core action of the product
+in order to protect data that is not a detection input.
+
+**The deployed account is `LocalSystem`, not `LocalService`.** `pywin32`
+installs with no account argument and that is its default; the docs and
+`setup_service.bat` claimed the narrower account while granting it ACLs it
+never used. Corrected in v1.16 — see WINDOWS_SERVICE.md, *Permission Setup*.
+It does not weaken the boundary this section describes: the ACLs keep
+`intelligence/` unwritable by unprivileged users either way, which is what the
+invariant is about.
+
+Two files moved to keep the boundary legible rather than to add structure:
+`pattern_stats.sqlite` out of `intelligence/` (it is written on every scan by
+the unelevated GUI, and feeds an FP-rate label, never a verdict), and
+`service_events.json` out of `config/` (the process that only displays the
+event feed should not be able to write it).
+
+**GUI writes to `intelligence/` therefore route through the authenticated IPC** —
+`RUN_INTEL_UPDATE` already existed; `IGNORE_HASH` / `UNIGNORE_HASH` /
+`CLEAR_IGNORED` are new. `ignore_list.py` follows the same router/executor shape
+`intel_updater` already uses: `add()` routes, `add_local()` executes, and the
+service handler calls the executor so it cannot recurse into itself. Reads are
+never routed — `Users:Read` is enough. A routed write invalidates this process's
+Guardian cache, or the next scan keeps answering from the pre-write set.
+
+**What this boundary does not stop.** The IPC token is readable by every local
+user by design — the unelevated UI has to authenticate with it — so the handlers
+are reachable by any process running as the user. The boundary constrains
+*shape*, not *origin*: a hostile process can still request one whitelist entry,
+but it can no longer corrupt the database file, drop the table, or write
+arbitrary content into service-owned storage. Treat it as attack-surface
+reduction, not as authentication of the caller.
 
 ### The service ships as source: only one entry point survives the compiler
 
@@ -484,7 +929,7 @@ its absence: the service must never need a display.
 The one thing this breaks, and how it is fixed, is worth being precise about.
 A source-mode service asks `is_frozen()`, gets `False`, and resolves
 `app_root()` to **the directory it was installed in** — while the compiled GUI
-two folders away resolves it to `%LOCALAPPDATA%\PolyShield`. A service writing
+two folders away resolves it to `%ProgramData%\PolyShield`. A service writing
 detections somewhere the UI never looks is indistinguishable from a service that
 found nothing, which is exactly the failure this phase exists to prevent.
 
@@ -496,7 +941,7 @@ the installing user's environment, and a marker survives the service being
 started by the SCM at boot, from `services.msc`, or by a developer from a shell.
 
 Verified end to end: the staged service and the compiled build both report
-`%LOCALAPPDATA%\PolyShield`, while the service still reports `frozen: false`
+`%ProgramData%\PolyShield`, while the service still reports `frozen: false`
 and keeps its own `resource_root`. Data is shared; a component's own files are
 not.
 
@@ -519,7 +964,7 @@ four things that must be absent.
 
 The script asserts the machine is clean before it asserts anything else — no
 Python on PATH, no `PYTHONPATH` / `POLYSHIELD_DATA_DIR` / `VIRTUAL_ENV`, no
-pre-existing `%LOCALAPPDATA%\PolyShield`. Without that, every later result is
+pre-existing `%ProgramData%\PolyShield`. Without that, every later result is
 ambiguous: the binary might be finding a developer's interpreter.
 
 **20 checks, 20 passed.** The ones worth naming:
@@ -643,8 +1088,8 @@ ClamAV deserves a note, because it reports *available* from a checkout and
 *unavailable* from the build, and that difference is correct rather than a
 regression. `_find_exe()` consults the `clamav_path` setting first and then two
 standard install locations. The developer checkout has that setting pointing at
-a non-standard install; the build reads a fresh profile under
-`%LOCALAPPDATA%\PolyShield` that has no such key, and ClamAV is not at either
+a non-standard install; the build reads a fresh data root under
+`%ProgramData%\PolyShield` that has no such key, and ClamAV is not at either
 standard path. A fresh install has not been configured yet, and says so.
 
 No EICAR anywhere in the probe: Defender quarantines it on write, which would
@@ -717,7 +1162,7 @@ application. `emulate_engine` already treats the import as optional and
 `test_emulate_report.py` covers the half that matters — the report parser —
 without an emulator. Speakeasy stays a source-checkout feature.
 
-## Path Resolution (v1.15)
+## Path Resolution (v1.15, extended v1.16)
 
 `src/ui/core/paths.py` is the only module that decides where anything lives.
 Before it, **33 sites across 26 files** each recomputed the project root from
@@ -743,15 +1188,82 @@ rather than about being frozen.
 ### The API
 
 ```python
-paths.app_root()       # durable writable application data
-paths.resource_root()  # files that ship with the program
-paths.is_frozen()      # the single predicate
+paths.app_root()       # durable, writable   -- application data
+paths.install_root()   # durable, read-only  -- where the product is installed
+paths.resource_root()  # DISPOSABLE          -- the onefile extraction directory
+paths.is_frozen()      # compiled build?
+paths.is_distribution()  # compiled, OR shipped-as-source inside one
 ```
 
 plus named accessors — `intelligence_dir()`, `quarantine_dir()`, `logs_dir()`,
 `config_dir()`, `rules_dir()`, `guardian_dir()` — so a caller never has to
 remember which of the two roots a directory belongs to. That is the mistake the
 module exists to prevent.
+
+### The install root is a third lifetime (v1.16)
+
+DATA vs RESOURCE was enough while a build was a folder. `--onefile` split
+RESOURCE in two, because the extraction directory is deleted on exit but the
+directory the user installed into is not:
+
+| | lifetime | writable | onefile location |
+|---|---|---|---|
+| `app_root()` | durable | **yes** | `%ProgramData%\PolyShield` |
+| `install_root()` | durable | no | `C:\Program Files\PolyShield` |
+| `resource_root()` | **disposable** | no | `%TEMP%\ONEFIL~1\` — deleted on exit |
+
+`runtime\`, `service\` and the shipped `k2.exe` sit beside `PolyShield.exe` in
+the install directory, and are reachable from neither of the other two roots.
+Anything written into the Windows Task Scheduler or the registry must be built
+from `install_root()`, because those commands have to still be valid months
+later — long after the extraction directory is gone.
+
+The contract is spelled out for **all four** contexts, so its meaning does not
+depend on which of them happens to ship today:
+
+| context | returns | note |
+|---|---|---|
+| frozen GUI | `running_executable().parent` | not `sys.executable` — that names a file which does not exist |
+| frozen service | `running_executable().parent` | not shipped today; a frozen component **must sit at the install root** |
+| source-mode staged service | `resource_root().parent` | its own module root is `<install>\service` |
+| source checkout | `_MODULE_ROOT` | unchanged |
+
+The staged-service row is the one worth reading twice. That component is a
+*distribution* but is not *frozen*, and its interpreter is the staged
+`runtime\python.exe` — so `running_executable().parent` would answer
+`<install>\runtime`, one directory to the side, and would do it silently.
+
+Verified by running both: a frozen GUI and a source-mode staged service, in
+separate processes, resolve the same `install_root()`, `runtime_python()`,
+`k2_exe()` and `app_root()`.
+
+### What 4c.1 settled
+
+Three questions `paths.py` had deliberately left open:
+
+- **`k2_exe()`** resolved into `kicomav_env\` — a development virtualenv that no
+  distribution contains. It is now `<install>\runtime\Scripts\k2.exe`. K2 is a
+  setuptools console stub (a zip with a launcher prepended), so it cannot ship
+  alone: it needs the `kicomav` package and an interpreter, and rides the
+  runtime a distribution already carries for the service rather than shipping a
+  second copy of Python.
+- **`script_launch_argv()`** raised `FrozenLaunchUndecided` in any frozen build,
+  which meant `scheduler.create_task()` was **dead in a shipped build** — the
+  Scheduler view could not create a task at all. A scheduled scan now runs
+  `<install>\runtime\python.exe <install>\service\scheduled_scan.py`, the same
+  staged runtime the service uses. That is why 4b.3 needed no second executable.
+- The exception is now **`StagedRuntimeMissing`**, raised only when a
+  distribution genuinely has no staged runtime. `FrozenLaunchUndecided` remains
+  as an alias; the condition it was named for no longer exists. `create_task()`
+  catches it and returns `(False, msg)` rather than letting it propagate — its
+  only caller runs on a worker thread with no handler, so a raise would leave
+  the button disabled on "Saving…" forever.
+
+`tools/build_probe.py` reports all three roots and fails the build when
+`install_root()` resolves under the extraction directory, or does not exist. It
+deliberately does **not** assert that `runtime\` and `service\` are present:
+the probe is its own standalone binary in its own `.dist` directory, so its
+install root is that directory and never contains the product layout.
 
 `app_root()` is **deliberately not** `Path(sys.executable).parent`. A build
 installed under `C:\Program Files\PolyShield` cannot write beside itself
@@ -776,12 +1288,12 @@ resolves:
 | `intelligence/threat_db.sqlite` | `src/` (sys.path) |
 | `intelligence/nsrl_bloom.bin` | `src/ui/app.py` (launch target) |
 | `intelligence/ignore_list.sqlite` | `polyshield_service.py` |
-| `intelligence/pattern_stats.sqlite` | `scheduled_scan.py` |
+| `telemetry/pattern_stats.sqlite` | `scheduled_scan.py` |
 | `intelligence/.update.lock` | `launch_ui.vbs` |
 | `quarantine/` | `scripts/**.bat` |
 | `logs/` | `_speakeasy_worker.py` |
 | `config/ui_settings.json` (+ `.lock`) | `_svc_helper.bat` |
-| `config/service_events.json` | |
+| `state/service_events.json` | |
 | `rules/user_rules/` (user-authored) | |
 | `rules/community/**` (downloaded intel) | |
 | `rules/update.cfg` (written by `k2 --update`) | |
@@ -1200,7 +1712,7 @@ CREATE TABLE ip_blocklist (
 | `intelligence/threat_db.sqlite` | Main database (SQLite; 100MB+ if full MalwareBazaar imported) |
 | `guardianai/data/known_bad.txt` | Legacy fallback only (v1.8+); no longer auto-written after updates; used only if `threat_db.sqlite` is absent |
 | `C:\ProgramData\PolyShield\service.log` | Windows Service runtime log |
-| `config/service_events.json` | Persisted threat events from the service (atomic writes) |
+| `state/service_events.json` | Persisted threat events from the service (atomic writes) |
 
 ### Clearing the Database
 

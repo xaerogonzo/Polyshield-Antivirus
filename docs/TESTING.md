@@ -690,7 +690,7 @@ after `scan_callback` returned -- but `scan_new_file()` ends in `run_scan()`,
 which returns before k2 has even started, so every observer saw `"pending"`.
 The Windows Service had the same bug one level up: it read
 `entry.get("status")` on the line after calling `scan_new_file`, and persisted
-`"pending"` into `config/service_events.json` for essentially every real-time
+`"pending"` into `state/service_events.json` for essentially every real-time
 detection. It now passes an `on_complete` callback instead.
 
 `entry["verdicts"]` includes clean results deliberately. Without them a
@@ -814,6 +814,38 @@ this feature is what surfaced the ACL bug, and having a byte-exact backup is
 what made recovery trivial.
 
 ---
+
+### The install cycle (v1.16, 4c.5)
+
+`tools/sandbox_verify.ps1` runs 50 checks inside Windows Sandbox. Generate the
+`.wsb` and open it:
+
+```bash
+kicomav_env\Scripts\python.exe tools\make_sandbox_wsb.py
+```
+
+`--skip-install` keeps the build checks and skips the install/uninstall cycle;
+`--skip-service` skips the service half as well. Results land in
+`artifacts/sandbox/verify.json`, which survives the sandbox being discarded.
+
+Three of these checks are worth understanding, because each replaced one that
+could not fail:
+
+| Check | What it replaced |
+|---|---|
+| GUI and the **SYSTEM-context** service agree on the data root | Both sides used to be run by the interactive user, comparing a process with itself |
+| Privilege boundary probed via `runas /trustlevel:0x20000` | An elevated probe can write everywhere and proves nothing |
+| Scheduled task created, then checked gone after uninstall | Nothing ever created a task, so "task removed" passed vacuously |
+
+The retry path is exercised deterministically rather than by racing a kill
+against the installer: a service is registered under PolyShield's name pointing
+at a binary that does not exist, and the installer has to recover from it.
+
+**Do not run `sandbox_verify.ps1` on a development machine.** It installs the
+product, registers the service, rewrites `%ProgramData%\PolyShield` ACLs and
+then uninstalls -- all correct inside a throwaway VM and all unwelcome on a
+machine you were using.
+
 
 ## Battlespace Tests
 

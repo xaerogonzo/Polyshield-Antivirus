@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -45,13 +46,30 @@ import win32serviceutil
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 SERVICE_PORT     = 52614
-TOKEN_FILE       = Path(r"C:\ProgramData\PolyShield\service_token.txt")
-EVENTS_FILE      = paths.config_dir() / "service_events.json"
-LOG_FILE         = Path(r"C:\ProgramData\PolyShield\service.log")
+# All three are service-owned state: written here, only read by the UI. They
+# resolve through paths.state_dir() rather than naming C:\ProgramData directly,
+# so the service and the GUI cannot disagree about where they are -- and so the
+# installer can give that one directory LocalService:Modify / Users:Read.
+TOKEN_FILE       = paths.state_dir() / "service_token.txt"
+EVENTS_FILE      = paths.state_dir() / "service_events.json"
+LOG_FILE         = paths.state_dir() / "service.log"
 HEARTBEAT_SECS   = 30
 _NET_EVENTS_CAP  = 100    # max network events kept in memory
 _EVENTS_CAP      = 2000   # max scan/process-threat events kept in memory
 _ALLOWED_CONFIG_KEYS = {"watcher_folders", "watcher_auto_quarantine", "watcher_guardian_scan"}
+
+def _is_hex_hash(value: str) -> bool:
+    """MD5 or SHA-256, and nothing else.
+
+    The IPC token is readable by every local user by design (the unelevated UI
+    has to authenticate with it), so this handler is reachable by any process
+    running as the user. Constraining the input to a hash shape is what keeps
+    that reach to "can request one whitelist entry" rather than "can write
+    arbitrary content into a service-owned database". See docs/WINDOWS_SERVICE.md,
+    "Security Notes", for what this boundary does and does not stop.
+    """
+    return len(value) in (32, 64) and all(c in "0123456789abcdef" for c in value)
+
 
 # ── Logging ────────────────────────────────────────────────────────────────────
 log = logging.getLogger("PolyShieldService")
@@ -323,6 +341,58 @@ class PolyShieldService(win32serviceutil.ServiceFramework):
                     self._proc_monitor.allow_hash(md5)
                 self._send(conn, {"ok": True})
 
+            # ── Ignore-list writes ────────────────────────────────────────
+            # intelligence/ is service-owned in a distribution, so the
+            # unelevated UI cannot write ignore_list.sqlite itself. These three
+            # are the only shape of write it can ask for: a validated hash and
+            # some free text. The UI still READS the list directly.
+            elif cmd == "IGNORE_HASH":
+                md5 = str(msg.get("md5", "")).strip().lower()
+                if not _is_hex_hash(md5):
+                    self._send(conn, {"ok": False, "error": "invalid hash"})
+                else:
+                    from ui.core import ignore_list as _il
+                    ok = _il.add_local(
+                        md5,
+                        str(msg.get("hash_type", "md5"))[:16],
+                        str(msg.get("filename", ""))[:260],
+                        str(msg.get("note", ""))[:1024],
+                        str(msg.get("original_reason", ""))[:1024],
+                    )
+                    log.info("Ignore list: added %s (ok=%s)", md5, ok)
+                    self._send(conn, {"ok": bool(ok)})
+
+            elif cmd == "UNIGNORE_HASH":
+                md5 = str(msg.get("md5", "")).strip().lower()
+                if not _is_hex_hash(md5):
+                    self._send(conn, {"ok": False, "error": "invalid hash"})
+                else:
+                    from ui.core import ignore_list as _il
+                    removed = _il.remove_local(md5)
+                    log.info("Ignore list: removed %s (found=%s)", md5, removed)
+                    self._send(conn, {"ok": True, "removed": bool(removed)})
+
+            elif cmd == "CLEAR_IGNORED":
+                from ui.core import ignore_list as _il
+                n = _il.clear_all_local()
+                log.info("Ignore list: cleared %d entr(ies)", n)
+                self._send(conn, {"ok": True, "cleared": n})
+
+            elif cmd == "RUN_K2_UPDATE":
+                # k2 keeps whitelist.txt and its YARA archives under
+                # paths.k2_rules_dir(), which is service-owned in a
+                # distribution because the watcher runs k2 on every new file --
+                # a whitelist an unprivileged process could rewrite would
+                # suppress detections machine-wide. So the UI asks for the
+                # update and this runs it. Handed to a worker: k2 --update
+                # downloads, and the socket must not be held for that.
+                started = self._start_k2_update()
+                self._send(conn, {
+                    "ok": True,
+                    "status": "started" if started else "already_running",
+                    "error": "" if started else "a k2 update is already running",
+                })
+
             elif cmd == "START_PROCESS_MONITOR":
                 if self._proc_monitor is not None:
                     if not self._proc_monitor.is_running():
@@ -558,6 +628,37 @@ class PolyShieldService(win32serviceutil.ServiceFramework):
                 log.info("Intelligence updater idle (disabled in settings).")
         except Exception as exc:
             log.warning(f"Intelligence updater unavailable: {exc}")
+
+    def _start_k2_update(self) -> bool:
+        """Run `k2 --update` on a worker. Returns False if one is already going."""
+        if getattr(self, "_k2_updating", False):
+            return False
+        self._k2_updating = True
+
+        def _work():
+            try:
+                from ui.core import scanner as sc
+
+                proc = subprocess.Popen(
+                    paths.k2_argv("--update", "--no-color"),
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, encoding="utf-8", errors="replace",
+                    env=sc._k2_env(),
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+                for raw in proc.stdout:
+                    line = raw.rstrip()
+                    if line:
+                        log.info("k2 update: %s", line)
+                proc.wait()
+                log.info("k2 update finished (exit %s)", proc.returncode)
+            except Exception as exc:
+                log.error("k2 update failed: %s", exc)
+            finally:
+                self._k2_updating = False
+
+        threading.Thread(target=_work, daemon=True, name="K2Update").start()
+        return True
 
     def _start_intel_update(self, feeds, force: bool) -> tuple[bool, str]:
         """Kick off an on-demand update on a worker thread.

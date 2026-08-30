@@ -14,6 +14,11 @@ def _run(args: list[str]) -> tuple[bool, str]:
         r = subprocess.run(
             args, capture_output=True, text=True,
             timeout=15, creationflags=_NO_WINDOW,
+            # See integration._sc: with no console, an inherited stdin handle
+            # makes schtasks fail with WinError 6 before it runs. That made
+            # get_task_info() report "no task" for a task that existed, and the
+            # uninstaller then skipped deleting it.
+            stdin=subprocess.DEVNULL,
         )
         return r.returncode == 0, (r.stdout + r.stderr).strip()
     except Exception as exc:
@@ -30,7 +35,16 @@ def create_task(scan_path: str, frequency: str, start_time: str) -> tuple[bool, 
     # build cannot silently register a task pointing at a virtualenv
     # interpreter and a .py file that the distribution does not contain --
     # a task that would fail at 02:00 months later, with nobody watching.
-    argv = paths.script_launch_argv("scheduled_scan.py", scan_path)
+    try:
+        argv = paths.script_launch_argv("scheduled_scan.py", scan_path)
+    except paths.StagedRuntimeMissing as exc:
+        # A distribution with no staged runtime cannot run a scheduled scan.
+        # Returned rather than raised: the only caller runs this on a worker
+        # thread with no handler (scheduler_view._create), so an exception
+        # would kill that thread and leave the button disabled on "Saving..."
+        # with the feedback label still reading "Creating task..." -- the
+        # frozen-panel failure this codebase has now hit three times.
+        return False, str(exc)
     run_cmd = " ".join(f'"{a}"' for a in argv)
 
     args = [

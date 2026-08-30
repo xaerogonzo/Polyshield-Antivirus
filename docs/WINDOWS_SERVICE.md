@@ -72,11 +72,10 @@ PolyShield ──(TCP 127.0.0.1:52614)──► PolyShield Service
 
 ### Token Authentication
 
-Port 52614 is reachable by any process on the machine — including malware. Every command carries a `"token"` field. The service generates a UUID4 token at first start and writes it to `C:\ProgramData\PolyShield\service_token.txt`. Any command with the wrong or missing token gets `{"ok": false, "error": "unauthorized"}` and the connection is dropped.
+Port 52614 is reachable by any process on the machine — including malware. Every command carries a `"token"` field. The service generates a UUID4 token at first start and writes it to `state\service_token.txt` under the shared data root (`paths.state_dir()`) - `C:\ProgramData\PolyShield\state\` in an installed build, `<project>\state\` in a source checkout. It was an absolute `C:\ProgramData\PolyShield` literal in two separate modules until v1.16, which agreed only because someone kept them agreeing; a token path the client and the server disagree about fails as `unauthorized`, which reads exactly like an attacker being turned away. Any command with the wrong or missing token gets `{"ok": false, "error": "unauthorized"}` and the connection is dropped.
 
 **Token file ACLs** (set by `setup_service.bat`):
 - `SYSTEM`: Full Control
-- `NT AUTHORITY\LocalService`: Modify
 - `Administrators`: Full Control
 - `Users`: **Read only** (can read the token to authenticate, cannot overwrite it)
 
@@ -180,9 +179,15 @@ After this: DLLs appear in `C:\Windows\System32\pywintypes313.dll` (or equivalen
 
 ---
 
-## Permission Setup (Why LocalService Needs icacls)
+## Permission Setup (the service account, and why the grants exist)
 
-The service runs as `NT AUTHORITY\LocalService` — a heavily restricted account by design. It cannot read files in `C:\Users\<you>\Downloads` or write anywhere outside its own service-specific locations without explicit grants.
+**The service runs as `LocalSystem`.** `polyshield_service.py` sets no account and `setup_service.bat` installs with no account argument, which is pywin32's default. Until v1.16 this document said `NT AUTHORITY\LocalService` and the installer printed that account to the user, while granting it ACLs it never used — rights handed to an identity the service does not run under. Verified with `sc qc PolyShieldService`:
+
+```
+SERVICE_START_NAME : LocalSystem
+```
+
+`NT AUTHORITY\LocalService` remains the *intended* account: it is heavily restricted by design, cannot read `C:\Users\<you>\Downloads` and cannot write outside its own locations without explicit grants. Narrowing to it is a deliberate change that has to be tested against process termination, watched-folder reads and autonomous quarantine — three capabilities that currently work only because the account is wider than documented.
 
 We need it to:
 - Read `config/ui_settings.json` (watched folders list)
@@ -194,23 +199,22 @@ We need it to:
 `setup_service.bat` applies the following (all in one script, elevated):
 
 ```batch
-REM Shared data directory: SYSTEM+Admins = Full, LocalService = Modify, Users = Read
+REM Shared data directory: SYSTEM+Admins = Full, Users = Read
 icacls "C:\ProgramData\PolyShield" ^
     /grant "SYSTEM:(OI)(CI)F" ^
-    /grant "NT AUTHORITY\LocalService:(OI)(CI)M" ^
     /grant "Administrators:(OI)(CI)F" ^
     /grant "Users:(OI)(CI)R" ^
     /inheritance:r
 
-REM Project root: LocalService can read config and write event log
-icacls "<project root>" /grant "NT AUTHORITY\LocalService:(OI)(CI)M"
+REM Project root: the service reads config and writes the event log
+icacls "<project root>" /grant "SYSTEM:(OI)(CI)F"
 
-REM Quarantine folder: LocalService can write; do NOT deny Users read/list —
+REM Quarantine folder: the service writes here; do NOT deny Users read/list —
 REM the UI (running as the logged-in user) must be able to list the directory.
 REM Preventing accidental execution of quarantined files is handled by the
 REM quarantine module itself (files are stored without their original extension).
 icacls "<project root>\quarantine" ^
-    /grant "NT AUTHORITY\LocalService:(OI)(CI)M"
+    /grant "SYSTEM:(OI)(CI)F"
 ```
 
 **`(OI)(CI)`** = Object Inherit + Container Inherit — applies to the folder and all files/subfolders inside it.  
@@ -229,10 +233,10 @@ icacls "<project root>\quarantine" ^
 | `ui/views/process_view.py` | Process Monitor view (live event log, Start/Stop, auto-terminate toggle) | ✅ Source |
 | `scripts\service\setup_service.bat` | One-click installer for the service (8 steps, including Defender exclusions) | ✅ Source |
 | `WINDOWS_SERVICE.md` | This document | ✅ Source |
-| `C:\ProgramData\PolyShield\` | Service data dir (log, token) — created at install | 📦 Installer |
-| `C:\ProgramData\PolyShield\service_token.txt` | Shared secret token (UUID4) | 📦 Installer |
-| `C:\ProgramData\PolyShield\service.log` | Service log (created by service on first run) | 🔄 Runtime |
-| `config/service_events.json` | Persisted scan + process threat events (atomic writes) | 🔄 Runtime |
+| `<data root>\state\` | Service-owned runtime state (log, token, event feed) — created at install | 📦 Installer |
+| `<data root>\state\service_token.txt` | Shared secret token (UUID4) | 📦 Installer |
+| `<data root>\state\service.log` | Service log (created by service on first run) | 🔄 Runtime |
+| `<data root>\state\service_events.json` | Persisted scan + process threat events (atomic writes) | 🔄 Runtime |
 
 ---
 
@@ -255,7 +259,7 @@ Same as the main `scripts\install.bat` requirements, plus:
    - Registers pywin32 DLLs in `System32` (`pywin32_postinstall`)
    - **Registers Defender exclusions** for `kicomav_env\`, `python.exe`, and `pythonw.exe` (prevents exit code 1067 crash)
    - Creates `C:\ProgramData\PolyShield\` with correct ACLs
-   - Grants `NT AUTHORITY\LocalService` access to the project root and quarantine folder
+   - Grants `SYSTEM` access to the project root and quarantine folder
    - Installs the service with the SCM
    - Starts the service
 
@@ -327,7 +331,7 @@ kicomav_env\Scripts\python.exe -c "import sys; sys.path.insert(0,'src'); from ui
 Get-Content C:\ProgramData\PolyShield\service.log -Tail 30
 ```
 
-This is also the LocalService write-permission test — it is the first time the
+This is also the service write-permission test — it is the first time the
 service writes `intelligence/threat_db.sqlite`. If it fails with a permission
 error, extend the `icacls` block in `scripts/service/setup_service.bat`.
 
@@ -497,6 +501,8 @@ The token file was regenerated (or doesn't exist yet). Restart the UI — it rea
 LocalService doesn't have access to the folder. For watched folders added **after** service install, you need to grant access manually (or re-run `scripts\service\setup_service.bat` which re-applies the project root grant):
 
 ```batch
+# Only needed if the account has been narrowed to LocalService; LocalSystem
+# (the deployed account) already has access.
 icacls "C:\Users\you\Downloads" /grant "NT AUTHORITY\LocalService:(OI)(CI)M"
 ```
 
@@ -510,7 +516,73 @@ A Python exception propagated to `SvcDoRun`. Look at `service.log` for the trace
 
 - The service listens on `127.0.0.1` only — not reachable from the network
 - The shared secret token prevents other local processes from sending commands without the token file
-- `NT AUTHORITY\LocalService` is the minimum required privilege level — we do not use `LocalSystem`
+- The service runs as **`LocalSystem`**. `NT AUTHORITY\LocalService` is the documented *intent* and the narrower account, but it is not what is registered — see *Permission Setup* above. Treat the localhost IPC surface as reachable by a full-privilege service until that changes.
 - Quarantine folder grants `LocalService` write access; the UI (running as the logged-in user) retains read/list access. Do **not** add `deny Users:(RX)` — it blocks the quarantine view in the UI. Quarantined files are stored without their original extension, which prevents accidental execution.
 - Device Security fields (Secure Boot, TPM, VBS) cannot be queried via WMI from `LocalService` — it lacks admin rights. Basic on/off state is read from the registry instead, which works for both the service context and standard user sessions.
 - `C:\ProgramData\PolyShield\service_token.txt` is readable by all local users (required for the UI to authenticate) but writable only by `LocalService` and `Administrators`
+
+
+### The privilege boundary (v1.16)
+
+The shared data root is `%ProgramData%\PolyShield` in an installed build (see
+ARCHITECTURE.md, *The shared data root*). It is **not** uniformly writable by
+ordinary users. The invariant:
+
+> An unprivileged process cannot modify authoritative intelligence that the
+> privileged service trusts when making detection decisions.
+
+| Subtree | `Users` | Why |
+|---|---|---|
+| `intelligence\` | Read | detection **input** — a poisoned hash DB or allow-list disables protection machine-wide |
+| `rules\community\` | Read | executable detection logic |
+| `guardianai\` | Read | hash list consumed by the engines |
+| `state\` | Read | IPC token, service log, event feed |
+| `quarantine\` | Modify | remediation **output** — never read to reach a verdict |
+| `config\` | Modify | settings, plus their cross-process lock |
+| `logs\` | Modify | scan reports |
+| `telemetry\` | Modify | per-pattern FP-rate counters |
+| `rules\user_rules\` | Modify | user-authored by intent |
+
+**Quarantine is deliberately user-writable.** The reason that holds regardless
+of which account the service runs under: quarantine is remediation *output*,
+never detection *input*. The service does not consult its contents to decide
+whether anything is malicious, so tampering with it cannot change a verdict --
+enforced by `tests/test_privilege_boundary.py`, which fails if any module
+outside `quarantine.py`, `scanner.py` and `paths.py` so much as names the
+directory.
+
+There is a second reason that binds only under the *intended* account: quarantine
+must read and move files inside the interactive user profile, and `LocalService`
+cannot reach those without a manual per-folder grant (see *Service can't access
+watched folder* above). `LocalSystem`, which is what actually runs, can -- so
+this argument does not bind today, and would bind again the moment the account
+is narrowed. It is recorded because narrowing is the documented intent.
+
+This work adds no privileges: no `SeBackupPrivilege`, no `SeRestorePrivilege`,
+and no change to the service account.
+
+**The installer must pre-create the whole tree with explicit ACLs.** If the GUI
+creates `intelligence\` first, it inherits the root ACL and the boundary never
+exists.
+
+GUI writes to `intelligence\` therefore go through the authenticated IPC:
+`RUN_INTEL_UPDATE` (already existed), and `IGNORE_HASH` / `UNIGNORE_HASH` /
+`CLEAR_IGNORED` (new in v1.16). Reads are never routed — `Users:Read` suffices.
+
+### What the boundary does not stop
+
+The token file is readable by every local user **by design** — the unelevated UI
+has to authenticate with it — so these handlers are reachable by any process
+running as the user.
+
+The boundary constrains **shape**, not **origin**. A hostile process running as
+the user can still ask the service to whitelist one hash. What it can no longer
+do is corrupt `ignore_list.sqlite`, drop its table, bulk-write thousands of
+entries, or put arbitrary content into service-owned storage — which is why
+`_is_hex_hash()` rejects anything that is not 32 or 64 lowercase hex characters
+before the handler touches the database.
+
+Treat this as attack-surface reduction, not as authentication of the caller.
+Authenticating the *origin* of an IPC command would need a different mechanism
+(peer-process identity on the socket), and that is not what the token is.
+

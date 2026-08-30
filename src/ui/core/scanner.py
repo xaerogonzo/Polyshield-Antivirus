@@ -8,9 +8,13 @@ import ctypes
 from datetime import datetime
 from pathlib import Path
 from ui.core import paths
+from ui.core import paths as pathsmod   # run_scan shadows `paths` with its argument
 
 # k2 lives in the development virtualenv and is optional (v1.6.1+);
 # is_available() below reports its absence rather than assuming it.
+#: Kept for callers that only need the path (diagnostics). The COMMAND
+#: comes from paths.k2_argv(): a relocated console stub points at an
+#: interpreter that is not there and fails with no output at all.
 K2_EXE = str(paths.k2_exe())
 LOGS_DIR = paths.logs_dir()
 QUARANTINE_DIR = paths.quarantine_dir()
@@ -18,6 +22,10 @@ QUARANTINE_DIR = paths.quarantine_dir()
 
 def is_available() -> bool:
     """True if the bundled k2.exe is present. K2 is optional in v1.6.1+."""
+    # In a distribution k2 runs as a module through the staged runtime,
+    # so the interpreter is what has to exist.
+    if paths.is_distribution():
+        return paths.runtime_python().exists()
     return Path(K2_EXE).exists()
 
 # parents=True because on the first run of a distribution the data root
@@ -169,6 +177,32 @@ def _os_resume(pid: int):
         pass
 
 
+def _k2_env() -> dict:
+    """The environment every k2 invocation gets.
+
+    `k2 --update` prunes its rules directory against a downloaded manifest,
+    deleting every file the manifest does not list. It finds that directory
+    through %SYSTEM_RULES_BASE%, and config/.env pointed it at PolyShield's own
+    rules/ -- so an update deleted rules/community/, the published YARA
+    generation the .active pointer names, and yara_engine then reported "no
+    rules" with nothing to explain it.
+
+    Set here rather than by rewriting .env: kicomav loads that file with
+    load_dotenv(override=False), so a value already in the environment wins.
+    That repairs existing installations without touching a generated file, and
+    works in a distribution that has no .env at all. See paths.k2_rules_dir().
+    """
+    k2_rules = paths.k2_rules_dir()
+    k2_rules.mkdir(parents=True, exist_ok=True)
+    return {
+        **os.environ,
+        "SYSTEM_RULES_BASE": str(k2_rules),
+        # k2 reads user rules from here; it does not prune them, and sharing
+        # them with yara_engine is deliberate.
+        "USER_RULES_BASE": str(paths.rules_dir() / "user_rules"),
+    }
+
+
 def count_files(paths: list[str]) -> int:
     """Count total scannable files across all given paths."""
     total = 0
@@ -243,7 +277,11 @@ def run_scan(
     # --report=json tells k2 to emit a JSON block to stdout after the scan summary.
     # We capture those lines and write them to report_path ourselves so the path
     # (which may contain spaces) never needs to be passed as a k2 argument.
-    cmd = [K2_EXE] + paths + ["--no-color", "-I", "--report=json"]
+    # Absolute, because k2 is about to be given a working directory of its own
+    # (see _k2_cwd): a relative target typed into the Scan view would otherwise
+    # start resolving against k2's home instead of the user's.
+    paths = [str(Path(p).resolve()) for p in paths]
+    cmd = pathsmod.k2_argv(*paths, "--no-color", "-I", "--report=json")
     if threat_action == "quarantine":
         cmd += ["--move", f"--infp={_short_path(QUARANTINE_DIR)}"]
     elif threat_action == "delete":
@@ -275,6 +313,7 @@ def run_scan(
                 encoding="utf-8",
                 errors="replace",
                 creationflags=subprocess.CREATE_NO_WINDOW,
+                env=_k2_env(),
             )
             # A cancel() racing this Popen() cannot be prevented by the check
             # above — it lands between the check and the call.  _attach() is the
@@ -342,8 +381,36 @@ def run_scan(
 
 
 def run_update(line_callback, done_callback):
-    """Run signature update in a background thread."""
-    cmd = [K2_EXE, "--update", "--no-color"]
+    """Run a k2 signature update in a background thread.
+
+    In a distribution this is routed through the service. k2 keeps whitelist.txt
+    and its YARA archives under paths.k2_rules_dir(), and the watcher runs k2 on
+    every new file (watcher._ENGINE_ORDER) -- so that tree is detection input the
+    service trusts, and an unprivileged process able to rewrite the whitelist
+    could suppress detections for the whole machine. It is therefore service-
+    owned (Users:Read) and this process cannot write it.
+    """
+    if paths.is_distribution():
+        from ui.core import service_client as svc
+
+        try:
+            reply = svc.send_command("RUN_K2_UPDATE")
+        except Exception as exc:
+            reply = None
+            line_callback(f"[ERROR] PolyShield service is required to update K2 "
+                          f"signatures, and it is not reachable ({exc}).")
+        else:
+            if reply and reply.get("ok"):
+                line_callback("[INFO] Update started by the PolyShield service.")
+                done_callback(0)
+                return
+            line_callback("[ERROR] PolyShield service is required to update K2 "
+                          "signatures: " + ((reply or {}).get("error")
+                                            or "it is not running"))
+        done_callback(-1)
+        return
+
+    cmd = pathsmod.k2_argv("--update", "--no-color")
 
     def _run():
         try:
@@ -355,6 +422,7 @@ def run_update(line_callback, done_callback):
                 encoding="utf-8",
                 errors="replace",
                 creationflags=subprocess.CREATE_NO_WINDOW,
+                env=_k2_env(),
             )
             _stream_process(proc, line_callback, None, 0, done_callback)
         except Exception as exc:
@@ -412,9 +480,39 @@ def get_infected_paths(report_path: str) -> list[str]:
         return []
 
 
+def get_signature_count() -> int:
+    """How many virus names k2 can actually name, via `k2 --vlist`.
+
+    Counting the lines of update.cfg says how many FILES were downloaded, which
+    is 3 whether or not they contain anything. This asks the engine.
+
+    It matters because k2 carries only ~23 signatures in its plugin modules and
+    the other ~1240 arrive in rule archives it downloads -- and `k2 --update`
+    reports SUCCESS when it cannot reach its source, leaving a scanner at under
+    2% of its detection with nothing anywhere saying so. Measured on a clean
+    install: "[No updates available]", exit 0, an empty rules directory.
+
+    Returns 0 when k2 cannot run at all.
+    """
+    try:
+        r = subprocess.run(
+            pathsmod.k2_argv("--vlist", "--no-color"),
+            capture_output=True, text=True, timeout=60,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            stdin=subprocess.DEVNULL, env=_k2_env(),
+        )
+        return sum(1 for ln in (r.stdout or "").splitlines()
+                   if "[kicomav.plugins." in ln)
+    except Exception:
+        # 0 means "k2 could not be asked", which the caller renders as
+        # "unavailable" rather than as a signature count. Distinct from a small
+        # count, which means k2 ran and has only its built-in signatures.
+        return 0
+
+
 def get_update_cfg_info() -> dict:
-    """Read rules/update.cfg and return version metadata."""
-    cfg_path = paths.rules_dir() / "update.cfg"
+    """Read k2 own update.cfg and return version metadata."""
+    cfg_path = paths.k2_rules_dir() / "update.cfg"
     result = {"version": "Unknown", "last_updated": "Unknown", "raw": ""}
     if not cfg_path.exists():
         return result

@@ -36,7 +36,7 @@ module existed:
     quarantine/                                 scripts/**.bat
     logs/                                       _speakeasy_worker.py
     config/ui_settings.json (+ .lock)           _svc_helper.bat
-    config/service_events.json
+    state/service_events.json  (service-owned)
     rules/user_rules/          (user-authored)
     rules/community/**         (downloaded intel, atomically republished)
     rules/update.cfg           (written by k2 --update)
@@ -191,6 +191,72 @@ def running_executable() -> Path:
     return Path(sys.executable).resolve()
 
 
+def install_root() -> Path:
+    r"""The directory the shipped product is installed in.
+
+    The third lifetime, and the one that only became necessary at ``--onefile``.
+    DATA vs RESOURCE was enough while a build was a folder; onefile split
+    RESOURCE in two:
+
+        app_root()       durable, writable        %ProgramData%\PolyShield
+        install_root()   durable, READ-ONLY       C:\Program Files\PolyShield
+        resource_root()  DISPOSABLE, read-only    %TEMP%\ONEFIL~1\  (deleted)
+
+    ``runtime\``, ``service\`` and the shipped ``k2.exe`` sit beside
+    ``PolyShield.exe``.  They are reachable from neither of the other two:
+    ``resource_root()`` is the temporary extraction directory that is deleted
+    when the process exits, and ``app_root()`` is somewhere else entirely.
+
+    The contract is spelled out for all four contexts on purpose, so that its
+    meaning does not depend on which of them happens to ship today:
+
+    ======================  ==========================  ====================
+    context                 returns                     note
+    ======================  ==========================  ====================
+    frozen GUI              running_executable().parent NOT sys.executable
+    frozen service          running_executable().parent not shipped today
+    source-mode staged svc  resource_root().parent      its root is <install>\service
+    source checkout         _MODULE_ROOT                unchanged
+    ======================  ==========================  ====================
+
+    The staged-service row is the one worth reading twice.  That component is a
+    *distribution* but is not *frozen*, and its interpreter is the staged
+    ``runtime\python.exe`` -- so ``running_executable().parent`` would answer
+    ``<install>\runtime``, one directory to the side, and would do it silently.
+    Its own ``_MODULE_ROOT`` is ``<install>\service`` (from
+    ``service\src\ui\core\paths.py``), so the install root is one level up.
+
+    **A frozen component must sit at the install root**, which is a real
+    constraint on the build rather than an observation about it: a frozen
+    service staged into ``<install>\service\`` would resolve its install root to
+    itself.  Nothing does that today; ``tools/build_probe.py`` asserts it so
+    that nothing starts to.
+    """
+    if is_frozen():
+        return running_executable().parent
+    if is_distribution():
+        return resource_root().parent
+    return _MODULE_ROOT
+
+
+def runtime_python() -> Path:
+    r"""The interpreter that runs a distribution's source-mode components.
+
+    A distribution carries one, because the service does not survive the
+    compiler (see docs/ARCHITECTURE.md) and therefore ships as source.  Whatever
+    else needs an interpreter -- ``scheduled_scan.py`` -- shares it rather than
+    shipping a second copy.
+
+    Resolved from ``install_root()``, NOT from ``resource_root()``: under
+    onefile the latter is the extraction directory, and a scheduled task
+    pointing into a directory that is deleted when the process exits would fail
+    at 02:00 some months later with nobody watching.
+    """
+    if is_distribution():
+        return install_root() / "runtime" / "python.exe"
+    return venv_python()
+
+
 def service_registration() -> tuple[str, str]:
     """`(_exe_name_, _exe_args_)` for the Windows service registration.
 
@@ -204,40 +270,68 @@ def service_registration() -> tuple[str, str]:
 
 
 def app_root() -> Path:
-    """The durable writable application-data root.
+    r"""The durable writable application-data root.
 
     Deliberately *not* defined as ``Path(sys.executable).parent``.  A build
-    installed under ``C:\\Program Files\\PolyShield`` cannot write beside
-    itself without elevation, and PolyShield writes a threat database, a
-    quarantine, logs and settings on an ordinary run — so a beside-the-exe
-    definition produces a build that works from ``dist\\`` and fails for every
-    real installation.
+    installed under ``C:\Program Files\PolyShield`` cannot write beside itself
+    without elevation, and PolyShield writes a threat database, a quarantine,
+    logs and settings on an ordinary run — so a beside-the-exe definition
+    produces a build that works from ``dist\`` and fails for every real
+    installation.
 
     Resolution order:
 
       1. ``%POLYSHIELD_DATA_DIR%`` if set — the seam for an installer, a
          portable launcher, or a deployment that keeps data on another volume.
+         It must be set MACHINE-WIDE to be useful: a service inherits nothing
+         from the installing user's environment.
       2. Any part of a distribution -- compiled, or shipped-as-source beside a
-         compiled component (see is_distribution()) -- ``%LOCALAPPDATA%\\PolyShield``, which is writable for the
-         running user in both a portable and an installed layout.
+         compiled component (see is_distribution()) -- ``%ProgramData%\PolyShield``.
       3. Source checkout: the project root, unchanged from before.
 
-    Step 2 is the one Phase 4b may revisit — portable-beside-exe is a
-    legitimate choice for a distribution that ships as a folder.  It is a
-    one-line change *here*, which is the point of the module.
+    Step 2 was ``%LOCALAPPDATA%\PolyShield`` until v1.16, and it was wrong in a
+    way no test could see.  The service runs as ``NT AUTHORITY\LocalService``,
+    whose profile is ``C:\Windows\ServiceProfiles\LocalService`` -- so the two
+    components resolved two *different* directories:
+
+        GUI           C:\Users\<user>\AppData\Local\PolyShield
+        LocalService  C:\Windows\ServiceProfiles\LocalService\AppData\Local\PolyShield
+
+    They must not diverge.  Both read the same threat database, the same
+    settings file and the same quarantine -- and two of the files underneath
+    are cross-process locks: ``config/ui_settings.json.lock`` (settings.py) and
+    ``intelligence/.update.lock`` (intel_updater.py).  A lock file at a path
+    each process resolves differently does not merely fail to protect; it hands
+    BOTH processes the lock at once, silently, and what it guards is a SQLite
+    write.
+
+    A source checkout does not have the problem, because setup_service.bat
+    grants LocalService Modify on the project root.  That is a permission fix,
+    and it cannot be applied here: two different paths are not a permission
+    problem.
+
+    ``%ProgramData%`` is the machine-shared location the service was already
+    using for ``service_token.txt`` and ``service.log``, and it resolves to one
+    directory for both accounts.  It is deliberately NOT writable by ordinary
+    users by default -- the installer creates the tree with explicit
+    per-subtree ACLs.  See docs/ARCHITECTURE.md, "The privilege boundary".
     """
     override = os.environ.get(DATA_DIR_ENV, "").strip()
     if override:
         return Path(override).expanduser()
 
     if is_distribution():
-        base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+        base = os.environ.get("PROGRAMDATA")
         if base:
             return Path(base) / "PolyShield"
-        # No profile directory at all (a service account with a stripped
-        # environment). Beside the executable is a poor durable root, but it is
-        # a real directory, and returning it is better than returning the
-        # extraction directory that is about to be deleted.
+        # A service account with a stripped environment. Derived rather than
+        # hard-coded to C:, which is wrong on a machine booting another volume.
+        system_drive = os.environ.get("SystemDrive")
+        if system_drive:
+            return Path(system_drive + "\\") / "ProgramData" / "PolyShield"
+        # Nothing at all to go on. Beside the executable is a poor durable
+        # root, but it is a real directory, and returning it beats returning
+        # the extraction directory that is about to be deleted.
         return Path(sys.executable).resolve().parent
 
     return _MODULE_ROOT
@@ -265,9 +359,66 @@ def config_dir() -> Path:
     return app_root() / "config"
 
 
+def state_dir() -> Path:
+    r"""Service-owned runtime state: the IPC token, the service log, the events feed.
+
+    Written by the service and only read by the UI, so the installer gives it
+    LocalService:Modify and Users:Read.  Nothing the unelevated GUI writes may
+    live here -- see docs/ARCHITECTURE.md, "The privilege boundary".
+
+    Until v1.16 the token and the log were absolute ``C:\ProgramData`` literals
+    in polyshield_service.py, outside this module entirely, and the events feed
+    sat in config/ beside the user-writable settings file.  They are the same
+    lifetime and they now resolve in one place.
+    """
+    return app_root() / "state"
+
+
+def telemetry_dir() -> Path:
+    """Per-pattern detection and ignore counts, and nothing else.
+
+    Deliberately *outside* intelligence/.  It is written on every pattern match
+    by whichever process is scanning -- including the unelevated GUI -- and it
+    feeds a false-positive-rate label in Settings, never a detection decision.
+    Keeping it out of the service-owned tree is precisely what allows
+    intelligence/ to be read-only for ordinary users.
+    """
+    return app_root() / "telemetry"
+
+
 def rules_dir() -> Path:
     """User rules and downloaded community generations both live here."""
     return app_root() / "rules"
+
+
+def k2_rules_dir() -> Path:
+    r"""The signature tree k2 owns, and the only one it may prune.
+
+    ``k2 --update`` does **orphan detection**: it downloads a manifest
+    (``update.cfg``), walks its rules directory, and deletes every file the
+    manifest does not list (``kavcore/k2updater.py`` ->
+    ``remove_orphan_files``).  That is reasonable for a directory k2 owns.
+
+    It was not one.  ``config/.env`` -- generated by ``install.bat`` from
+    ``config/.env.template`` -- set ``SYSTEM_RULES_BASE`` to PolyShield's own
+    ``rules\``, which is also where ``download_yara_community()`` publishes the
+    YARA Forge generations.  So every *Update Center -> K2 Engine Signatures*
+    click deleted ``rules\community\``, ``.active`` included, and
+    ``yara_engine`` then reported "no rules" with nothing to explain it.
+    Measured twice, both times destroying a published generation.
+
+    k2 finds this directory through ``%SYSTEM_RULES_BASE%``, which every
+    invocation now sets explicitly (``scanner._k2_env()``).  Passing it in the
+    environment rather than rewriting ``.env`` matters: ``load_dotenv`` is
+    called with ``override=False``, so a value already in the environment wins
+    -- which repairs existing installations without touching a generated file
+    on disk, and works in a distribution that has no ``.env`` at all.
+
+    Note this is *k2's* rules directory, not PolyShield's.  ``rules_dir()``
+    keeps the community generations and the user's own rules, and nothing
+    prunes it.
+    """
+    return app_root() / "k2" / "rules"
 
 
 def guardian_dir() -> Path:
@@ -282,14 +433,57 @@ def guardian_dir() -> Path:
 
 
 def k2_exe() -> Path:
-    """The bundled kicomav scanner binary, inside the development virtualenv.
+    r"""The kicomav scanner binary.
 
-    Resolved against the checkout because that is the only place it currently
-    exists.  `scanner.is_available()` already reports False when it is missing,
-    so a build without it degrades rather than breaks -- see the module
-    docstring on why packaging k2 is a Phase 4b decision rather than a path.
+    Distribution: ``<install>\runtime\Scripts\k2.exe``.  K2 is a setuptools
+    console stub -- a zip with a launcher prepended -- so it cannot ship on its
+    own: it needs the ``kicomav`` package and an interpreter.  It therefore
+    rides the runtime that a distribution already carries for the source-mode
+    service rather than shipping a second copy of Python beside it.
+
+    Checkout: the development virtualenv, unchanged.
+
+    Resolved from ``install_root()`` and not ``resource_root()`` -- under
+    onefile the latter is the extraction directory, so this would name a binary
+    that exists only until the process exits.
+
+    ``scanner.is_available()`` still reports False when it is missing, so a
+    build without a staged runtime degrades rather than breaks.
     """
+    if is_distribution():
+        return install_root() / "runtime" / "Scripts" / "k2.exe"
     return resource_root() / "kicomav_env" / "Scripts" / "k2.exe"
+
+
+def k2_argv(*args: str) -> list[str]:
+    r"""argv that runs the k2 scanner, with `args` appended.
+
+    Distribution: ``<install>\runtime\python.exe -m kicomav.k2``.
+    Checkout: the ``k2.exe`` console script in the development virtualenv.
+
+    The module, not the console script, and the reason is measured rather than
+    stylistic.  ``k2.exe`` is a setuptools stub that embeds the ABSOLUTE PATH of
+    the interpreter it was pip-installed against.  Installing relocates the
+    runtime -- from ``dist\runtime`` on the build machine to
+    ``C:\Program Files\PolyShield\runtime`` on the user's -- and the stub then
+    points at a directory that does not exist on that machine.
+
+    It fails in the worst available way: **exit code 1, and nothing on stdout or
+    stderr.**  Not an error message, not a traceback.  A caller that only
+    counted results would read it as "scanned, found nothing", which is the
+    exact shape of a clean scan.
+
+    Found by the build gate on a real install, and then reproduced on the build
+    machine by hiding the original ``dist\runtime``: the same relocated k2.exe
+    that had just printed 23 signatures printed none.  It had been resolving the
+    build machine's own path the whole time.
+
+    ``-m`` has no embedded path -- the interpreter that runs it is named on the
+    command line -- so it survives being moved.
+    """
+    if is_distribution():
+        return [str(runtime_python()), "-m", "kicomav.k2", *args]
+    return [str(k2_exe()), *args]
 
 
 def venv_python() -> Path:
@@ -309,15 +503,26 @@ def venv_pip() -> Path:
 
 # ── Launching ourselves ───────────────────────────────────────────────────────
 
-class FrozenLaunchUndecided(RuntimeError):
-    """Raised where a launch target has no frozen equivalent decided yet.
+class StagedRuntimeMissing(RuntimeError):
+    r"""A distribution needs its staged interpreter and does not have one.
 
-    Deliberately loud.  The alternative -- returning a command line built from
-    a `pythonw.exe` and a `.py` file that a distribution does not contain --
-    registers a context-menu verb or a scheduled task that fails silently when
-    the user finally triggers it, which is the exact failure mode this whole
-    phase exists to prevent.
+    Deliberately loud.  The alternative -- returning a command built from a
+    ``pythonw.exe`` and a ``.py`` file that a distribution does not contain --
+    registers a scheduled task that fails silently at 02:00 some months later,
+    with nobody watching.  That is the failure class this module exists to
+    remove, so an unrunnable command is never returned in place of an error.
+
+    Named ``FrozenLaunchUndecided`` until v1.16, when the decision it was named
+    after was made: helper scripts run from the staged runtime beside the
+    service.  The alias below keeps older callers working, but the condition is
+    no longer "nobody has chosen" -- it is "the runtime was not staged", which
+    is a build or installer fault and should read as one.
     """
+
+
+#: Retained so an external caller importing the old name still resolves. The
+#: condition it described no longer exists.
+FrozenLaunchUndecided = StagedRuntimeMissing
 
 
 def app_launch_argv(*args: str) -> list[str]:
@@ -343,17 +548,33 @@ def app_launch_argv(*args: str) -> list[str]:
 
 
 def script_launch_argv(script: str, *args: str) -> list[str]:
-    """argv that runs a bundled helper script (`scheduled_scan.py`, the service).
+    r"""argv that runs a bundled helper script (``scheduled_scan.py``).
 
-    Frozen builds have no interpreter and no `.py` files, so each of these
-    needs its own executable or a subcommand on the main one.  That is a Phase
-    4b decision; until it is made this raises rather than returning a command
-    that would be written into the Task Scheduler and fail months later.
+    Distribution: the staged interpreter plus the script staged beside the
+    service -- ``<install>\runtime\python.exe <install>\service\<script>``.
+    Both are laid down by ``build.ps1``; the service already runs this way, and
+    a scheduled scan sharing that runtime is why 4b.3 needed no second
+    executable.
+
+    Checkout: the virtualenv interpreter plus the script at the project root.
+
+    Resolved through ``install_root()`` rather than ``resource_root()``: this
+    command is written into the Windows Task Scheduler and has to still be
+    valid months later, long after any onefile extraction directory is gone.
+
+    Raises StagedRuntimeMissing when a distribution has no runtime -- a
+    GUI-only build.  The caller (``scheduler.create_task``) is better off
+    reporting that than registering a task that cannot run.
     """
-    if is_frozen():
-        raise FrozenLaunchUndecided(
-            f"no frozen launch target for {script}; Phase 4b must decide "
-            "whether it ships as its own executable or as a subcommand")
+    if is_distribution():
+        interpreter = runtime_python()
+        target = install_root() / "service" / script
+        if not interpreter.exists():
+            raise StagedRuntimeMissing(
+                f"cannot run {script}: no interpreter at {interpreter}. "
+                "The installer stages runtime\\ beside the executable; a build "
+                "without one cannot run scheduled scans.")
+        return [str(interpreter), str(target), *args]
     return [str(venv_python()), str(resource_root() / script), *args]
 
 
