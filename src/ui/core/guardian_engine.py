@@ -411,6 +411,168 @@ class _EnhancedScanner:
                 pass
             return None  # fall back to per-file SQLite until rebuilt
 
+    def _read_scan_settings(self, use_patterns_override: bool | None):
+        """Read the per-scan settings this file will be judged against.
+
+        Read once, here, and passed down to the tiers as parameters rather
+        than re-read inside them: a settings write partway through a scan
+        must not change the rules halfway down one file.
+
+        Unreadable settings fall back to the permissive defaults -- both
+        togglable tiers on -- because failing closed here would silently
+        disable detection.
+        """
+        try:
+            from ui.core import settings as _cfg
+            use_nsrl     = _cfg.get("guardian_use_nsrl")
+            use_patterns = _cfg.get("guardian_use_patterns")
+            min_bytes    = _cfg.get("guardian_min_scan_bytes")
+            profile      = (_cfg.get("guardian_sensitivity_profile") or "conservative").lower()
+            toggles      = _cfg.get("guardian_pattern_toggles") or {}
+            if min_bytes is None:
+                min_bytes = _DEFAULT_MIN_SCAN_BYTES
+        except Exception:
+            use_nsrl = use_patterns = True
+            min_bytes = _DEFAULT_MIN_SCAN_BYTES
+            profile  = "conservative"
+            toggles  = {}
+
+        if use_patterns_override is not None:
+            use_patterns = bool(use_patterns_override)
+        return use_nsrl, use_patterns, min_bytes, profile, toggles
+
+    def _tier_patterns(self, file_path: str, content: bytes, use_patterns: bool,
+                       profile: str, toggles: dict) -> tuple[bool, str, str, str] | None:
+        """Tier 4 -- heuristic regex patterns, gated by profile and toggles.
+
+        Returns None for "no pattern verdict", which the caller renders as
+        Clean.  That covers the tier being off, the file not being worth
+        pattern-scanning, and no pattern matching.
+
+        The circuit breaker is the one piece of state here that outlives the
+        call: _pattern_hit_count and _circuit_tripped persist across
+        scan_file() calls on the same scanner, are reset by
+        reset_scan_session() at scan start, and are read by the UI through
+        get_circuit_state().  That is why this is a method and not a free
+        function.
+        """
+        # Circuit breaker: if an earlier file in this scan already tripped the
+        # threshold, short-circuit the pattern tier entirely.
+        if use_patterns and self._circuit_tripped:
+            return None
+
+        if use_patterns and self._should_pattern_scan(file_path, content):
+            text = content.decode("utf-8", errors="ignore")
+            for label, pattern, *_ in self._PATTERNS:
+                # v1.10: profile + per-pattern toggle gate
+                if not self._pattern_enabled(label, profile, toggles):
+                    continue
+
+                matched = False
+                match_obj = None
+                if label.startswith("AutoRun"):
+                    # AutoRun requires BOTH the [AutoRun] section header
+                    # AND an open= directive (two separate checks)
+                    m1 = pattern.search(text)
+                    m2 = re.search(r'^\s*open\s*=\s*\S', text,
+                                   re.IGNORECASE | re.MULTILINE)
+                    if m1 and m2:
+                        matched = True
+                        match_obj = m1
+                else:
+                    match_obj = pattern.search(text)
+                    if match_obj:
+                        matched = True
+
+                if matched:
+                    # Capture a small printable context window for the UI.
+                    match_context = self._capture_match_context(text, match_obj)
+
+                    # Telemetry: increment pattern stats.
+                    try:
+                        from ui.core import pattern_stats as _ps
+                        _ps.record_detection(label)
+                    except Exception:
+                        pass
+
+                    # Circuit breaker: count the hit and trip if over threshold.
+                    self._pattern_hit_count += 1
+                    if (self._circuit_threshold > 0
+                            and self._pattern_hit_count >= self._circuit_threshold):
+                        self._circuit_tripped = True
+
+                    return True, f"Suspicious pattern: {label}", "pattern", match_context
+        return None
+
+    def _tier_nsrl(self, md5: str, use_nsrl: bool) -> tuple[bool, str, str, str] | None:
+        """Tier 1 -- the NSRL known-safe allow-list, when enabled.
+
+        The bloom filter is a pre-filter, never the verdict: a hit still has
+        to be confirmed against SQLite, because a bloom filter has false
+        positives and calling a file safe on one would be a missed detection.
+        A filter that is absent (not built, or quarantined as unparseable)
+        means every hash falls through to the SQLite check rather than
+        skipping the tier.
+        """
+        if not use_nsrl:
+            return None
+        bloom = self._nsrl_bloom
+        if bloom is not None and md5 not in bloom:
+            return None
+        try:
+            from ui.core.intel_db import is_known_safe
+            if is_known_safe(md5):
+                return False, "NSRL (known-safe system file)", "safe", ""
+        except ImportError:
+            pass
+        return None
+
+    @staticmethod
+    def _format_hash_reason(meta: dict | None, fallback: str) -> str:
+        """Render a hash-tier reason from an intel_db row, else `fallback`.
+
+        Both hash tiers agree on the shape -- family name, with the engine
+        count appended when there is one -- and differ only in what they say
+        when the row carries neither.  That difference is the fallback.
+        """
+        if not meta:
+            return fallback
+        family = meta.get("family", "").strip()
+        count  = meta.get("detection_count", 0)
+        if family:
+            return f"{family}  [{count} engines]" if count else family
+        if count:
+            return f"Known malware  [{count} engines]"
+        return fallback
+
+    def _tier_ram_signature(self, md5: str) -> tuple[bool, str, str, str] | None:
+        """Tier 2 -- the in-memory signature set loaded at scan start."""
+        if md5 not in self.virus_db:
+            return None
+        reason = f"Known Signature (MD5: {md5[:12]}…)"
+        try:
+            from ui.core.intel_db import lookup_hash
+            reason = self._format_hash_reason(lookup_hash(md5), reason)
+        except ImportError:
+            pass
+        return True, reason, "hash", ""
+
+    def _tier_sqlite(self, md5: str) -> tuple[bool, str, str, str] | None:
+        """Tier 3 -- the malicious table, which carries family and engine count.
+
+        A row that exists but is empty is still a hit: the guard is
+        `is not None`, not truthiness, so a bare row does not read as a miss.
+        """
+        try:
+            from ui.core.intel_db import lookup_hash
+            meta = lookup_hash(md5)
+            if meta is not None:
+                return True, self._format_hash_reason(
+                    meta, f"Known Signature (DB: MD5 {md5[:12]}…)"), "hash", ""
+        except ImportError:
+            pass
+        return None
+
     def scan_file(self, file_path: str,
                   use_patterns_override: bool | None = None) -> tuple[bool, str, str, str]:
         """
@@ -442,23 +604,8 @@ class _EnhancedScanner:
         sensitivity profile (Conservative / Balanced / Power) and the
         per-pattern toggles dict from settings.
         """
-        try:
-            from ui.core import settings as _cfg
-            use_nsrl     = _cfg.get("guardian_use_nsrl")
-            use_patterns = _cfg.get("guardian_use_patterns")
-            min_bytes    = _cfg.get("guardian_min_scan_bytes")
-            profile      = (_cfg.get("guardian_sensitivity_profile") or "conservative").lower()
-            toggles      = _cfg.get("guardian_pattern_toggles") or {}
-            if min_bytes is None:
-                min_bytes = _DEFAULT_MIN_SCAN_BYTES
-        except Exception:
-            use_nsrl = use_patterns = True
-            min_bytes = _DEFAULT_MIN_SCAN_BYTES
-            profile  = "conservative"
-            toggles  = {}
-
-        if use_patterns_override is not None:
-            use_patterns = bool(use_patterns_override)
+        (use_nsrl, use_patterns, min_bytes, profile,
+         toggles) = self._read_scan_settings(use_patterns_override)
 
         try:
             with open(file_path, "rb") as f:
@@ -479,103 +626,25 @@ class _EnhancedScanner:
                 pass
 
             # ── 1. NSRL allow-list ──
-            if use_nsrl:
-                bloom = self._nsrl_bloom
-                if bloom is None:
-                    try:
-                        from ui.core.intel_db import is_known_safe
-                        if is_known_safe(md5):
-                            return False, "NSRL (known-safe system file)", "safe", ""
-                    except ImportError:
-                        pass
-                elif md5 in bloom:
-                    try:
-                        from ui.core.intel_db import is_known_safe
-                        if is_known_safe(md5):
-                            return False, "NSRL (known-safe system file)", "safe", ""
-                    except ImportError:
-                        pass
+            verdict = self._tier_nsrl(md5, use_nsrl)
+            if verdict is not None:
+                return verdict
 
             # ── 2. RAM signature set ──
-            if md5 in self.virus_db:
-                reason = f"Known Signature (MD5: {md5[:12]}…)"
-                try:
-                    from ui.core.intel_db import lookup_hash
-                    meta = lookup_hash(md5)
-                    if meta:
-                        family = meta.get("family", "").strip()
-                        count  = meta.get("detection_count", 0)
-                        if family:
-                            reason = f"{family}  [{count} engines]" if count else family
-                        elif count:
-                            reason = f"Known malware  [{count} engines]"
-                except ImportError:
-                    pass
-                return True, reason, "hash", ""
+            verdict = self._tier_ram_signature(md5)
+            if verdict is not None:
+                return verdict
 
             # ── 3. SQLite malicious table ──
-            try:
-                from ui.core.intel_db import lookup_hash
-                meta = lookup_hash(md5)
-                if meta is not None:
-                    family = meta.get("family", "").strip()
-                    count  = meta.get("detection_count", 0)
-                    if family:
-                        reason = f"{family}  [{count} engines]" if count else family
-                    else:
-                        reason = f"Known malware  [{count} engines]" if count \
-                                 else f"Known Signature (DB: MD5 {md5[:12]}…)"
-                    return True, reason, "hash", ""
-            except ImportError:
-                pass
+            verdict = self._tier_sqlite(md5)
+            if verdict is not None:
+                return verdict
 
             # ── 4. Pattern matching ──
-            # Circuit breaker: if a previous file in this scan already tripped
-            # the threshold, short-circuit the pattern tier entirely.
-            if use_patterns and self._circuit_tripped:
-                return False, "Clean", "clean", ""
-
-            if use_patterns and self._should_pattern_scan(file_path, content):
-                text = content.decode("utf-8", errors="ignore")
-                for label, pattern, *_ in self._PATTERNS:
-                    # v1.10: profile + per-pattern toggle gate
-                    if not self._pattern_enabled(label, profile, toggles):
-                        continue
-
-                    matched = False
-                    match_obj = None
-                    if label.startswith("AutoRun"):
-                        # AutoRun requires BOTH the [AutoRun] section header
-                        # AND an open= directive (two separate checks)
-                        m1 = pattern.search(text)
-                        m2 = re.search(r'^\s*open\s*=\s*\S', text,
-                                       re.IGNORECASE | re.MULTILINE)
-                        if m1 and m2:
-                            matched = True
-                            match_obj = m1
-                    else:
-                        match_obj = pattern.search(text)
-                        if match_obj:
-                            matched = True
-
-                    if matched:
-                        # Capture a small printable context window for the UI.
-                        match_context = self._capture_match_context(text, match_obj)
-
-                        # Telemetry: increment pattern stats.
-                        try:
-                            from ui.core import pattern_stats as _ps
-                            _ps.record_detection(label)
-                        except Exception:
-                            pass
-
-                        # Circuit breaker: count the hit and trip if over threshold.
-                        self._pattern_hit_count += 1
-                        if (self._circuit_threshold > 0
-                                and self._pattern_hit_count >= self._circuit_threshold):
-                            self._circuit_tripped = True
-
-                        return True, f"Suspicious pattern: {label}", "pattern", match_context
+            verdict = self._tier_patterns(file_path, content, use_patterns,
+                                          profile, toggles)
+            if verdict is not None:
+                return verdict
 
             return False, "Clean", "clean", ""
 
