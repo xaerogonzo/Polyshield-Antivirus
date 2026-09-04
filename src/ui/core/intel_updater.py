@@ -800,11 +800,6 @@ def run_updates(
         _local_lock.release()
 
 
-def run_due_updates(on_progress=None, owner: str = "ui") -> dict:
-    """Run only the feeds that are actually due.  Used by the scheduler."""
-    return run_updates(feeds=None, force=False, on_progress=on_progress, owner=owner)
-
-
 def request_update(feeds: list[str] | None = None, force: bool = True,
                    on_progress=None) -> dict:
     """Route an update request to whoever owns intelligence writes.

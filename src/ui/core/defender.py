@@ -82,6 +82,11 @@ def get_status() -> dict:
     return data
 
 
+# No in-tree caller.  Kept deliberately: docs/TESTING.md and
+# test_system_surface.py both cite this and get_threat_names() as the readers
+# that already normalise whatever shape PowerShell hands them -- the behaviour
+# get_status() was fixed to match in v1.14.  Deleting it would strand that
+# explanation in three places.
 def get_threat_history(limit: int = 20) -> list[dict]:
     """Return recent Defender threat detections."""
     ps = (
@@ -259,6 +264,10 @@ def start_scan_async(scan_type: str, path: str, done_callback):
     threading.Thread(target=_run, daemon=True).start()
 
 
+# No in-tree caller yet.  The docstring's "surfaces them in the Windows
+# Security view" was the intent; winsec_view never wired it up.  Kept rather
+# than deleted -- configured exclusions are a real blind spot and this reader
+# is complete.  Wiring it into WinSecView is a feature, not a cleanup.
 def get_defender_exclusions() -> dict:
     """
     Return paths, extensions, and processes that Defender is configured to skip.
