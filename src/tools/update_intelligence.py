@@ -1068,6 +1068,87 @@ def _safe_generation_name(tag: str) -> str:
     return ("yara-forge-" + cleaned)[:80] or "yara-forge-unknown"
 
 
+def _fetch_yara_release(timeout: int, log) -> tuple[dict, str, dict | None]:
+    """Query the YARA Forge releases API and validate the tag.
+
+    Returns (release, tag, None), or (_, _, error-fields) which the caller
+    merges into its result.  Nothing live is touched here, so a bad query
+    leaves the installed rule set exactly as it was.
+    """
+    import json as _json
+    import urllib.error as _urlerr
+
+    log(f"Querying YARA Forge releases…  {_YARA_RELEASE_URL}")
+    try:
+        req = urllib.request.Request(_YARA_RELEASE_URL, headers={"User-Agent": _YARA_UA})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            release = _json.loads(resp.read().decode("utf-8"))
+    except _urlerr.HTTPError as exc:
+        err = f"HTTP {exc.code} from GitHub"
+        log(f"[ERROR] {err}")
+        return {}, "", {"error": err, "http_status": int(exc.code)}
+    except Exception as exc:
+        log(f"[ERROR] Release query failed: {exc}")
+        return {}, "", {"error": str(exc)}
+
+    tag = str(release.get("tag_name") or "").strip()
+    if not tag:
+        return {}, "", {"error": "release has no tag_name"}
+    return release, tag, None
+
+
+def _select_yara_zip_asset(release: dict) -> dict | None:
+    """Pick the core rule ZIP from a release, else any ZIP, else None."""
+    assets = release.get("assets") or []
+    asset = next((a for a in assets
+                  if str(a.get("name", "")).lower().endswith(".zip")
+                  and "core" in str(a.get("name", "")).lower()), None)
+    if asset is None:
+        asset = next((a for a in assets
+                      if str(a.get("name", "")).lower().endswith(".zip")), None)
+    return asset
+
+
+def _stamp_yara_freshness(tag: str) -> None:
+    """Record what was installed and when.
+
+    WHAT was installed and WHEN we installed it are different facts, so
+    they are stored separately.
+    """
+    now = _utcnow().isoformat()
+    con = _open_db()
+    con.execute("INSERT OR REPLACE INTO meta VALUES ('yara_version', ?)", (tag,))
+    con.execute("INSERT OR REPLACE INTO meta VALUES ('yara_last_update', ?)", (now,))
+    con.commit()
+    con.close()
+
+    # Legacy .version file — still read by older UI code paths.
+    try:
+        (_YARA_DIR / ".version").write_text(tag, encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _sweep_old_generations(gen_dir) -> None:
+    """Best-effort cleanup AFTER the flip.
+
+    A scan still reading an old generation keeps working; anything we
+    cannot delete is inert.
+    """
+    import shutil as _shutil
+
+    for child in _YARA_DIR.iterdir():
+        try:
+            if child.is_dir() and child != gen_dir:
+                if child.name.startswith("yara-forge-") or child.name.startswith(".staging-"):
+                    _shutil.rmtree(child, ignore_errors=True)
+            elif child.is_file() and child.suffix.lower() in (".yar", ".yara"):
+                # Legacy flat layout — inert now that .active resolves.
+                child.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
 def download_yara_community(
     on_progress: Callable[[str], None] | None = None,
     notify: bool = True,
@@ -1096,24 +1177,9 @@ def download_yara_community(
     result["previous_version"] = current
 
     # 1. Latest release metadata
-    log(f"Querying YARA Forge releases…  {_YARA_RELEASE_URL}")
-    try:
-        req = urllib.request.Request(_YARA_RELEASE_URL, headers={"User-Agent": _YARA_UA})
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            release = _json.loads(resp.read().decode("utf-8"))
-    except _urlerr.HTTPError as exc:
-        result["error"] = f"HTTP {exc.code} from GitHub"
-        result["http_status"] = int(exc.code)
-        log(f"[ERROR] {result['error']}")
-        return result
-    except Exception as exc:
-        result["error"] = str(exc)
-        log(f"[ERROR] Release query failed: {exc}")
-        return result
-
-    tag = str(release.get("tag_name") or "").strip()
-    if not tag:
-        result["error"] = "release has no tag_name"
+    release, tag, err = _fetch_yara_release(timeout, log)
+    if err:
+        result.update(err)
         return result
     result["version"] = tag
 
@@ -1129,13 +1195,7 @@ def download_yara_community(
         return result
 
     # 3. Pick the core ZIP asset
-    assets = release.get("assets") or []
-    asset = next((a for a in assets
-                  if str(a.get("name", "")).lower().endswith(".zip")
-                  and "core" in str(a.get("name", "")).lower()), None)
-    if asset is None:
-        asset = next((a for a in assets
-                      if str(a.get("name", "")).lower().endswith(".zip")), None)
+    asset = _select_yara_zip_asset(release)
     if asset is None:
         result["error"] = "no ZIP asset in release"
         log(f"[ERROR] {result['error']}")
@@ -1205,6 +1265,13 @@ def download_yara_community(
         if gen_dir.exists():
             _shutil.rmtree(gen_dir, ignore_errors=True)
         _os.replace(str(staging), str(gen_dir))
+        # Ownership transfer: the staging directory is now gen_dir, and this
+        # variable is how the finally below knows not to clean it up.  It is
+        # belt-and-braces rather than load-bearing -- os.replace renames, so
+        # the staging path is already gone and the finally's rmtree is
+        # ignore_errors -- but clear it here, the moment the replace succeeds
+        # rather than once the whole publish does, so the variable never
+        # outlives the thing it names.
         staging = None
 
         # Sanity: the move must have landed the files.  Cheap, and it catches a
@@ -1221,33 +1288,11 @@ def download_yara_community(
         _os.replace(str(ptr_tmp), str(_YARA_ACTIVE_FILE))
         log(f"  Published {extracted} rule file(s) as {gen_name}.")
 
-        # 8. Freshness metadata — WHAT was installed and WHEN we installed it
-        #    are different facts, so they are stored separately.
-        now = _utcnow().isoformat()
-        con = _open_db()
-        con.execute("INSERT OR REPLACE INTO meta VALUES ('yara_version', ?)", (tag,))
-        con.execute("INSERT OR REPLACE INTO meta VALUES ('yara_last_update', ?)", (now,))
-        con.commit()
-        con.close()
+        # 8. Freshness metadata
+        _stamp_yara_freshness(tag)
 
-        # Legacy .version file — still read by older UI code paths.
-        try:
-            (_YARA_DIR / ".version").write_text(tag, encoding="utf-8")
-        except Exception:
-            pass
-
-        # 9. Best-effort cleanup AFTER the flip.  A scan still reading an old
-        #    generation keeps working; anything we cannot delete is inert.
-        for child in _YARA_DIR.iterdir():
-            try:
-                if child.is_dir() and child != gen_dir:
-                    if child.name.startswith("yara-forge-") or child.name.startswith(".staging-"):
-                        _shutil.rmtree(child, ignore_errors=True)
-                elif child.is_file() and child.suffix.lower() in (".yar", ".yara"):
-                    # Legacy flat layout — inert now that .active resolves.
-                    child.unlink(missing_ok=True)
-            except Exception:
-                pass
+        # 9. Best-effort cleanup
+        _sweep_old_generations(gen_dir)
 
         result["status"] = "updated"
         log(f"Done.  YARA rules updated to {tag}.")

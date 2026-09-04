@@ -502,6 +502,53 @@ def test_corrupt_archive_leaves_the_previous_rules_live(yara_publish_sandbox, mo
     assert upd.get_meta("yara_version") == "v1", "failed update must not claim a version"
 
 
+# -- staging lifetime ---------------------------------------------------------
+#
+# download_yara_community() builds into a staging directory and publishes it
+# with os.replace, clearing its `staging` variable so the finally block knows
+# not to clean up. These assert the outcome on both paths: a published
+# generation is still there when the call returns, and a failure leaves no
+# .staging-* behind.
+#
+# Note the sentinel itself is defensive, not load-bearing -- os.replace renames,
+# so on success the staging path is already gone and the finally's rmtree is
+# ignore_errors. Removing the assignment does NOT make these fail. They are here
+# for the outcome, which is what callers depend on.
+
+def test_a_published_generation_survives_the_cleanup_block(
+        yara_publish_sandbox, monkeypatch):
+    """Success: ownership passed to gen_dir, so finally must not remove it."""
+    upd, ydir = yara_publish_sandbox
+    _stub_github(monkeypatch, upd, tag="v3.0.0")
+
+    res = upd.download_yara_community(notify=False)
+
+    assert res["status"] == "updated"
+    gen = upd.get_active_yara_generation()
+    assert gen is not None and gen.is_dir(), "the published generation was deleted"
+    assert [q.name for q in gen.glob("*.yar")] == ["core.yar"]
+    assert not list(ydir.glob(".staging-*")), "staging directory left behind"
+
+
+def test_a_failed_publish_leaves_no_staging_directory(
+        yara_publish_sandbox, monkeypatch):
+    """Failure before the replace: staging is still parent-owned, so finally
+    must remove it.  _dacl_is_protected is the real refusal that fires there --
+    publishing a rule set only the writer can read makes yara_engine report
+    "no rules" with no error at all."""
+    upd, ydir = yara_publish_sandbox
+    _stub_github(monkeypatch, upd, tag="v3.0.1")
+    monkeypatch.setattr(upd, "_dacl_is_protected", lambda path: True)
+
+    res = upd.download_yara_community(notify=False)
+
+    assert res["status"] == "failed"
+    assert "refusing to publish" in res["error"]
+    assert not list(ydir.glob(".staging-*")), "staging directory was not cleaned up"
+    assert upd.get_active_yara_generation() is None
+
+
+
 def test_archive_without_rules_is_rejected(yara_publish_sandbox, monkeypatch):
     upd, ydir = yara_publish_sandbox
     empty = io.BytesIO()
