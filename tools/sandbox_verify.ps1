@@ -754,6 +754,12 @@ $out = Join-Path $ResultsDir "verify.json"
     installed_engines = $results.installed_engines
     installed_engines_raw = $results.installed_engines_raw
     unregister_report = $results.unregister_report
+    # Same reasoning, measured the hard way: the richer report has never once
+    # survived serialisation, so a field that only lives there does not exist.
+    # The footprint numbers are the whole point of the check that produces
+    # them -- a future regression is diagnosed by comparing them, not by
+    # re-reading "pass".
+    startup_footprint = $results.startup_footprint
 } | ConvertTo-Json -Depth 6 | Set-Content $out -Encoding UTF8
 Write-Host "  checks written -> $out" -ForegroundColor DarkGray
 
