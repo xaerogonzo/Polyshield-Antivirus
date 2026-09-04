@@ -180,29 +180,71 @@ Add-Check "GUI stays running for 30s" $alive `
 # Both figures go into the report so a future failure is diagnosable.
 
 if ($alive) {
-    $userObjects = -1
-    $gdiObjects  = -1
-    $privateMB   = 0
+    # Measure the process that owns the GUI, which is NOT the one Start-Process
+    # handed back. PolyShield.exe is a Nuitka ONEFILE build: the exe launched is
+    # a bootstrap that unpacks to a temp directory and runs the real application
+    # as a CHILD. The first version of this check measured the bootstrap and
+    # reported "1 USER objects, 0 GDI objects, 1.9 MB" while the full GUI was on
+    # screen -- and passed, because everything is below 1200. A gate that
+    # measures the wrong process is worse than no gate: it is a green check
+    # standing where a real one should be.
+    #
+    # So: walk the whole process tree and take the member with the most USER
+    # objects. Every candidate is recorded, because "which process did we
+    # measure" is the first question any future failure raises.
+    $candidates = @($proc.Id)
     try {
-        $live = Get-Process -Id $proc.Id -ErrorAction Stop
-        $userObjects = [int][Win32.Gui]::GetGuiResources($live.Handle, 1)  # GR_USEROBJECTS
-        $gdiObjects  = [int][Win32.Gui]::GetGuiResources($live.Handle, 0)  # GR_GDIOBJECTS
-        $privateMB   = [math]::Round($live.PrivateMemorySize64 / 1MB, 1)
+        $pending = @($proc.Id)
+        while ($pending.Count -gt 0) {
+            $next = @()
+            foreach ($parentId in $pending) {
+                $kids = @(Get-CimInstance Win32_Process `
+                            -Filter "ParentProcessId = $parentId" `
+                            -ErrorAction SilentlyContinue |
+                          Select-Object -ExpandProperty ProcessId)
+                $next += $kids
+                $candidates += $kids
+            }
+            $pending = $next
+        }
     } catch { }
 
-    $results.startup_footprint = [ordered]@{
-        user_objects = $userObjects
-        gdi_objects  = $gdiObjects
-        private_mb   = $privateMB
+    $measured = @()
+    foreach ($procId in ($candidates | Select-Object -Unique)) {
+        try {
+            $p = Get-Process -Id $procId -ErrorAction Stop
+            $measured += [ordered]@{
+                pid          = $procId
+                name         = $p.ProcessName
+                user_objects = [int][Win32.Gui]::GetGuiResources($p.Handle, 1)  # GR_USEROBJECTS
+                gdi_objects  = [int][Win32.Gui]::GetGuiResources($p.Handle, 0)  # GR_GDIOBJECTS
+                private_mb   = [math]::Round($p.PrivateMemorySize64 / 1MB, 1)
+            }
+        } catch { }
     }
 
-    Add-Check "startup USER objects below 1200" `
-        ($userObjects -gt 0 -and $userObjects -lt 1200) `
-        ("$userObjects USER objects (307 when measured; 3715 with eager views)")
+    $gui = $measured | Sort-Object { $_.user_objects } -Descending | Select-Object -First 1
+    $userObjects = if ($gui) { [int]$gui.user_objects } else { -1 }
+    $gdiObjects  = if ($gui) { [int]$gui.gdi_objects }  else { -1 }
+    $privateMB   = if ($gui) { $gui.private_mb }        else { 0 }
+    $guiPid      = if ($gui) { $gui.pid }               else { "?" }
+
+    $results.startup_footprint = [ordered]@{
+        chosen    = $gui
+        processes = $measured
+    }
+
+    # The floor carries as much weight as the ceiling. A CustomTkinter window
+    # with a sidebar cannot have 1 USER object; that number means the GUI was
+    # not found, and must read as a failure rather than as a lean startup.
+    Add-Check "startup USER objects between 50 and 1200" `
+        ($userObjects -ge 50 -and $userObjects -lt 1200) `
+        ("$userObjects USER objects in pid $guiPid, $($measured.Count) process(es) " +
+         "in the tree (307 when measured; 3715 with eager views)")
 
     Add-Check "startup footprint measured" `
         ($privateMB -gt 0) `
-        ("$privateMB MB private, $gdiObjects GDI objects - recorded, not gated")
+        ("$privateMB MB private, $gdiObjects GDI objects in pid $guiPid - recorded, not gated")
 }
 
 if ($alive) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
@@ -671,7 +713,12 @@ untime\python.exe in use and waits
             # distinguishable from one that never ran.
             $unregLog = Join-Path $dataDir "logs\unregister.json"
             if (Test-Path $unregLog) {
-                $results.unregister_report = (Get-Content $unregLog -Raw)
+                # [string] is load-bearing. Get-Content returns its text with
+                # PSPath / PSProvider note-properties attached, and
+                # ConvertTo-Json follows them: a 374-byte report serialised the
+                # provider internals as well and produced a 102 MB verify.json,
+                # which is not a report anyone can read.
+                $results.unregister_report = [string](Get-Content $unregLog -Raw)
                 Copy-Item $unregLog (Join-Path $ResultsDir "unregister.json") -Force -ErrorAction SilentlyContinue
             } else {
                 $results.unregister_report = "NOT WRITTEN - the exe never ran --unregister"
