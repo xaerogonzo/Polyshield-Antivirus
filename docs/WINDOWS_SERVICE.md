@@ -39,6 +39,38 @@ PolyShield ──(TCP 127.0.0.1:52614)──► PolyShield Service
 
 **Why TCP over named pipes / COM / WCF:** Simple, language-agnostic, no registry COM registration, works across Python versions, easy to debug with raw sockets.
 
+#### "Is the service running?" is an expensive question (v1.16)
+
+`service_client.is_service_running()` is a PING with a 0.5s timeout, and it
+looks free. It is not, in exactly the case that matters: a closed port is
+supposed to refuse instantly, but measured on Windows 11 with the service
+installed and **stopped**, connecting to `127.0.0.1:52614` times out after the
+full 0.5s — the SYN is dropped rather than reset. (`localhost` costs 1.0s: it
+tries `::1` first.) So the probe is cheap when the service is up and expensive
+precisely when it is down, which is the common case for a user who never
+installed it.
+
+Thirteen call sites ask, several on every navigation. Launch alone paid it
+twice, from two modules that cannot see each other — `app.py`'s process-monitor
+branch, then `ProcessView._refresh_state()` by way of `attach_monitor()` — for
+**1.0s of a 1.6s startup**.
+
+The answer is therefore cached for `_PROBE_TTL_S` (2s), under a lock so a burst
+of callers collapses into one round trip instead of each holding its own
+timeout. Measured over 7 cold starts, before and after, same machine and load:
+`App()` 2239ms → 1643ms.
+
+This weakens nothing. The probe was always a **routing hint** that could be
+stale the instant it returned — which is why `intel_updater` re-checks at the
+point of use, and why the actual one-writer guarantee is the cross-process file
+lock, not this answer. Two rules keep it honest:
+
+- Anything **displaying** service state passes `max_age=0` (`ServiceView`
+  does), so a badge is never drawn from a two-second-old answer.
+- Anything **changing** service state calls `invalidate_service_probe()`.
+  `ServiceView._after_action` does, which covers install, uninstall, start and
+  stop, since all four route through it.
+
 ### Protocol Commands
 
 | Command | Direction | Description |

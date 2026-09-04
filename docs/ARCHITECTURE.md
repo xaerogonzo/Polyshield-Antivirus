@@ -1561,6 +1561,16 @@ headline. It deliberately combines two different questions:
 | `update_required` | an enabled feed never populated, **or** has no usable data despite what its metadata says |
 | `unavailable` | the intelligence store itself cannot be read |
 
+`unavailable` is narrower than it first reads. A database that does not exist
+yet is **readable and empty**, not unreadable — that is a fresh install, and it
+belongs in `update_required`. `intel_db.get_stats()` already separates the two
+by `last_update`: `"Never"` for a file that was never created, `"Error"` for one
+it could not open. `get_usability()` therefore keys `readable` off that value
+rather than off `db_exists`, which conflated them. Getting this wrong put
+*"The intelligence database could not be read"* — corruption-and-permissions
+wording — on the Dashboard of every first launch, in red, directly beneath the
+Getting Started card asking the user to populate it.
+
 The second half of `update_required` is the important one. Freshness metadata
 describes the *download*: a YARA generation published with a non-inheriting ACL
 reads as perfectly fresh while `yara_engine` reports zero rules and silently
@@ -1660,6 +1670,57 @@ Both in **Settings → Guardian AI**:
 
 - **NSRL Allow-List Check** (default ON) — Skip per-file NSRL SQLite query to save ~1–5ms/file; trade-off: loses known-safe detection
 - **Heuristic Patterns** (default ON) — Skip the 7 regex patterns to save ~1ms/file; trade-off: loses pattern-based zero-day detection
+
+### Views are built on first show (v1.16)
+
+`App._build()` used to construct all 18 views and then `grid_remove()` 17 of
+them. The user saw one page; the process paid for eighteen.
+
+Measured with `tools/uishot`'s hidden desktop, driving the real `App` with the
+tray, watcher and WMI monitor stubbed out so the numbers are widget cost only
+(`GetGuiResources` for handles, `psutil` private bytes for memory):
+
+| At startup, showing only the Dashboard | Eager | On first show |
+|---|---|---|
+| Tk windows | 4,996 | **279** |
+| USER handles | 3,715 (37% of the 10,000 per-process quota) | **307** |
+| Private bytes | 107.7 MB | **39.0 MB** |
+
+Nothing was removed, only deferred: after navigating to all 18 pages both
+builds converge on the same 4,996 Tk windows and 4,497 USER handles.
+
+The cost was not theoretical. Every Tk widget is a real `HWND` — Tk calls
+`CreateWindowEx` per widget on Windows, and CustomTkinter puts a `CTkCanvas`
+under each one — so the eager build put ~5,000 windows on the desktop heap and
+made Tk allocate an offscreen DIB per canvas redraw. In a Windows Sandbox,
+whose session heap and memory share are both smaller than an ordinary
+interactive desktop's, that surfaced as:
+
+> `Tk_GetPixmap: Error from CreateDIBSection` — Not enough memory resources are
+> available to process this command.
+
+That string is `ERROR_NOT_ENOUGH_MEMORY` (8). For a GDI or USER allocation it
+usually means the *desktop heap* is full rather than the machine being out of
+RAM, which is why the handle count matters more here than the megabytes.
+
+Two things constrain how this may be used:
+
+- **`App.get_view(key)` is the only correct accessor.** `self._views[key]` is
+  populated only for pages that have already been shown, so a membership test
+  against it is not "does this page exist", it is "has the user been there
+  yet". `ScanView._send_to_virustotal()` and `_open_behavioral()` hand a file
+  to another page *before* navigating to it; written against `_views` they
+  would silently skip the pre-load and land the user on an empty page.
+- **ProcessView is still built eagerly** whenever the in-process
+  `ProcessMonitor` is running. Its `_on_alert()` is where
+  `process_monitor_auto_terminate` actually kills a flagged process, so a
+  ProcessView that does not exist is an auto-terminate setting that does
+  nothing. It costs ~38 Tk windows and no USER handles.
+
+The remaining trade-off is a one-time build cost on first navigation to a page
+— largest for Help (~818 widgets) and Settings (~479). Startup is faster in
+exchange, and the network calls that `UpdateView` and `DefenderView` fire from
+their constructors no longer run for users who never open those pages.
 
 ---
 

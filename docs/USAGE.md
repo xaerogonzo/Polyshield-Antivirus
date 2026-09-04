@@ -812,6 +812,8 @@ Key directories at a glance:
 - [x] **v1.16 — The Explorer menu icon appears** (it pointed at a file that does not exist in a compiled build, so the entry showed with no icon.)
 - [x] **v1.16 — Uninstalling actually removes the service** (it reported success while leaving the service installed and running. A program with no visible window cannot run the tool that removes services in the ordinary way, and the failure was invisible.)
 - [x] **v1.16 — Sections that cannot work in an installed copy say so** (the Speakeasy and Guardian AI update buttons drive a developer setup that a normal install does not have. They used to report a Windows error code; they now say what is actually true.)
+- [x] **v1.16 — The app starts about half a second sooner** (it asked "is the background service running?" twice on every launch, from two places that could not see each other. On a machine where the service is not running, each of those questions takes half a second to answer — a closed port here waits for a timeout instead of refusing straight away. The answer is now remembered for a couple of seconds, which also removes the same pause from several screens that asked again each time you opened them. Measured over seven launches: 2.24s to 1.64s.)
+- [x] **v1.16 — A first launch no longer looks like a broken one** (before the first update, the Dashboard reported *"Intelligence unavailable — the intelligence database could not be read"* in red, directly beneath the Getting Started card asking you to populate it. Nothing was wrong: the database had simply not been created yet. It now names the feeds that have never been updated, which is what the Getting Started card is telling you to fix.)
 
 ---
 

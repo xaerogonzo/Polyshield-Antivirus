@@ -148,11 +148,105 @@ Add-Check "no engine claims availability it cannot back up" $enginesOk "exit $LA
 
 # ---------- It actually runs ---------------------------------------------
 
+# Counting USER objects needs a P/Invoke. Declared before the process starts so
+# a failure to compile it is a script error here rather than a surprise in the
+# middle of the measurement.
+Add-Type -Namespace Win32 -Name Gui -MemberDefinition @"
+[DllImport("user32.dll")]
+public static extern uint GetGuiResources(IntPtr hProcess, uint uiFlags);
+"@
+
 $proc = Start-Process -FilePath $gui -PassThru -WindowStyle Minimized
 Start-Sleep -Seconds 30
 $alive = -not $proc.HasExited
 Add-Check "GUI stays running for 30s" $alive `
     ($(if ($alive) { "still up" } else { "exited with $($proc.ExitCode)" }))
+
+# ---------- Startup footprint ---------------------------------------------
+#
+# A regression guard, not a budget.  Views used to be constructed all at once:
+# 4,996 Tk windows and 3,715 USER objects -- 37% of the 10,000 per-process
+# quota -- before the user clicked anything.  Every Tk widget is a real HWND on
+# the desktop heap, and Tk allocates an offscreen DIB per canvas redraw, so a
+# memory-constrained sandbox answered with "Tk_GetPixmap: Error from
+# CreateDIBSection / Not enough memory resources are available to process this
+# command" -- which reads as an application fault rather than as a machine that
+# ran out of room.  Building views on first show took startup to 307.
+#
+# The gate sits far above the measured value and far below the old one on
+# purpose: it is here to catch a return to eager construction, not to police a
+# number.  Private bytes are RECORDED, not gated -- 39 MB was measured once on
+# one developer machine, and sandbox variation has not been characterised.
+# Both figures go into the report so a future failure is diagnosable.
+
+if ($alive) {
+    # Measure the process that owns the GUI, which is NOT the one Start-Process
+    # handed back. PolyShield.exe is a Nuitka ONEFILE build: the exe launched is
+    # a bootstrap that unpacks to a temp directory and runs the real application
+    # as a CHILD. The first version of this check measured the bootstrap and
+    # reported "1 USER objects, 0 GDI objects, 1.9 MB" while the full GUI was on
+    # screen -- and passed, because everything is below 1200. A gate that
+    # measures the wrong process is worse than no gate: it is a green check
+    # standing where a real one should be.
+    #
+    # So: walk the whole process tree and take the member with the most USER
+    # objects. Every candidate is recorded, because "which process did we
+    # measure" is the first question any future failure raises.
+    $candidates = @($proc.Id)
+    try {
+        $pending = @($proc.Id)
+        while ($pending.Count -gt 0) {
+            $next = @()
+            foreach ($parentId in $pending) {
+                $kids = @(Get-CimInstance Win32_Process `
+                            -Filter "ParentProcessId = $parentId" `
+                            -ErrorAction SilentlyContinue |
+                          Select-Object -ExpandProperty ProcessId)
+                $next += $kids
+                $candidates += $kids
+            }
+            $pending = $next
+        }
+    } catch { }
+
+    $measured = @()
+    foreach ($procId in ($candidates | Select-Object -Unique)) {
+        try {
+            $p = Get-Process -Id $procId -ErrorAction Stop
+            $measured += [ordered]@{
+                pid          = $procId
+                name         = $p.ProcessName
+                user_objects = [int][Win32.Gui]::GetGuiResources($p.Handle, 1)  # GR_USEROBJECTS
+                gdi_objects  = [int][Win32.Gui]::GetGuiResources($p.Handle, 0)  # GR_GDIOBJECTS
+                private_mb   = [math]::Round($p.PrivateMemorySize64 / 1MB, 1)
+            }
+        } catch { }
+    }
+
+    $gui = $measured | Sort-Object { $_.user_objects } -Descending | Select-Object -First 1
+    $userObjects = if ($gui) { [int]$gui.user_objects } else { -1 }
+    $gdiObjects  = if ($gui) { [int]$gui.gdi_objects }  else { -1 }
+    $privateMB   = if ($gui) { $gui.private_mb }        else { 0 }
+    $guiPid      = if ($gui) { $gui.pid }               else { "?" }
+
+    $results.startup_footprint = [ordered]@{
+        chosen    = $gui
+        processes = $measured
+    }
+
+    # The floor carries as much weight as the ceiling. A CustomTkinter window
+    # with a sidebar cannot have 1 USER object; that number means the GUI was
+    # not found, and must read as a failure rather than as a lean startup.
+    Add-Check "startup USER objects between 50 and 1200" `
+        ($userObjects -ge 50 -and $userObjects -lt 1200) `
+        ("$userObjects USER objects in pid $guiPid, $($measured.Count) process(es) " +
+         "in the tree (307 when measured; 3715 with eager views)")
+
+    Add-Check "startup footprint measured" `
+        ($privateMB -gt 0) `
+        ("$privateMB MB private, $gdiObjects GDI objects in pid $guiPid - recorded, not gated")
+}
+
 if ($alive) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Seconds 3
 
@@ -619,7 +713,12 @@ untime\python.exe in use and waits
             # distinguishable from one that never ran.
             $unregLog = Join-Path $dataDir "logs\unregister.json"
             if (Test-Path $unregLog) {
-                $results.unregister_report = (Get-Content $unregLog -Raw)
+                # [string] is load-bearing. Get-Content returns its text with
+                # PSPath / PSProvider note-properties attached, and
+                # ConvertTo-Json follows them: a 374-byte report serialised the
+                # provider internals as well and produced a 102 MB verify.json,
+                # which is not a report anyone can read.
+                $results.unregister_report = [string](Get-Content $unregLog -Raw)
                 Copy-Item $unregLog (Join-Path $ResultsDir "unregister.json") -Force -ErrorAction SilentlyContinue
             } else {
                 $results.unregister_report = "NOT WRITTEN - the exe never ran --unregister"
@@ -655,6 +754,12 @@ $out = Join-Path $ResultsDir "verify.json"
     installed_engines = $results.installed_engines
     installed_engines_raw = $results.installed_engines_raw
     unregister_report = $results.unregister_report
+    # Same reasoning, measured the hard way: the richer report has never once
+    # survived serialisation, so a field that only lives there does not exist.
+    # The footprint numbers are the whole point of the check that produces
+    # them -- a future regression is diagnosed by comparing them, not by
+    # re-reading "pass".
+    startup_footprint = $results.startup_footprint
 } | ConvertTo-Json -Depth 6 | Set-Content $out -Encoding UTF8
 Write-Host "  checks written -> $out" -ForegroundColor DarkGray
 

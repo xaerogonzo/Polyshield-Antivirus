@@ -1809,8 +1809,12 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
             return
         try:
             toplevel = self.winfo_toplevel()
-            if hasattr(toplevel, "_views") and "virustotal" in toplevel._views:
-                toplevel._views["virustotal"]._load_file(path)
+            # get_view() rather than _views[...]: pages are built on first
+            # navigation, so the one we are handing this file to may not exist
+            # yet.  Testing membership in _views would quietly skip the
+            # pre-load and land the user on an empty VirusTotal page.
+            if hasattr(toplevel, "get_view"):
+                toplevel.get_view("virustotal")._load_file(path)
         except Exception:
             pass
         self._nav_cb("virustotal")
@@ -1821,8 +1825,10 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
             return
         try:
             toplevel = self.winfo_toplevel()
-            if hasattr(toplevel, "_views") and "behavioral" in toplevel._views:
-                toplevel._views["behavioral"].load_file(file_path)
+            # See _send_to_virustotal: build-on-first-show means _views is not
+            # a reliable membership test for a page the user has not opened.
+            if hasattr(toplevel, "get_view"):
+                toplevel.get_view("behavioral").load_file(file_path)
         except Exception:
             pass
         self._nav_cb("behavioral")

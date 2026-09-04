@@ -184,7 +184,10 @@ class ServiceView(ctk.CTkFrame):
 
     def _update_status_async(self):
         def _run():
-            running = svc.is_service_running()
+            # max_age=0: this page's whole job is reporting service state, so
+            # it takes the 0.5s probe rather than a cached answer that could be
+            # two seconds behind the badge it is about to draw.
+            running = svc.is_service_running(max_age=0)
             if running:
                 status = svc.get_status() or {}
             else:
@@ -423,6 +426,11 @@ class ServiceView(ctk.CTkFrame):
 
     def _after_action(self):
         import time; time.sleep(1)
+        # Install, uninstall, start and stop all land here, and all four change
+        # the answer every other screen caches. Drop it so the next caller
+        # anywhere in the app probes for real rather than reporting the state
+        # from before the button was pressed.
+        svc.invalidate_service_probe()
         self._set_busy(False)
         if self.winfo_exists():
             self.after(0, self._update_status_async)

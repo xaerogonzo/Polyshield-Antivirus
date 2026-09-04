@@ -17,6 +17,27 @@ _PORT = 52614
 _CONNECT_TIMEOUT = 0.5   # seconds — used for is_service_running() probe
 _CMD_TIMEOUT     = 5.0   # seconds — for regular command responses
 
+# How long an is_service_running() answer may be reused.
+#
+# The probe is not cheap when the answer is "no". A closed port is *supposed*
+# to refuse instantly, but measured on Windows 11 with the service installed
+# and stopped, connecting to 127.0.0.1:52614 times out after the full 0.5s
+# instead — the SYN is dropped rather than reset. Launch alone paid that twice,
+# from two different modules (app.py's process-monitor branch and
+# ProcessView._refresh_state via attach_monitor), for 1.0s of a 1.6s startup.
+# Thirteen call sites do this, several on every navigation to a page.
+#
+# Two seconds is chosen to collapse a burst — a startup, or one page's worth of
+# checks — without outliving a user action. It does not weaken anything: this
+# probe was always a routing hint that could be wrong the instant it returned,
+# which is why intel_updater re-checks at the point of use and why the actual
+# one-writer guarantee is the cross-process file lock, not this answer. Callers
+# that display service state pass max_age=0.
+_PROBE_TTL_S = 2.0
+
+_probe_lock = threading.Lock()
+_probe_cache: "tuple[float, bool] | None" = None
+
 
 def _token_file():
     r"""The IPC shared secret, resolved the same way the service resolves it.
@@ -65,10 +86,44 @@ def _send_cmd(cmd: str, timeout: float = _CMD_TIMEOUT, **kwargs) -> dict | None:
 
 # ── Public API ─────────────────────────────────────────────────────────────────
 
-def is_service_running() -> bool:
-    """Return True if the PolyShield service socket is accepting connections."""
+def _probe_service_running() -> bool:
+    """One real PING. Costs up to _CONNECT_TIMEOUT when the service is down."""
     result = _send_cmd("PING", timeout=_CONNECT_TIMEOUT)
     return result is not None and result.get("ok") is True
+
+
+def is_service_running(max_age: float = _PROBE_TTL_S) -> bool:
+    """Return True if the PolyShield service socket is accepting connections.
+
+    The answer is reused for `max_age` seconds (see _PROBE_TTL_S for why).
+    Pass ``max_age=0`` to force a real probe — do that when displaying service
+    state, or immediately after starting or stopping the service, where a
+    two-second-old answer would be visibly wrong.
+
+    The probe runs under the lock so a burst of callers collapses into one
+    round trip rather than each paying for its own.
+    """
+    global _probe_cache
+
+    with _probe_lock:
+        if max_age > 0 and _probe_cache is not None:
+            probed_at, cached = _probe_cache
+            if (time.monotonic() - probed_at) < max_age:
+                return cached
+        running = _probe_service_running()
+        _probe_cache = (time.monotonic(), running)
+        return running
+
+
+def invalidate_service_probe() -> None:
+    """Drop the cached answer, so the next caller probes for real.
+
+    For anything that changes service state through a route this module cannot
+    see — `sc start`, the Services console, an installer.
+    """
+    global _probe_cache
+    with _probe_lock:
+        _probe_cache = None
 
 
 def send_command(cmd: str, **kwargs) -> dict | None:

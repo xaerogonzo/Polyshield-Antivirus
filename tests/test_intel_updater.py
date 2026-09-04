@@ -425,8 +425,21 @@ class _FakeResponse:
 
 
 @pytest.fixture
-def yara_sandbox(intel_db, hooks, tmp_path, monkeypatch):
-    """update_intelligence's YARA paths redirected into tmp."""
+def yara_publish_sandbox(intel_db, hooks, tmp_path, monkeypatch):
+    """The PUBLISHER's YARA paths redirected into tmp.
+
+    Deliberately not named `yara_sandbox`.  conftest has a fixture of that name
+    which redirects the READER instead — ui.core.yara_engine's _USER_DIR,
+    _COMMUNITY_DIR and _ACTIVE_PTR — and a module-local fixture sharing the name
+    shadows it for this entire file.  That shadowing is invisible at the call
+    site: a test asks for `yara_sandbox`, believes the engine is sandboxed, and
+    silently measures the developer's real rules/community/ instead.  It cost
+    two false failures before it was spotted.
+
+    This one patches tools.update_intelligence's publish targets, so it is what
+    download_yara_community() writes into.  Ask for conftest's `yara_sandbox`
+    when the test needs to know what the engine can SEE.
+    """
     from tools import update_intelligence as upd
 
     ydir = tmp_path / "rules" / "community"
@@ -454,8 +467,8 @@ def _stub_github(monkeypatch, upd, tag="v9.9.9", zip_bytes=None, release=None):
     return calls
 
 
-def test_yara_publish_flips_pointer_to_a_complete_generation(yara_sandbox, monkeypatch):
-    upd, ydir = yara_sandbox
+def test_yara_publish_flips_pointer_to_a_complete_generation(yara_publish_sandbox, monkeypatch):
+    upd, ydir = yara_publish_sandbox
     _stub_github(monkeypatch, upd, tag="v2026.1")
 
     res = upd.download_yara_community(notify=False)
@@ -469,10 +482,10 @@ def test_yara_publish_flips_pointer_to_a_complete_generation(yara_sandbox, monke
     assert upd.get_meta("yara_last_update")
 
 
-def test_corrupt_archive_leaves_the_previous_rules_live(yara_sandbox, monkeypatch):
+def test_corrupt_archive_leaves_the_previous_rules_live(yara_publish_sandbox, monkeypatch):
     """The invariant: a scan sees the whole previous ruleset or the whole new
     one — never a half-extracted tree, and never an empty directory."""
-    upd, ydir = yara_sandbox
+    upd, ydir = yara_publish_sandbox
 
     _stub_github(monkeypatch, upd, tag="v1")
     assert upd.download_yara_community(notify=False)["status"] == "updated"
@@ -489,8 +502,8 @@ def test_corrupt_archive_leaves_the_previous_rules_live(yara_sandbox, monkeypatc
     assert upd.get_meta("yara_version") == "v1", "failed update must not claim a version"
 
 
-def test_archive_without_rules_is_rejected(yara_sandbox, monkeypatch):
-    upd, ydir = yara_sandbox
+def test_archive_without_rules_is_rejected(yara_publish_sandbox, monkeypatch):
+    upd, ydir = yara_publish_sandbox
     empty = io.BytesIO()
     with zipfile.ZipFile(empty, "w") as zf:
         zf.writestr("README.md", "no rules here")
@@ -503,8 +516,8 @@ def test_archive_without_rules_is_rejected(yara_sandbox, monkeypatch):
     assert upd.get_active_yara_generation() is None
 
 
-def test_unchanged_when_version_already_installed(yara_sandbox, monkeypatch):
-    upd, ydir = yara_sandbox
+def test_unchanged_when_version_already_installed(yara_publish_sandbox, monkeypatch):
+    upd, ydir = yara_publish_sandbox
     _stub_github(monkeypatch, upd, tag="v5")
     assert upd.download_yara_community(notify=False)["status"] == "updated"
 
@@ -513,17 +526,17 @@ def test_unchanged_when_version_already_installed(yara_sandbox, monkeypatch):
     assert res["status"] == "unchanged"
 
 
-def test_no_staging_directories_survive(yara_sandbox, monkeypatch):
-    upd, ydir = yara_sandbox
+def test_no_staging_directories_survive(yara_publish_sandbox, monkeypatch):
+    upd, ydir = yara_publish_sandbox
     _stub_github(monkeypatch, upd, tag="v6")
     upd.download_yara_community(notify=False)
     assert [d.name for d in ydir.iterdir() if d.name.startswith(".staging-")] == []
 
 
-def test_github_http_error_is_surfaced_with_status(yara_sandbox, monkeypatch):
+def test_github_http_error_is_surfaced_with_status(yara_publish_sandbox, monkeypatch):
     import urllib.error
 
-    upd, ydir = yara_sandbox
+    upd, ydir = yara_publish_sandbox
 
     def boom(req, timeout=None):
         raise urllib.error.HTTPError("u", 403, "Forbidden", None, None)
@@ -535,12 +548,12 @@ def test_github_http_error_is_surfaced_with_status(yara_sandbox, monkeypatch):
     assert res["http_status"] == 403
 
 
-def test_published_generation_inherits_the_parent_acl(yara_sandbox, monkeypatch):
+def test_published_generation_inherits_the_parent_acl(yara_publish_sandbox, monkeypatch):
     """Regression: the Phase C live test published a generation created by
     tempfile.mkdtemp(), whose DACL is protected (0 inherited ACEs).  Under
     LocalService that produced a rule set only LocalService could read, and
     yara_engine reported it as simply "no rules" with no error anywhere."""
-    upd, ydir = yara_sandbox
+    upd, ydir = yara_publish_sandbox
     _stub_github(monkeypatch, upd, tag="v7")
 
     assert upd.download_yara_community(notify=False)["status"] == "updated"
@@ -552,10 +565,10 @@ def test_published_generation_inherits_the_parent_acl(yara_sandbox, monkeypatch)
     assert protected is False, "published rules must inherit the rules-dir ACL"
 
 
-def test_staging_dir_inherits_the_parent_acl(yara_sandbox):
+def test_staging_dir_inherits_the_parent_acl(yara_publish_sandbox):
     """The staging directory must inherit. This is the whole fix, so it never
     skips for environmental reasons — only if DACLs cannot be read at all."""
-    upd, ydir = yara_sandbox
+    upd, ydir = yara_publish_sandbox
     if upd._dacl_is_protected(ydir) is None:
         pytest.skip("DACL inspection unavailable")
 
@@ -564,7 +577,7 @@ def test_staging_dir_inherits_the_parent_acl(yara_sandbox):
         "staged rules must inherit the rules-dir ACL or nobody else can read them"
 
 
-def test_mkdtemp_hardening_is_why_os_mkdir_is_used(yara_sandbox):
+def test_mkdtemp_hardening_is_why_os_mkdir_is_used(yara_publish_sandbox):
     """Documents the contrast that motivated _make_staging_dir.
 
     Deliberately separate from the guarantee above, and deliberately allowed to
@@ -576,7 +589,7 @@ def test_mkdtemp_hardening_is_why_os_mkdir_is_used(yara_sandbox):
     """
     import tempfile
 
-    upd, ydir = yara_sandbox
+    upd, ydir = yara_publish_sandbox
     if upd._dacl_is_protected(ydir) is None:
         pytest.skip("DACL inspection unavailable")
 
@@ -587,10 +600,10 @@ def test_mkdtemp_hardening_is_why_os_mkdir_is_used(yara_sandbox):
     assert upd._dacl_is_protected(hardened) is True
 
 
-def test_unreadable_staging_is_never_published(yara_sandbox, monkeypatch):
+def test_unreadable_staging_is_never_published(yara_publish_sandbox, monkeypatch):
     """A protected staging DACL must abort the publish with the previous
     generation left live — never a silent unreadable rule set."""
-    upd, ydir = yara_sandbox
+    upd, ydir = yara_publish_sandbox
 
     _stub_github(monkeypatch, upd, tag="v1")
     assert upd.download_yara_community(notify=False)["status"] == "updated"
@@ -608,9 +621,9 @@ def test_unreadable_staging_is_never_published(yara_sandbox, monkeypatch):
     assert [d.name for d in ydir.iterdir() if d.name.startswith(".staging-")] == []
 
 
-def test_empty_publish_is_caught_and_rolled_back(yara_sandbox, monkeypatch):
+def test_empty_publish_is_caught_and_rolled_back(yara_publish_sandbox, monkeypatch):
     """Belt-and-braces: if the move ever lands nothing, do not flip the pointer."""
-    upd, ydir = yara_sandbox
+    upd, ydir = yara_publish_sandbox
     _stub_github(monkeypatch, upd, tag="v1")
     assert upd.download_yara_community(notify=False)["status"] == "updated"
     good_gen = upd.get_active_yara_generation()
@@ -736,6 +749,85 @@ def test_get_usability_reads_real_counts(updater, intel_db):
     assert u["c2"]["usable"] is False       # temp DB has no blocklist rows
 
 
+# ── A fresh install is not a broken one ───────────────────────────────────────
+#
+# Every posture test above stubs get_usability() with a hand-built dict, and
+# that is the seam this bug lived in: get_posture() handled `readable: False`
+# exactly as documented, while get_usability() was deciding it wrongly for a
+# database that did not exist yet.  A first launch showed the red "The
+# intelligence database could not be read" — corruption/permissions wording —
+# directly beneath a Getting Started card telling the user to populate it.
+# These drive the real function.
+
+@pytest.fixture
+def fresh_install(updater, intel_db, yara_sandbox):
+    """A first launch: nothing has ever been downloaded.
+
+    Deleting the fixture's database is most of the setup — every consumer is
+    already pointed at that path.  `yara_sandbox` (conftest's, which redirects
+    the engine's rule directories) is the rest of it: YARA's state comes from
+    the rules directory rather than from the DB, so on a developer checkout with
+    rules/community/ populated a "fresh install" would still report rules, and
+    the test would turn on machine state instead of on the code.
+    """
+    intel_db.unlink()
+    return updater
+
+
+def test_a_fresh_install_is_empty_rather_than_unreadable(fresh_install):
+    u = fresh_install.get_usability()
+
+    assert u["malwarebazaar"]["readable"] is True, \
+        "a database that was never created is empty, not unreadable"
+    assert u["malwarebazaar"]["usable"] is False
+    assert u["c2"]["readable"] is True
+    assert u["c2"]["usable"] is False
+    # YARA already expressed this in terms of rule count and is deliberately
+    # left alone; asserted here so a later "tidy-up" cannot quietly change it.
+    assert u["yara"]["readable"] is True
+    assert u["yara"]["usable"] is False
+
+
+def test_a_fresh_install_says_never_updated_in_words(fresh_install):
+    """The state alone was never the defect — the sentence the user reads is.
+
+    "could not be read" describes corruption or a permissions failure, and it
+    was appearing on machines where nothing had gone wrong at all.
+    """
+    p = fresh_install.get_posture()
+
+    assert p["state"] == fresh_install.POSTURE_UPDATE_REQ
+    assert "Never updated" in p["detail"]
+    assert "could not be read" not in p["detail"]
+
+
+def test_a_created_but_empty_database_is_also_never_updated(updater):
+    """The other first-launch shape: the file exists, no feed has ever run."""
+    p = updater.get_posture()
+
+    assert p["state"] == updater.POSTURE_UPDATE_REQ
+    assert "Never updated" in p["detail"]
+
+
+def test_a_database_that_cannot_be_opened_is_still_unavailable(updater, monkeypatch):
+    """The distinction has to hold in both directions.
+
+    A database whose file exists but will not open — the ACL failure the
+    privilege boundary makes possible — is the case `unavailable` is FOR, and
+    narrowing the fresh-install path must not have cost us it.
+    """
+    from ui.core import intel_db as db
+    monkeypatch.setattr(db, "_get_conn", lambda: None)
+
+    u = updater.get_usability()
+    assert u["malwarebazaar"]["readable"] is False
+
+    p = updater.get_posture()
+    assert p["state"] == updater.POSTURE_UNAVAILABLE
+    assert p["level"] == "error"
+    assert "could not be read" in p["detail"]
+
+
 # ── Phase E: remaining failure matrix ─────────────────────────────────────────
 
 def test_rate_limit_backs_off_as_transient_not_auth(updater):
@@ -759,9 +851,9 @@ def test_rate_limit_backs_off_as_transient_not_auth(updater):
            datetime.fromisoformat(auth["next_retry"])
 
 
-def test_extraction_failure_midway_leaves_previous_rules_live(yara_sandbox, monkeypatch):
+def test_extraction_failure_midway_leaves_previous_rules_live(yara_publish_sandbox, monkeypatch):
     """A crash partway through unpacking must not surface a partial rule set."""
-    upd, ydir = yara_sandbox
+    upd, ydir = yara_publish_sandbox
 
     _stub_github(monkeypatch, upd, tag="v1", zip_bytes=_yara_zip(
         names=("a.yar", "b.yar", "c.yar")))
