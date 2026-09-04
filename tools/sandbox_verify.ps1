@@ -148,11 +148,63 @@ Add-Check "no engine claims availability it cannot back up" $enginesOk "exit $LA
 
 # ---------- It actually runs ---------------------------------------------
 
+# Counting USER objects needs a P/Invoke. Declared before the process starts so
+# a failure to compile it is a script error here rather than a surprise in the
+# middle of the measurement.
+Add-Type -Namespace Win32 -Name Gui -MemberDefinition @"
+[DllImport("user32.dll")]
+public static extern uint GetGuiResources(IntPtr hProcess, uint uiFlags);
+"@
+
 $proc = Start-Process -FilePath $gui -PassThru -WindowStyle Minimized
 Start-Sleep -Seconds 30
 $alive = -not $proc.HasExited
 Add-Check "GUI stays running for 30s" $alive `
     ($(if ($alive) { "still up" } else { "exited with $($proc.ExitCode)" }))
+
+# ---------- Startup footprint ---------------------------------------------
+#
+# A regression guard, not a budget.  Views used to be constructed all at once:
+# 4,996 Tk windows and 3,715 USER objects -- 37% of the 10,000 per-process
+# quota -- before the user clicked anything.  Every Tk widget is a real HWND on
+# the desktop heap, and Tk allocates an offscreen DIB per canvas redraw, so a
+# memory-constrained sandbox answered with "Tk_GetPixmap: Error from
+# CreateDIBSection / Not enough memory resources are available to process this
+# command" -- which reads as an application fault rather than as a machine that
+# ran out of room.  Building views on first show took startup to 307.
+#
+# The gate sits far above the measured value and far below the old one on
+# purpose: it is here to catch a return to eager construction, not to police a
+# number.  Private bytes are RECORDED, not gated -- 39 MB was measured once on
+# one developer machine, and sandbox variation has not been characterised.
+# Both figures go into the report so a future failure is diagnosable.
+
+if ($alive) {
+    $userObjects = -1
+    $gdiObjects  = -1
+    $privateMB   = 0
+    try {
+        $live = Get-Process -Id $proc.Id -ErrorAction Stop
+        $userObjects = [int][Win32.Gui]::GetGuiResources($live.Handle, 1)  # GR_USEROBJECTS
+        $gdiObjects  = [int][Win32.Gui]::GetGuiResources($live.Handle, 0)  # GR_GDIOBJECTS
+        $privateMB   = [math]::Round($live.PrivateMemorySize64 / 1MB, 1)
+    } catch { }
+
+    $results.startup_footprint = [ordered]@{
+        user_objects = $userObjects
+        gdi_objects  = $gdiObjects
+        private_mb   = $privateMB
+    }
+
+    Add-Check "startup USER objects below 1200" `
+        ($userObjects -gt 0 -and $userObjects -lt 1200) `
+        ("$userObjects USER objects (307 when measured; 3715 with eager views)")
+
+    Add-Check "startup footprint measured" `
+        ($privateMB -gt 0) `
+        ("$privateMB MB private, $gdiObjects GDI objects - recorded, not gated")
+}
+
 if ($alive) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
 Start-Sleep -Seconds 3
 
