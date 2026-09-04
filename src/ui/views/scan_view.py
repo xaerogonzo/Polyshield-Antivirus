@@ -14,6 +14,7 @@ from ui.core import guardian_engine as ge
 from ui.core import yara_engine as ye
 from ui.core import clamav_engine as ce
 from ui.core import defender as df
+from ui.views._view_utils import _format_eta, _human_size, _parse_dnd_paths
 from ui.views.threat_actions_mixin import _ThreatActionsMixin
 
 try:
@@ -53,30 +54,6 @@ def _classify(line: str) -> str:
     if any(k in ll for k in _KEYWORDS_WARN):
         return _TAG_WARN
     return _TAG_INFO
-
-
-def _format_eta(seconds: float) -> str:
-    if seconds <= 0:
-        return "—"
-    s = int(seconds)
-    if s < 60:
-        return f"{s}s"
-    if s < 3600:
-        return f"{s // 60}m {s % 60}s"
-    return f"{s // 3600}h {(s % 3600) // 60}m"
-
-
-def _human_size(n: int) -> str:
-    """Human-readable byte count (1.5 KB, 3.2 MB, etc.)."""
-    if n < 1024:
-        return f"{n} B"
-    units = ["KB", "MB", "GB", "TB"]
-    val = float(n) / 1024.0
-    for u in units:
-        if val < 1024 or u == units[-1]:
-            return f"{val:.1f} {u}"
-        val /= 1024.0
-    return f"{n} B"
 
 
 class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
@@ -974,24 +951,7 @@ class ScanView(_ThreatActionsMixin, ctk.CTkFrame):
     def _on_drop(self, event):
         if self._preset != "Custom":
             return
-        self._add_paths(self._parse_dnd_paths(event.data))
-
-    @staticmethod
-    def _parse_dnd_paths(raw: str) -> list[str]:
-        paths, raw, i = [], raw.strip(), 0
-        while i < len(raw):
-            if raw[i] == "{":
-                end = raw.index("}", i)
-                paths.append(raw[i + 1:end])
-                i = end + 2
-            else:
-                end = raw.find(" ", i)
-                if end == -1:
-                    paths.append(raw[i:])
-                    break
-                paths.append(raw[i:end])
-                i = end + 1
-        return [p for p in paths if p]
+        self._add_paths(_parse_dnd_paths(event.data))
 
     def load_paths(self, paths: list[str]) -> None:
         """Pre-populate scan targets (called from context menu / external trigger)."""
