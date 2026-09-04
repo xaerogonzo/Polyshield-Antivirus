@@ -155,6 +155,33 @@ def test_get_intel_status_reports_feeds(svc, intel_db, hooks, settings_sandbox):
         "never", "fresh", "aging", "stale", "error", "auth_required"}
 
 
+def test_a_fresh_install_is_not_reported_as_an_error_by_the_service(
+    svc, intel_db, hooks, settings_sandbox, yara_sandbox,
+):
+    """The service has to read a first launch the same way the GUI does.
+
+    Both import the same intel_updater, so what this pins is that neither grows
+    its own copy of the rule — the divergence class the shared-data-root work
+    has been closing, where the two processes disagreed about the same files.
+    A service that reports a fresh install as an error is a service the UI will
+    show a red banner for on a machine where nothing is wrong.
+    """
+    intel_db.unlink()                       # nothing has ever been downloaded
+
+    conn = _FakeConn({"cmd": "GET_INTEL_STATUS", "token": "test-token"})
+    svc._handle_client(conn)
+    resp = conn.response
+
+    assert resp["ok"] is True
+    assert {f["state"] for f in resp["feeds"].values()} == {"never"}, \
+        "a fresh install has never updated; it has not errored"
+
+    from ui.core import intel_updater as iu
+    posture = iu.get_posture()
+    assert posture["state"] == iu.POSTURE_UPDATE_REQ
+    assert "Never updated" in posture["detail"]
+
+
 def test_intel_commands_require_the_token(svc):
     for cmd in ("GET_INTEL_STATUS", "RUN_INTEL_UPDATE"):
         conn = _FakeConn({"cmd": cmd, "token": "wrong"})

@@ -509,13 +509,25 @@ def get_usability() -> dict:
     This exists because freshness metadata answers the wrong question.  A YARA
     generation published with a non-inheriting ACL reads as `fresh` while
     yara_engine reports zero rules and silently stops contributing to scans.
+
+    `readable` means "the store could be read", which is NOT the same as "the
+    store has something in it".  A database that does not exist yet is readable
+    and empty — a fresh install — and belongs in get_posture()'s
+    `update_required` branch, not its `unavailable` one.
     """
     out: dict[str, dict] = {}
 
     try:
         from ui.core.intel_db import get_stats
         stats = get_stats()
-        readable = bool(stats.get("db_exists")) and stats.get("last_update") != "Error"
+        # "Error" is the only unreadable signal.  get_stats() reports an absent
+        # database as db_exists=False / last_update="Never", and one it could
+        # not open as last_update="Error".  Requiring db_exists here collapsed
+        # those two, so a fresh install — nothing downloaded yet — took
+        # get_posture()'s "the intelligence database could not be read" branch
+        # rather than its "never updated" one, directly beneath a Getting
+        # Started card telling the user to populate it.
+        readable = stats.get("last_update") != "Error"
         count = int(stats.get("malicious") or 0)
         out["malwarebazaar"] = {"usable": readable and count > 0, "count": count,
                                 "unit": "hashes", "readable": readable}
@@ -526,7 +538,7 @@ def get_usability() -> dict:
     try:
         from tools.update_intelligence import get_c2_blocklist_stats
         stats = get_c2_blocklist_stats()
-        readable = bool(stats.get("db_exists")) and stats.get("last_update") != "Error"
+        readable = stats.get("last_update") != "Error"   # see malwarebazaar above
         count = int(stats.get("total") or 0)
         out["c2"] = {"usable": readable and count > 0, "count": count,
                      "unit": "IPs", "readable": readable}

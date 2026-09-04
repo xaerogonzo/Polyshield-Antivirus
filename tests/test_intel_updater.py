@@ -736,6 +736,96 @@ def test_get_usability_reads_real_counts(updater, intel_db):
     assert u["c2"]["usable"] is False       # temp DB has no blocklist rows
 
 
+# ── A fresh install is not a broken one ───────────────────────────────────────
+#
+# Every posture test above stubs get_usability() with a hand-built dict, and
+# that is the seam this bug lived in: get_posture() handled `readable: False`
+# exactly as documented, while get_usability() was deciding it wrongly for a
+# database that did not exist yet.  A first launch showed the red "The
+# intelligence database could not be read" — corruption/permissions wording —
+# directly beneath a Getting Started card telling the user to populate it.
+# These drive the real function.
+
+@pytest.fixture
+def fresh_install(updater, intel_db, tmp_path, monkeypatch):
+    """A first launch: nothing has ever been downloaded.
+
+    Deleting the fixture's database is most of the setup — every consumer is
+    already pointed at that path.  The rest is YARA, whose state comes from the
+    rules directory rather than from the DB: on a developer checkout with
+    rules/community/ populated, a "fresh install" would still report rules and
+    the test would turn on machine state instead of on the code.
+
+    The engine directories are patched inline rather than by requesting
+    conftest's `yara_sandbox`, because this module defines a *different*
+    fixture under that name — the downloader one, returning (upd, ydir) — which
+    shadows it and leaves ui.core.yara_engine pointed at the real checkout.
+    """
+    from ui.core import yara_engine as ye
+
+    community = tmp_path / "fresh_community"
+    monkeypatch.setattr(ye, "_USER_DIR", tmp_path / "fresh_user_rules")
+    monkeypatch.setattr(ye, "_COMMUNITY_DIR", community)
+    monkeypatch.setattr(ye, "_ACTIVE_PTR", community / ".active")
+
+    intel_db.unlink()
+    return updater
+
+
+def test_a_fresh_install_is_empty_rather_than_unreadable(fresh_install):
+    u = fresh_install.get_usability()
+
+    assert u["malwarebazaar"]["readable"] is True, \
+        "a database that was never created is empty, not unreadable"
+    assert u["malwarebazaar"]["usable"] is False
+    assert u["c2"]["readable"] is True
+    assert u["c2"]["usable"] is False
+    # YARA already expressed this in terms of rule count and is deliberately
+    # left alone; asserted here so a later "tidy-up" cannot quietly change it.
+    assert u["yara"]["readable"] is True
+    assert u["yara"]["usable"] is False
+
+
+def test_a_fresh_install_says_never_updated_in_words(fresh_install):
+    """The state alone was never the defect — the sentence the user reads is.
+
+    "could not be read" describes corruption or a permissions failure, and it
+    was appearing on machines where nothing had gone wrong at all.
+    """
+    p = fresh_install.get_posture()
+
+    assert p["state"] == fresh_install.POSTURE_UPDATE_REQ
+    assert "Never updated" in p["detail"]
+    assert "could not be read" not in p["detail"]
+
+
+def test_a_created_but_empty_database_is_also_never_updated(updater):
+    """The other first-launch shape: the file exists, no feed has ever run."""
+    p = updater.get_posture()
+
+    assert p["state"] == updater.POSTURE_UPDATE_REQ
+    assert "Never updated" in p["detail"]
+
+
+def test_a_database_that_cannot_be_opened_is_still_unavailable(updater, monkeypatch):
+    """The distinction has to hold in both directions.
+
+    A database whose file exists but will not open — the ACL failure the
+    privilege boundary makes possible — is the case `unavailable` is FOR, and
+    narrowing the fresh-install path must not have cost us it.
+    """
+    from ui.core import intel_db as db
+    monkeypatch.setattr(db, "_get_conn", lambda: None)
+
+    u = updater.get_usability()
+    assert u["malwarebazaar"]["readable"] is False
+
+    p = updater.get_posture()
+    assert p["state"] == updater.POSTURE_UNAVAILABLE
+    assert p["level"] == "error"
+    assert "could not be read" in p["detail"]
+
+
 # ── Phase E: remaining failure matrix ─────────────────────────────────────────
 
 def test_rate_limit_backs_off_as_transient_not_auth(updater):

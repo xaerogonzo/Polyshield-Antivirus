@@ -1561,6 +1561,16 @@ headline. It deliberately combines two different questions:
 | `update_required` | an enabled feed never populated, **or** has no usable data despite what its metadata says |
 | `unavailable` | the intelligence store itself cannot be read |
 
+`unavailable` is narrower than it first reads. A database that does not exist
+yet is **readable and empty**, not unreadable — that is a fresh install, and it
+belongs in `update_required`. `intel_db.get_stats()` already separates the two
+by `last_update`: `"Never"` for a file that was never created, `"Error"` for one
+it could not open. `get_usability()` therefore keys `readable` off that value
+rather than off `db_exists`, which conflated them. Getting this wrong put
+*"The intelligence database could not be read"* — corruption-and-permissions
+wording — on the Dashboard of every first launch, in red, directly beneath the
+Getting Started card asking the user to populate it.
+
 The second half of `update_required` is the important one. Freshness metadata
 describes the *download*: a YARA generation published with a non-inheriting ACL
 reads as perfectly fresh while `yara_engine` reports zero rules and silently
