@@ -160,8 +160,9 @@ def _restore_global_state():
     """Snapshot and restore every module global the detection path mutates."""
     from tools import update_intelligence as upd
     from ui.core import (guardian_engine, ignore_list, intel_hooks,
-                         network_monitor, settings, watcher)
+                         network_monitor, service_client, settings, watcher)
 
+    saved_probe = service_client._probe_cache
     saved_hooks = list(upd._post_update_hooks)
     saved_registered = intel_hooks._registered
     saved_ge_registered = guardian_engine._post_update_hook_registered
@@ -178,6 +179,10 @@ def _restore_global_state():
 
     # Slice-assign so anything holding a reference to the same list object
     # sees the restoration too.
+    # A cached "is the service running" answer outlives the test that caused
+    # the probe, so without this one test's view of the service leaks into the
+    # next one's.
+    service_client._probe_cache = saved_probe
     upd._post_update_hooks[:] = saved_hooks
     intel_hooks._registered = saved_registered
     guardian_engine._post_update_hook_registered = saved_ge_registered
