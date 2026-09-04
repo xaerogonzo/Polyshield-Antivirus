@@ -57,6 +57,56 @@ def get_version() -> str:
         return ""
 
 
+def _expand_eligible(paths: list[str], on_result) -> list[str]:
+    """Expand the requested paths into the list of files clamscan will be given.
+
+    clamscan --file-list treats every entry as a literal file path and does
+    NOT descend into directories on its own — so we must expand them here,
+    exactly as K2 does via rglob in scanner.py.
+
+    Anything skipped (too large, unreadable) is reported clean through
+    ``on_result`` as it is dropped, so the caller's per-file accounting stays
+    complete.
+    """
+    eligible: list[str] = []
+    for p in paths:
+        pp = Path(p)
+        try:
+            if pp.is_dir():
+                for f in pp.rglob("*"):
+                    try:
+                        if f.is_file() and f.stat().st_size / 1_048_576 <= _MAX_FILE_MB:
+                            eligible.append(str(f))
+                    except (PermissionError, OSError):
+                        pass
+            elif pp.is_file():
+                if pp.stat().st_size / 1_048_576 <= _MAX_FILE_MB:
+                    eligible.append(p)
+                else:
+                    on_result(p, False, "")
+        except Exception:
+            on_result(p, False, "")
+    return eligible
+
+
+def _classify_exit(rc: int | None, cancelled: bool) -> str | None:
+    """Turn a clamscan return code into a failure message, or None.
+
+    None means *no failure under the existing exit-code semantics* — not that
+    the scan is known to have completed. rc is None when proc.wait() itself
+    raised (still running, or unwaitable), which has never been treated as a
+    verdict; a cancelled scan is not a failure either, because the user asked
+    for it.
+
+    clamscan: 0 = nothing found, 1 = threats found, anything else is the
+    scanner reporting that the scan itself failed. Treating 2 as "no threats"
+    is how a broken virus database becomes an all-clear.
+    """
+    if not cancelled and rc not in (0, 1, None):
+        return f"clamscan exited with code {rc}"
+    return None
+
+
 def scan_async(
     paths: list[str],
     on_result,          # fn(file_path: str, infected: bool, reason: str)
@@ -96,28 +146,7 @@ def scan_async(
             _finish(0)
             return
 
-        # Build the eligible file list, recursively expanding any directories.
-        # clamscan --file-list treats every entry as a literal file path and does
-        # NOT descend into directories on its own — so we must expand them here,
-        # exactly as K2 does via rglob in scanner.py.
-        eligible: list[str] = []
-        for p in paths:
-            pp = Path(p)
-            try:
-                if pp.is_dir():
-                    for f in pp.rglob("*"):
-                        try:
-                            if f.is_file() and f.stat().st_size / 1_048_576 <= _MAX_FILE_MB:
-                                eligible.append(str(f))
-                        except (PermissionError, OSError):
-                            pass
-                elif pp.is_file():
-                    if pp.stat().st_size / 1_048_576 <= _MAX_FILE_MB:
-                        eligible.append(p)
-                    else:
-                        on_result(p, False, "")
-            except Exception:
-                on_result(p, False, "")
+        eligible = _expand_eligible(paths, on_result)
 
         # Set total AFTER expansion so progress reporting reflects the real count
         total = len(eligible)
@@ -199,11 +228,9 @@ def scan_async(
             except Exception:
                 rc = None      # still running or unwaitable; not a verdict
 
-            # clamscan: 0 = nothing found, 1 = threats found, anything else is
-            # the scanner reporting that the scan itself failed. Treating 2 as
-            # "no threats" is how a broken virus database becomes an all-clear.
-            if not cancelled and rc not in (0, 1, None):
-                failures.append(f"clamscan exited with code {rc}")
+            failure = _classify_exit(rc, cancelled)
+            if failure:
+                failures.append(failure)
         except Exception as exc:
             # Reached when the stdout pipe dies mid-scan. Whatever was reported
             # before that point is real and stays reported — but the caller has
