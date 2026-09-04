@@ -40,7 +40,6 @@ import socket
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Callable
 from ui.core import paths
 

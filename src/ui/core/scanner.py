@@ -3,7 +3,6 @@ import threading
 import json
 import re
 import os
-import shutil
 import ctypes
 from datetime import datetime
 from pathlib import Path

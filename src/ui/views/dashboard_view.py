@@ -1,6 +1,5 @@
 import threading
 from datetime import datetime
-from pathlib import Path
 import customtkinter as ctk
 import ui.theme as theme
 

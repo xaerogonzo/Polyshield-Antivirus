@@ -16,7 +16,7 @@ import json
 import subprocess
 import threading
 import winreg
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 

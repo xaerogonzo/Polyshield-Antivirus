@@ -21,7 +21,6 @@ service account) has limited kill rights, so termination is always attempted
 from the UI process for best results.
 """
 
-import threading
 from datetime import datetime
 
 import customtkinter as ctk

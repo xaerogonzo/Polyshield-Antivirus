@@ -275,7 +275,6 @@ class GuardianView(ctk.CTkFrame):
 
         def _run():
             try:
-                import sys
                 from pathlib import Path
                 paths.bootstrap_sys_path()
                 from tools.update_intelligence import run_update

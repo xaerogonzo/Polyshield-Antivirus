@@ -12,7 +12,6 @@ disk I/O handshakes without caching).
 """
 import sqlite3
 import threading
-from pathlib import Path
 from ui.core import paths
 
 _DB_PATH      = paths.intelligence_dir() / "threat_db.sqlite"

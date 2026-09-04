@@ -65,7 +65,6 @@ import tempfile
 import threading
 import time
 from datetime import datetime
-from pathlib import Path
 from ui.core import paths
 
 try:                                    # Windows-only; the product is too.

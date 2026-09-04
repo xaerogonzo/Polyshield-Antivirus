@@ -22,7 +22,6 @@ import customtkinter as ctk
 
 from ui.core import emulate_engine as ee
 from ui.core import sandbox_engine as se
-from ui.core import settings as cfg
 import ui.theme as theme
 
 # ── Text-box color tags ───────────────────────────────────────────────────────

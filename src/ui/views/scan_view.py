@@ -1,9 +1,7 @@
-import hashlib
-import os
 import subprocess
 import time
 import threading
-from tkinter import filedialog, messagebox
+from tkinter import filedialog
 import customtkinter as ctk
 from pathlib import Path
 import ui.theme as theme
@@ -16,7 +14,6 @@ from ui.core import guardian_engine as ge
 from ui.core import yara_engine as ye
 from ui.core import clamav_engine as ce
 from ui.core import defender as df
-from ui.core import ignore_list as ignore
 from ui.views.threat_actions_mixin import _ThreatActionsMixin
 
 try:
