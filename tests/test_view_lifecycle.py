@@ -314,3 +314,80 @@ def test_process_view_is_built_when_this_process_owns_the_monitor(tmp_path):
     assert result["built"] == ["dashboard", "process"], (
         "expected exactly the dashboard plus the eagerly-built ProcessView, "
         "got: " + ", ".join(result["built"]))
+
+def test_the_scanview_mixins_import_without_a_tk_root():
+    """ScanView is assembled from three mixins in separate modules.
+
+    Importing one must not construct a Tk root or a widget. Most of this suite
+    imports view modules to read them statically -- the AST tests above do
+    exactly that -- and a module that builds something at import time turns
+    every one of those into a test that needs a display.
+
+    The root check runs in a subprocess on purpose. tkinter._default_root is
+    process-global and the rest of this suite holds a session-scoped root, so
+    asserting on it in-process would pass alone and fail in a full run --
+    exactly the order-dependence this file exists to catch.
+
+    Also asserts no name is defined by more than one class in the MRO. A
+    collision there resolves silently by inheritance order: the loser simply
+    never runs, with no error anywhere.
+    """
+    probe = (
+        "import sys, tkinter; sys.path.insert(0, 'src');"
+        "import ui.views.scan_pipeline_mixin, ui.views.scan_engine_mixin;"
+        "assert tkinter._default_root is None, 'a Tk root was created at import'"
+    )
+    proc = subprocess.run([sys.executable, "-c", probe], cwd=str(ROOT),
+                          capture_output=True, text=True, timeout=120)
+    assert proc.returncode == 0, (
+        "importing a scan mixin created a Tk root:\n" + proc.stderr[-2000:])
+
+    import ui.views.scan_engine_mixin as sem
+    import ui.views.scan_pipeline_mixin as spm
+
+    from ui.views.scan_view import ScanView
+    from ui.views.threat_actions_mixin import _ThreatActionsMixin
+
+    owners = {
+        "ScanView":            ScanView,
+        "_ThreatActionsMixin": _ThreatActionsMixin,
+        "_ScanPipelineMixin":  spm._ScanPipelineMixin,
+        "_ScanEngineMixin":    sem._ScanEngineMixin,
+    }
+    seen: dict[str, list[str]] = {}
+    for label, cls in owners.items():
+        for name in cls.__dict__:
+            if not name.startswith("__"):
+                seen.setdefault(name, []).append(label)
+    clashes = {n: w for n, w in seen.items() if len(w) > 1}
+    assert not clashes, f"defined by more than one class in the MRO: {clashes}"
+
+
+def test_scanview_methods_resolve_to_the_class_that_owns_them():
+    """Each ownership group still answers on one combined instance.
+
+    Splitting a class across modules is only safe if the pieces still compose,
+    and "the import worked" does not show that. These are representative
+    methods from all four groups, checked against the class they should come
+    from rather than merely being callable.
+    """
+    from ui.views.scan_engine_mixin import _ScanEngineMixin
+    from ui.views.scan_pipeline_mixin import _ScanPipelineMixin
+    from ui.views.scan_view import ScanView
+    from ui.views.threat_actions_mixin import _ThreatActionsMixin
+
+    expected = {
+        "_normalized_pipeline_order": _ScanPipelineMixin,
+        "_on_yara_toggle":            _ScanPipelineMixin,
+        "_run_guardian_scan":         _ScanEngineMixin,
+        "_run_clamav_scan":           _ScanEngineMixin,
+        "_get_filtered_paths":        _ThreatActionsMixin,
+        "_build_threat_actions":      _ThreatActionsMixin,
+        "_start_scan":                ScanView,
+        "_finalize_scan":             ScanView,
+        "_log_append":                ScanView,
+    }
+    for name, owner in expected.items():
+        resolved = next(c for c in ScanView.__mro__ if name in c.__dict__)
+        assert resolved is owner, (
+            f"{name} resolves to {resolved.__name__}, expected {owner.__name__}")
