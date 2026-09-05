@@ -38,15 +38,10 @@ import customtkinter as ctk
 from ui.core import settings as cfg
 from ui.core import ignore_list as ignore
 import ui.theme as theme
-from ui.views._view_utils import _human_size
-
-# Log tag constants — mirrored from scan_view.py.  Kept in sync intentionally:
-# importing them from scan_view would create a circular import (scan_view
-# imports this module to inherit the mixin).
-_TAG_CLEAN     = "clean"
-_TAG_WARN      = "warn"
-_TAG_INFO      = "info"
-_TAG_GUARDIAN  = "guardian"
+from ui.views._view_utils import (
+    _human_size,
+    _TAG_CLEAN, _TAG_WARN, _TAG_INFO, _TAG_GUARDIAN,
+)
 
 
 class _ThreatActionsMixin:

@@ -11,6 +11,21 @@ widget construction, no ``ui.core`` imports, nothing that needs a Tk root.
 """
 
 
+# Log tag constants.  These live here because more than one view needs them and
+# no view may import another: scan_view imports the mixins it inherits, so any
+# edge back the other way closes a cycle.  They were duplicated in
+# threat_actions_mixin.py for exactly that reason, with a comment saying so.
+_TAG_INFECTED  = "infected"
+_TAG_CLEAN     = "clean"
+_TAG_WARN      = "warn"
+_TAG_INFO      = "info"
+_TAG_GUARDIAN  = "guardian"
+_TAG_YARA      = "yara"
+_TAG_CLAMAV    = "clamav"
+_TAG_DEFENDER  = "defender"
+_TAG_SPEAKEASY = "speakeasy"
+
+
 def _format_eta(seconds: float) -> str:
     if seconds <= 0:
         return "—"

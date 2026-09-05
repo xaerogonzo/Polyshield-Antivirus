@@ -14,7 +14,11 @@ from ui.core import guardian_engine as ge
 from ui.core import yara_engine as ye
 from ui.core import clamav_engine as ce
 from ui.core import defender as df
-from ui.views._view_utils import _format_eta, _parse_dnd_paths
+from ui.views._view_utils import (
+    _format_eta, _parse_dnd_paths,
+    _TAG_INFECTED, _TAG_CLEAN, _TAG_WARN, _TAG_INFO, _TAG_GUARDIAN,
+    _TAG_YARA, _TAG_CLAMAV, _TAG_DEFENDER, _TAG_SPEAKEASY,
+)
 from ui.views.threat_actions_mixin import _ThreatActionsMixin
 
 try:
@@ -29,16 +33,6 @@ try:
     _DND_AVAILABLE = True
 except ImportError:
     _DND_AVAILABLE = False
-
-_TAG_INFECTED  = "infected"
-_TAG_CLEAN     = "clean"
-_TAG_WARN      = "warn"
-_TAG_INFO      = "info"
-_TAG_GUARDIAN  = "guardian"
-_TAG_YARA      = "yara"
-_TAG_CLAMAV    = "clamav"
-_TAG_DEFENDER  = "defender"
-_TAG_SPEAKEASY = "speakeasy"
 
 _KEYWORDS_INFECTED = ("infected", "virus", "malware", "threat", "trojan", "worm", "ransom")
 _KEYWORDS_CLEAN    = ("ok", "clean", "no threat")
