@@ -60,19 +60,53 @@ class SettingsView(ctk.CTkScrollableFrame):
                      font=ctk.CTkFont(size=22, weight="bold")).grid(
             row=0, column=0, sticky="w", padx=24, pady=(20, 4))
 
-        # ── Scan Panel options ──
+        # Scan Panel is the only section with no divider above it -- it follows
+        # the page title directly, so it is laid out here rather than in a
+        # _build_*_section helper of its own.
         self._section("Scan Panel", row=1)
         for i, (key, label, desc) in enumerate(_SCAN_OPTIONS):
             self._option_row(key, label, desc, row=i + 2)
 
         n = len(_SCAN_OPTIONS)
 
-        # ── VirusTotal ──
-        self._divider(row=n + 2)
-        self._section("VirusTotal", row=n + 3)
+        # Every section below takes three consecutive rows -- divider, header,
+        # card -- so each base is the previous one plus three.  Launch is the
+        # exception: it has a second card and takes four.
+        self._build_virustotal_section(n + 2)
+        self._build_guardian_section(n + 5)
+        self._build_yara_section(n + 8)
+        self._build_clamav_section(n + 11)
+        self._build_behavioral_section(n + 14)
+        self._build_launch_section(n + 17)          # four rows: n+17 .. n+20
+
+        # ── Threat Intelligence Updates ──
+        self._divider(row=n + 21)
+        self._section("Threat Intelligence Updates", row=n + 22)
+        self._build_intel_update_section(row=n + 23)
+
+        # ── About ──
+        self._divider(row=n + 24)
+        self._section("About", row=n + 25)
+        about = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
+        about.grid(row=n + 26, column=0, sticky="ew", padx=24, pady=(4, 20))
+        about.grid_columnconfigure(0, weight=1)
+        for i, text in enumerate([
+            "PolyShield Security Suite",
+            "Built by Alexander L Corthell  •  k2 engine by Kei Choi",
+            "Settings saved to config/ui_settings.json",
+        ]):
+            ctk.CTkLabel(about, text=text, font=ctk.CTkFont(size=12),
+                         text_color=theme.color("dim"), anchor="w").grid(
+                row=i, column=0, sticky="w", padx=16,
+                pady=(10 if i == 0 else 2, 10 if i == 2 else 2))
+
+    def _build_virustotal_section(self, row: int):
+        """VirusTotal — API key, smart-upload level."""
+        self._divider(row=row)
+        self._section("VirusTotal", row=row + 1)
 
         vt_card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
-        vt_card.grid(row=n + 4, column=0, sticky="ew", padx=24, pady=4)
+        vt_card.grid(row=row + 2, column=0, sticky="ew", padx=24, pady=4)
         vt_card.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(vt_card, text="API Key",
@@ -154,15 +188,16 @@ class SettingsView(ctk.CTkScrollableFrame):
                 command=lambda v=val: cfg.set_value("vt_smart_upload_level", v))
             rb.grid(row=0, column=i, padx=(0 if i == 0 else 16, 0))
 
-        # ── Guardian AI ──
-        self._divider(row=n + 5)
-        self._section("Guardian AI", row=n + 6)
+    def _build_guardian_section(self, row: int):
+        """Guardian AI — availability badge, tier toggles, sensitivity profile."""
+        self._divider(row=row)
+        self._section("Guardian AI", row=row + 1)
 
         from ui.core import guardian_engine as ge
         guardian_available = ge.is_available()
 
         guardian_card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
-        guardian_card.grid(row=n + 7, column=0, sticky="ew", padx=24, pady=4)
+        guardian_card.grid(row=row + 2, column=0, sticky="ew", padx=24, pady=4)
         guardian_card.grid_columnconfigure(0, weight=1)
 
         badge_text  = "● Installed" if guardian_available else "● Not installed"
@@ -324,15 +359,16 @@ class SettingsView(ctk.CTkScrollableFrame):
             # ── v1.10: Sensitivity profile + Advanced popup ──
             self._build_guardian_sensitivity_section(guardian_card, start_row=14)
 
-        # ── YARA Rules ──
-        self._divider(row=n + 8)
-        self._section("YARA Rules", row=n + 9)
+    def _build_yara_section(self, row: int):
+        """YARA Rules — rule count, scan-view and watcher toggles."""
+        self._divider(row=row)
+        self._section("YARA Rules", row=row + 1)
 
         from ui.core import yara_engine as ye
         yara_available = ye.is_available()
 
         yara_card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
-        yara_card.grid(row=n + 10, column=0, sticky="ew", padx=24, pady=4)
+        yara_card.grid(row=row + 2, column=0, sticky="ew", padx=24, pady=4)
         yara_card.grid_columnconfigure(0, weight=1)
 
         yara_badge_row = ctk.CTkFrame(yara_card, fg_color="transparent")
@@ -398,15 +434,16 @@ class SettingsView(ctk.CTkScrollableFrame):
                          font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                          anchor="w").grid(row=6, column=0, sticky="w", padx=16, pady=(0, 12))
 
-        # ── ClamAV ──
-        self._divider(row=n + 11)
-        self._section("ClamAV", row=n + 12)
+    def _build_clamav_section(self, row: int):
+        """ClamAV — executable path, scan-view and watcher toggles."""
+        self._divider(row=row)
+        self._section("ClamAV", row=row + 1)
 
         from ui.core import clamav_engine as ce
         clamav_available = ce.is_available()
 
         clam_card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
-        clam_card.grid(row=n + 13, column=0, sticky="ew", padx=24, pady=4)
+        clam_card.grid(row=row + 2, column=0, sticky="ew", padx=24, pady=4)
         clam_card.grid_columnconfigure(0, weight=1)
 
         clam_badge_row = ctk.CTkFrame(clam_card, fg_color="transparent")
@@ -490,12 +527,13 @@ class SettingsView(ctk.CTkScrollableFrame):
                          font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                          anchor="w").grid(row=7, column=0, sticky="w", padx=16, pady=(0, 12))
 
-        # ── Behavioral Analysis ──
-        self._divider(row=n + 14)
-        self._section("Behavioral Analysis", row=n + 15)
+    def _build_behavioral_section(self, row: int):
+        """Behavioral Analysis — Speakeasy status, Sandboxie-Plus path."""
+        self._divider(row=row)
+        self._section("Behavioral Analysis", row=row + 1)
 
         behavioral_card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
-        behavioral_card.grid(row=n + 16, column=0, sticky="ew", padx=24, pady=4)
+        behavioral_card.grid(row=row + 2, column=0, sticky="ew", padx=24, pady=4)
         behavioral_card.grid_columnconfigure(0, weight=1)
 
         from ui.core import emulate_engine as ee
@@ -577,12 +615,16 @@ class SettingsView(ctk.CTkScrollableFrame):
                                           font=ctk.CTkFont(size=11))
         self._sb_feedback.grid(row=6, column=0, sticky="w", padx=16, pady=(0, 10))
 
-        # ── Launch ──
-        self._divider(row=n + 17)
-        self._section("Launch", row=n + 18)
+    def _build_launch_section(self, row: int):
+        """Launch — admin elevation, Explorer context menu.
+
+        Takes four rows rather than three: the context menu has its own card.
+        """
+        self._divider(row=row)
+        self._section("Launch", row=row + 1)
 
         launch_card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
-        launch_card.grid(row=n + 19, column=0, sticky="ew", padx=24, pady=4)
+        launch_card.grid(row=row + 2, column=0, sticky="ew", padx=24, pady=4)
         launch_card.grid_columnconfigure(0, weight=1)
 
         self._admin_switch = ctk.CTkSwitch(launch_card, text="", width=46,
@@ -612,7 +654,7 @@ class SettingsView(ctk.CTkScrollableFrame):
 
         # Context menu card
         ctx_card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
-        ctx_card.grid(row=n + 20, column=0, sticky="ew", padx=24, pady=(4, 4))
+        ctx_card.grid(row=row + 3, column=0, sticky="ew", padx=24, pady=(4, 4))
         ctx_card.grid_columnconfigure(0, weight=1)
 
         self._ctx_switch = ctk.CTkSwitch(ctx_card, text="", width=46,
@@ -640,27 +682,6 @@ class SettingsView(ctk.CTkScrollableFrame):
             font=ctk.CTkFont(size=11),
             text_color="#50fa7b" if _sx.is_registered() else "#888888")
         self._ctx_status_lbl.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 10))
-
-        # ── Threat Intelligence Updates ──
-        self._divider(row=n + 21)
-        self._section("Threat Intelligence Updates", row=n + 22)
-        self._build_intel_update_section(row=n + 23)
-
-        # ── About ──
-        self._divider(row=n + 24)
-        self._section("About", row=n + 25)
-        about = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
-        about.grid(row=n + 26, column=0, sticky="ew", padx=24, pady=(4, 20))
-        about.grid_columnconfigure(0, weight=1)
-        for i, text in enumerate([
-            "PolyShield Security Suite",
-            "Built by Alexander L Corthell  •  k2 engine by Kei Choi",
-            "Settings saved to config/ui_settings.json",
-        ]):
-            ctk.CTkLabel(about, text=text, font=ctk.CTkFont(size=12),
-                         text_color=theme.color("dim"), anchor="w").grid(
-                row=i, column=0, sticky="w", padx=16,
-                pady=(10 if i == 0 else 2, 10 if i == 2 else 2))
 
     # ── Threat Intelligence Updates ───────────────────────────────────────────
 

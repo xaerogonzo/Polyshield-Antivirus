@@ -390,15 +390,27 @@ class UpdateView(ctk.CTkScrollableFrame):
             font=ctk.CTkFont(size=11))
         self._speakeasy_badge.grid(row=0, column=2, sticky="w")
 
-    def _build_sandboxie_section(self, row: int):
-        """Sandboxie-Plus — version check + GitHub release link card."""
+    def _build_component_card(self, row: int, *, title: str, title_color: str,
+                              blurb: str, action_text: str, action_width: int,
+                              action_fg: str, action_hover: str, action_command,
+                              link_text: str, link_width: int, link_url: str):
+        """One external-component card: title, installed/latest, blurb, buttons.
+
+        Sandboxie-Plus, YARA Forge and ClamAV are all "something we do not ship,
+        checked against a release page", and their cards were three copies of
+        this scaffolding differing only in the arguments above.
+
+        Returns (version_lbl, latest_lbl, action_btn, badge) rather than
+        assigning them, so each caller keeps its own literal attribute names --
+        self._yara_badge stays greppable, which setattr on a prefix would not.
+        """
         card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
         card.grid(row=row, column=0, sticky="ew", padx=24, pady=(0, 8))
         card.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(card, text="Sandboxie-Plus",
+        ctk.CTkLabel(card, text=title,
                      font=ctk.CTkFont(size=14, weight="bold"),
-                     text_color="#ffb86c").grid(
+                     text_color=title_color).grid(
             row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(12, 4))
 
         info_row = ctk.CTkFrame(card, fg_color="transparent")
@@ -408,20 +420,18 @@ class UpdateView(ctk.CTkScrollableFrame):
         ctk.CTkLabel(info_row, text="Installed:",
                      font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
             row=0, column=0, sticky="w")
-        self._sandboxie_version_lbl = ctk.CTkLabel(info_row, text="checking…",
-                                                    font=ctk.CTkFont(size=12))
-        self._sandboxie_version_lbl.grid(row=0, column=1, sticky="w", padx=8)
+        version_lbl = ctk.CTkLabel(info_row, text="checking…",
+                                   font=ctk.CTkFont(size=12))
+        version_lbl.grid(row=0, column=1, sticky="w", padx=8)
 
         ctk.CTkLabel(info_row, text="Latest (GitHub):",
                      font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
             row=1, column=0, sticky="w")
-        self._sandboxie_latest_lbl = ctk.CTkLabel(info_row, text="—",
-                                                   font=ctk.CTkFont(size=12))
-        self._sandboxie_latest_lbl.grid(row=1, column=1, sticky="w", padx=8)
+        latest_lbl = ctk.CTkLabel(info_row, text="—",
+                                  font=ctk.CTkFont(size=12))
+        latest_lbl.grid(row=1, column=1, sticky="w", padx=8)
 
-        ctk.CTkLabel(card,
-                     text="Sandboxie-Plus must be updated manually (portable build).\n"
-                          "'Check Latest' queries GitHub, then opens the release page for download.",
+        ctk.CTkLabel(card, text=blurb,
                      font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
                      anchor="w", justify="left").grid(
             row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 4))
@@ -431,26 +441,41 @@ class UpdateView(ctk.CTkScrollableFrame):
                      padx=16, pady=(4, 12))
         btn_row.grid_columnconfigure(2, weight=1)
 
-        self._sandboxie_check_btn = ctk.CTkButton(
-            btn_row, text="Check Latest", width=130,
-            fg_color="#3a2a1a", hover_color="#5a4a2a",
+        action_btn = ctk.CTkButton(
+            btn_row, text=action_text, width=action_width,
+            fg_color=action_fg, hover_color=action_hover,
             font=ctk.CTkFont(size=12),
-            command=self._check_sandboxie_latest)
-        self._sandboxie_check_btn.grid(row=0, column=0, padx=(0, 8))
+            command=action_command)
+        action_btn.grid(row=0, column=0, padx=(0, 8))
 
-        _sb_gh_btn = ctk.CTkButton(
-            btn_row, text="↗  GitHub Releases", width=150,
+        link_btn = ctk.CTkButton(
+            btn_row, text=link_text, width=link_width,
             fg_color="#2a2a2a", hover_color=theme.color("divider"),
             font=ctk.CTkFont(size=12),
-            command=lambda: __import__("webbrowser").open(
-                "https://github.com/sandboxie-plus/Sandboxie/releases"))
-        _sb_gh_btn.grid(row=0, column=1, padx=(0, 12))
+            command=lambda: __import__("webbrowser").open(link_url))
+        link_btn.grid(row=0, column=1, padx=(0, 12))
 
-        self._sandboxie_badge = ctk.CTkLabel(
+        badge = ctk.CTkLabel(
             btn_row, text="", width=200,
             corner_radius=6, fg_color="#2a2a2a",
             font=ctk.CTkFont(size=11))
-        self._sandboxie_badge.grid(row=0, column=2, sticky="w")
+        badge.grid(row=0, column=2, sticky="w")
+
+        return version_lbl, latest_lbl, action_btn, badge
+
+    def _build_sandboxie_section(self, row: int):
+        """Sandboxie-Plus — version check + GitHub release link card."""
+        (self._sandboxie_version_lbl, self._sandboxie_latest_lbl,
+         self._sandboxie_check_btn, self._sandboxie_badge) = self._build_component_card(
+            row,
+            title="Sandboxie-Plus", title_color="#ffb86c",
+            blurb="Sandboxie-Plus must be updated manually (portable build).\n"
+                  "'Check Latest' queries GitHub, then opens the release page for download.",
+            action_text="Check Latest", action_width=130,
+            action_fg="#3a2a1a", action_hover="#5a4a2a",
+            action_command=self._check_sandboxie_latest,
+            link_text="↗  GitHub Releases", link_width=150,
+            link_url="https://github.com/sandboxie-plus/Sandboxie/releases")
 
     def _build_c2_section(self, row: int):
         """Feodo Tracker C2 IP Blocklist card."""
@@ -507,127 +532,31 @@ class UpdateView(ctk.CTkScrollableFrame):
 
     def _build_yara_section(self, row: int):
         """YARA Forge community rules — download + auto-extract card."""
-        card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
-        card.grid(row=row, column=0, sticky="ew", padx=24, pady=(0, 8))
-        card.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(card, text="YARA Community Rules",
-                     font=ctk.CTkFont(size=14, weight="bold"),
-                     text_color="#bd93f9").grid(
-            row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(12, 4))
-
-        info_row = ctk.CTkFrame(card, fg_color="transparent")
-        info_row.grid(row=1, column=0, columnspan=2, sticky="ew", padx=16, pady=(0, 4))
-        info_row.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(info_row, text="Installed:",
-                     font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
-            row=0, column=0, sticky="w")
-        self._yara_version_lbl = ctk.CTkLabel(info_row, text="checking…",
-                                               font=ctk.CTkFont(size=12))
-        self._yara_version_lbl.grid(row=0, column=1, sticky="w", padx=8)
-
-        ctk.CTkLabel(info_row, text="Latest (GitHub):",
-                     font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
-            row=1, column=0, sticky="w")
-        self._yara_latest_lbl = ctk.CTkLabel(info_row, text="—",
-                                              font=ctk.CTkFont(size=12))
-        self._yara_latest_lbl.grid(row=1, column=1, sticky="w", padx=8)
-
-        ctk.CTkLabel(card,
-                     text="YARA Forge weekly rule set — community-maintained detections.\n"
-                          "Rules saved to rules/community/ and loaded automatically alongside custom rules.",
-                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
-                     anchor="w", justify="left").grid(
-            row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 4))
-
-        btn_row = ctk.CTkFrame(card, fg_color="transparent")
-        btn_row.grid(row=3, column=0, columnspan=2, sticky="ew",
-                     padx=16, pady=(4, 12))
-        btn_row.grid_columnconfigure(2, weight=1)
-
-        self._yara_dl_btn = ctk.CTkButton(
-            btn_row, text="↓  Download Latest", width=150,
-            fg_color="#2a1a4a", hover_color="#4a2a7a",
-            font=ctk.CTkFont(size=12),
-            command=self._run_yara_update)
-        self._yara_dl_btn.grid(row=0, column=0, padx=(0, 8))
-
-        _ya_gh_btn = ctk.CTkButton(
-            btn_row, text="↗  GitHub Releases", width=150,
-            fg_color="#2a2a2a", hover_color=theme.color("divider"),
-            font=ctk.CTkFont(size=12),
-            command=lambda: __import__("webbrowser").open(
-                "https://github.com/YARAHQ/yara-forge/releases"))
-        _ya_gh_btn.grid(row=0, column=1, padx=(0, 12))
-
-        self._yara_badge = ctk.CTkLabel(
-            btn_row, text="", width=200,
-            corner_radius=6, fg_color="#2a2a2a",
-            font=ctk.CTkFont(size=11))
-        self._yara_badge.grid(row=0, column=2, sticky="w")
+        (self._yara_version_lbl, self._yara_latest_lbl,
+         self._yara_dl_btn, self._yara_badge) = self._build_component_card(
+            row,
+            title="YARA Community Rules", title_color="#bd93f9",
+            blurb="YARA Forge weekly rule set — community-maintained detections.\n"
+                  "Rules saved to rules/community/ and loaded automatically alongside custom rules.",
+            action_text="↓  Download Latest", action_width=150,
+            action_fg="#2a1a4a", action_hover="#4a2a7a",
+            action_command=self._run_yara_update,
+            link_text="↗  GitHub Releases", link_width=150,
+            link_url="https://github.com/YARAHQ/yara-forge/releases")
 
     def _build_clamav_section(self, row: int):
         """ClamAV Engine — version check + download page link card."""
-        card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
-        card.grid(row=row, column=0, sticky="ew", padx=24, pady=(0, 8))
-        card.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(card, text="ClamAV Engine",
-                     font=ctk.CTkFont(size=14, weight="bold"),
-                     text_color="#8be9fd").grid(
-            row=0, column=0, columnspan=2, sticky="w", padx=16, pady=(12, 4))
-
-        info_row = ctk.CTkFrame(card, fg_color="transparent")
-        info_row.grid(row=1, column=0, columnspan=2, sticky="ew", padx=16, pady=(0, 4))
-        info_row.grid_columnconfigure(1, weight=1)
-
-        ctk.CTkLabel(info_row, text="Installed:",
-                     font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
-            row=0, column=0, sticky="w")
-        self._clamav_version_lbl = ctk.CTkLabel(info_row, text="checking…",
-                                                 font=ctk.CTkFont(size=12))
-        self._clamav_version_lbl.grid(row=0, column=1, sticky="w", padx=8)
-
-        ctk.CTkLabel(info_row, text="Latest (GitHub):",
-                     font=ctk.CTkFont(size=12), text_color=theme.color("subtext")).grid(
-            row=1, column=0, sticky="w")
-        self._clamav_latest_lbl = ctk.CTkLabel(info_row, text="—",
-                                                font=ctk.CTkFont(size=12))
-        self._clamav_latest_lbl.grid(row=1, column=1, sticky="w", padx=8)
-
-        ctk.CTkLabel(card,
-                     text="Open-source signature engine by Cisco Talos. Download the Windows MSI\n"
-                          "installer from clamav.net, then configure the path in Settings → ClamAV.",
-                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
-                     anchor="w", justify="left").grid(
-            row=2, column=0, columnspan=2, sticky="w", padx=16, pady=(0, 4))
-
-        btn_row = ctk.CTkFrame(card, fg_color="transparent")
-        btn_row.grid(row=3, column=0, columnspan=2, sticky="ew",
-                     padx=16, pady=(4, 12))
-        btn_row.grid_columnconfigure(2, weight=1)
-
-        self._clamav_check_btn = ctk.CTkButton(
-            btn_row, text="Check Latest", width=130,
-            fg_color="#1a2a3a", hover_color="#2a3a5a",
-            font=ctk.CTkFont(size=12),
-            command=self._check_clamav_latest)
-        self._clamav_check_btn.grid(row=0, column=0, padx=(0, 8))
-
-        _cl_dl_btn = ctk.CTkButton(
-            btn_row, text="↗  Download Page", width=150,
-            fg_color="#2a2a2a", hover_color=theme.color("divider"),
-            font=ctk.CTkFont(size=12),
-            command=lambda: __import__("webbrowser").open(
-                "https://www.clamav.net/downloads"))
-        _cl_dl_btn.grid(row=0, column=1, padx=(0, 12))
-
-        self._clamav_badge = ctk.CTkLabel(
-            btn_row, text="", width=200,
-            corner_radius=6, fg_color="#2a2a2a",
-            font=ctk.CTkFont(size=11))
-        self._clamav_badge.grid(row=0, column=2, sticky="w")
+        (self._clamav_version_lbl, self._clamav_latest_lbl,
+         self._clamav_check_btn, self._clamav_badge) = self._build_component_card(
+            row,
+            title="ClamAV Engine", title_color="#8be9fd",
+            blurb="Open-source signature engine by Cisco Talos. Download the Windows MSI\n"
+                  "installer from clamav.net, then configure the path in Settings → ClamAV.",
+            action_text="Check Latest", action_width=130,
+            action_fg="#1a2a3a", action_hover="#2a3a5a",
+            action_command=self._check_clamav_latest,
+            link_text="↗  Download Page", link_width=150,
+            link_url="https://www.clamav.net/downloads")
 
     # ── Info refresh ───────────────────────────────────────────────────────────
 

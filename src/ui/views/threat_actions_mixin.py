@@ -38,27 +38,10 @@ import customtkinter as ctk
 from ui.core import settings as cfg
 from ui.core import ignore_list as ignore
 import ui.theme as theme
-
-# Log tag constants — mirrored from scan_view.py.  Kept in sync intentionally:
-# importing them from scan_view would create a circular import (scan_view
-# imports this module to inherit the mixin).
-_TAG_CLEAN     = "clean"
-_TAG_WARN      = "warn"
-_TAG_INFO      = "info"
-_TAG_GUARDIAN  = "guardian"
-
-
-def _human_size(n: int) -> str:
-    """Human-readable byte count (1.5 KB, 3.2 MB, etc.)."""
-    if n < 1024:
-        return f"{n} B"
-    units = ["KB", "MB", "GB", "TB"]
-    val = float(n) / 1024.0
-    for u in units:
-        if val < 1024 or u == units[-1]:
-            return f"{val:.1f} {u}"
-        val /= 1024.0
-    return f"{n} B"
+from ui.views._view_utils import (
+    _human_size,
+    _TAG_CLEAN, _TAG_WARN, _TAG_INFO, _TAG_GUARDIAN,
+)
 
 
 class _ThreatActionsMixin:

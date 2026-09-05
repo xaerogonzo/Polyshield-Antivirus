@@ -3,7 +3,6 @@ import json
 import threading
 import urllib.request
 import urllib.error
-from pathlib import Path
 
 _VT_BASE = "https://www.virustotal.com/api/v3"
 

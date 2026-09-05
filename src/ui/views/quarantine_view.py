@@ -1,7 +1,6 @@
 import hashlib
 import threading
 import customtkinter as ctk
-import tkinter as tk
 from tkinter import messagebox
 from pathlib import Path
 

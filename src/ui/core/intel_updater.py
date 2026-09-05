@@ -40,7 +40,6 @@ import socket
 import threading
 import time
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Callable
 from ui.core import paths
 
@@ -638,6 +637,55 @@ def _service_owns_updates() -> bool:
         return False
 
 
+def _run_one_feed(name: str, feed, info: dict, force: bool,
+                  interval_h: int, log_fn) -> dict:
+    """Run a single feed and return its outcome dict.
+
+    Decides skip / backoff / run for one feed, and records success or failure
+    against its backoff state.  Returns the outcome rather than writing it, so
+    the caller stays the only place that knows about the batch: the lock it
+    holds, the domains that changed, and the roll-up.
+
+    Never raises -- a feed that blows up becomes a FAILED outcome, because one
+    bad feed must not take the rest of the batch with it.
+    """
+    if not force:
+        if not info.get("enabled", False):
+            return {"status": SKIPPED, "reason": "feed disabled"}
+        if not info.get("due", False):
+            back = _read_backoff(name)
+            if back.get("next_retry"):
+                return {
+                    "status": BACKOFF,
+                    "reason": f"retry after {back['next_retry']}",
+                    "last_error": back.get("last_error", ""),
+                    "fail_count": int(back.get("fail_count") or 0),
+                }
+            return {"status": SKIPPED, "reason": "not due yet"}
+
+    log_fn(f"── {feed.label} ──")
+    try:
+        outcome = feed.runner(log_fn)
+    except Exception as exc:          # a feed must never kill the batch
+        log.exception("Feed %s raised", name)
+        outcome = {"status": FAILED, "error": str(exc)}
+
+    status = outcome.get("status", FAILED)
+    if status == FAILED:
+        back = _record_failure(name, outcome.get("error", ""),
+                               int(outcome.get("http_status") or 0),
+                               interval_h)
+        outcome["next_retry"] = back["next_retry"]
+        outcome["fail_count"] = back["fail_count"]
+        if back["last_status"] == AUTH_REQUIRED:
+            outcome["status"] = FAILED
+            outcome["auth_required"] = True
+    else:
+        _clear_failure(name)
+
+    return outcome
+
+
 def run_updates(
     feeds: list[str] | None = None,
     force: bool = False,
@@ -716,49 +764,12 @@ def run_updates(
             state = get_staleness()
             for name in names:
                 feed = _FEEDS[name]
-                info = state.get(name, {})
-
-                if not force:
-                    if not info.get("enabled", False):
-                        result["feeds"][name] = {"status": SKIPPED,
-                                                 "reason": "feed disabled"}
-                        continue
-                    if not info.get("due", False):
-                        back = _read_backoff(name)
-                        if back.get("next_retry"):
-                            result["feeds"][name] = {
-                                "status": BACKOFF,
-                                "reason": f"retry after {back['next_retry']}",
-                                "last_error": back.get("last_error", ""),
-                                "fail_count": int(back.get("fail_count") or 0),
-                            }
-                        else:
-                            result["feeds"][name] = {"status": SKIPPED,
-                                                     "reason": "not due yet"}
-                        continue
-
-                log_fn(f"── {feed.label} ──")
-                try:
-                    outcome = feed.runner(log_fn)
-                except Exception as exc:          # a feed must never kill the batch
-                    log.exception("Feed %s raised", name)
-                    outcome = {"status": FAILED, "error": str(exc)}
-
-                status = outcome.get("status", FAILED)
-                if status == FAILED:
-                    back = _record_failure(name, outcome.get("error", ""),
-                                           int(outcome.get("http_status") or 0),
-                                           interval_h)
-                    outcome["next_retry"] = back["next_retry"]
-                    outcome["fail_count"] = back["fail_count"]
-                    if back["last_status"] == AUTH_REQUIRED:
-                        outcome["status"] = FAILED
-                        outcome["auth_required"] = True
-                else:
-                    _clear_failure(name)
-                    if status == UPDATED:
-                        changed_domains.add(feed.domain)
-
+                outcome = _run_one_feed(name, feed, state.get(name, {}),
+                                        force, interval_h, log_fn)
+                # Accumulated here rather than in the helper: the notification
+                # phase below fires once for the union, not once per feed.
+                if outcome.get("status") == UPDATED:
+                    changed_domains.add(feed.domain)
                 result["feeds"][name] = outcome
         finally:
             # Released BEFORE the notification phase: reloading a large hash set
@@ -799,11 +810,6 @@ def run_updates(
         return result
     finally:
         _local_lock.release()
-
-
-def run_due_updates(on_progress=None, owner: str = "ui") -> dict:
-    """Run only the feeds that are actually due.  Used by the scheduler."""
-    return run_updates(feeds=None, force=False, on_progress=on_progress, owner=owner)
 
 
 def request_update(feeds: list[str] | None = None, force: bool = True,

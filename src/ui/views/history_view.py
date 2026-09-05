@@ -1,6 +1,5 @@
 import json
 import os
-import subprocess
 import customtkinter as ctk
 from pathlib import Path
 from ui.core import scanner as sc

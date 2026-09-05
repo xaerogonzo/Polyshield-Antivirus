@@ -20,7 +20,8 @@ import threading
 import pytest
 
 from ui.views import scan_view as sv
-from ui.views.scan_view import _classify, _format_eta, _human_size
+from ui.views.scan_view import _classify
+from ui.views._view_utils import _format_eta, _human_size, _parse_dnd_paths
 
 _ALL_ENGINES = ("k2", "guardian", "yara", "clamav", "defender")
 
@@ -396,13 +397,13 @@ def test_human_size_across_magnitudes():
 def test_dropped_paths_are_parsed_out_of_the_brace_quoted_form(view):
     """Tk hands drag-and-drop paths back brace-quoted when they contain
     spaces — the common case on Windows, where most user folders do."""
-    parsed = view._parse_dnd_paths(r"{C:\Program Files\thing.exe} C:\tmp\plain.exe")
+    parsed = _parse_dnd_paths(r"{C:\Program Files\thing.exe} C:\tmp\plain.exe")
 
     assert parsed == [r"C:\Program Files\thing.exe", r"C:\tmp\plain.exe"]
 
 
 def test_a_single_unquoted_path_with_spaces_survives(view):
-    parsed = view._parse_dnd_paths(r"{C:\Users\Test User\Downloads\file.zip}")
+    parsed = _parse_dnd_paths(r"{C:\Users\Test User\Downloads\file.zip}")
 
     assert parsed == [r"C:\Users\Test User\Downloads\file.zip"]
 

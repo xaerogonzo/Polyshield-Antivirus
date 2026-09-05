@@ -23,6 +23,7 @@ import ui.theme as theme
 from ui.core import guardian_engine as ge
 from ui.core import settings as cfg
 from ui.core import paths
+from ui.views._view_utils import _parse_dnd_paths
 
 try:
     from tkinterdnd2 import DND_FILES
@@ -275,7 +276,6 @@ class GuardianView(ctk.CTkFrame):
 
         def _run():
             try:
-                import sys
                 from pathlib import Path
                 paths.bootstrap_sys_path()
                 from tools.update_intelligence import run_update
@@ -357,24 +357,7 @@ class GuardianView(ctk.CTkFrame):
     # ── Drop & browse ─────────────────────────────────────────────────────────
 
     def _on_drop(self, event):
-        self._add_paths(self._parse_dnd_paths(event.data))
-
-    @staticmethod
-    def _parse_dnd_paths(raw: str) -> list[str]:
-        paths, raw, i = [], raw.strip(), 0
-        while i < len(raw):
-            if raw[i] == "{":
-                end = raw.index("}", i)
-                paths.append(raw[i + 1:end])
-                i = end + 2
-            else:
-                end = raw.find(" ", i)
-                if end == -1:
-                    paths.append(raw[i:])
-                    break
-                paths.append(raw[i:end])
-                i = end + 1
-        return [p for p in paths if p]
+        self._add_paths(_parse_dnd_paths(event.data))
 
     def _add_paths(self, paths: list[str]):
         for p in paths:

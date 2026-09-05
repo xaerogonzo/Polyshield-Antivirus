@@ -16,7 +16,7 @@ import json
 import subprocess
 import threading
 import winreg
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -655,6 +655,142 @@ def get_system_health() -> dict:
 # 6. Security Score
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _score_defender(defender_status: dict | None) -> tuple[int, list[str]]:
+    """Defender — 25 pts: real-time protection, AV enabled, signature age.
+
+    ``defender_status`` of None is the *unavailable* branch, not a request to
+    fetch: it forfeits all 25 points.  get_security_score() explains why that
+    asymmetry is preserved rather than fixed.
+    """
+    dfn_score = 25
+    dfn_issues: list[str] = []
+    if defender_status and defender_status.get("available"):
+        if not defender_status.get("RealTimeProtectionEnabled"):
+            dfn_score -= 15
+            dfn_issues.append("Real-time protection is OFF")
+        if not defender_status.get("AntivirusEnabled"):
+            dfn_score -= 10
+            dfn_issues.append("Antivirus is disabled")
+        sig_age = _safe_int(str(defender_status.get("AntivirusSignatureAge", 0)))
+        if sig_age > 7:
+            dfn_score -= 5
+            dfn_issues.append(f"Signatures {sig_age}d old (>7d)")
+    else:
+        dfn_score = 0
+        dfn_issues.append("Defender status unavailable")
+    return dfn_score, dfn_issues
+
+
+def _score_firewall(firewall_profiles: dict) -> tuple[int, list[str]]:
+    """Firewall — 20 pts: 7 off each profile that is disabled, 2 each unknown."""
+    fw_score = 20
+    fw_issues: list[str] = []
+    for profile, state in firewall_profiles.items():
+        if state.get("enabled") is False:
+            fw_score -= 7
+            fw_issues.append(f"{profile} firewall profile is OFF")
+        elif state.get("enabled") is None:
+            fw_score -= 2
+            fw_issues.append(f"{profile} firewall state unknown")
+    return fw_score, fw_issues
+
+
+def _score_device_security(device_sec: dict) -> tuple[int, list[str]]:
+    """Device Security — 20 pts: Secure Boot, TPM, VBS.
+
+    Each charges the full penalty when the feature is known-absent and half
+    when the probe needed elevation -- absent is not the same as unknown.
+    """
+    dv_score = 20
+    dv_issues: list[str] = []
+    if device_sec.get("secure_boot") is False:
+        dv_score -= 7
+        dv_issues.append("Secure Boot is disabled")
+    elif device_sec.get("secure_boot_needs_elevation"):
+        dv_score -= 3
+        dv_issues.append("Secure Boot status unknown (requires admin)")
+    if device_sec.get("tpm_present") is False:
+        dv_score -= 7
+        dv_issues.append("TPM not present")
+    elif device_sec.get("tpm_needs_elevation"):
+        dv_score -= 3
+        dv_issues.append("TPM status unknown (requires admin)")
+    if device_sec.get("vbs_enabled") is False:
+        dv_score -= 6
+        dv_issues.append("Virtualization-Based Security is off")
+    elif device_sec.get("vbs_needs_elevation"):
+        dv_score -= 2
+        dv_issues.append("VBS status unknown (requires admin)")
+    return dv_score, dv_issues
+
+
+def _score_account(account_data: dict) -> tuple[int, list[str]]:
+    """Account Security — 15 pts: flagged accounts, lockout policy.
+
+    The one impure scorer: it calls get_account_policy() live rather than
+    taking it as a parameter.  That is deliberate and load-bearing -- see
+    get_security_score().  Do not hoist, cache, or parameterise this call
+    without treating it as the behaviour change it would be.
+    """
+    acc_score = 15
+    acc_issues: list[str] = []
+    if account_data.get("available"):
+        flagged = account_data.get("flagged_count", 0)
+        if flagged:
+            acc_score -= min(10, flagged * 5)
+            acc_issues.append(f"{flagged} account(s) with security risks")
+        policy = get_account_policy()
+        if policy.get("available"):
+            threshold = policy.get("lockout_threshold", 0)
+            if threshold == 0:
+                acc_score -= 5
+                acc_issues.append("Account lockout is not configured")
+            elif threshold > 10:
+                acc_score -= 2
+                acc_issues.append(f"Lockout threshold is high ({threshold} attempts)")
+    else:
+        acc_score -= 5
+        acc_issues.append("Account data unavailable")
+    return acc_score, acc_issues
+
+
+def _score_app_browser(app_control: dict) -> tuple[int, list[str]]:
+    """App & Browser Control — 15 pts: SmartScreen, Controlled Folder Access, ASR."""
+    app_score = 15
+    app_issues: list[str] = []
+    if not app_control.get("smartscreen_on", True):
+        app_score -= 7
+        app_issues.append("SmartScreen is disabled")
+    if not app_control.get("cfa_enabled") and not app_control.get("cfa_audit"):
+        app_score -= 5
+        app_issues.append("Controlled Folder Access is off")
+    elif app_control.get("cfa_audit"):
+        app_score -= 2
+        app_issues.append("Controlled Folder Access is in audit mode (not blocking)")
+    asr_active = app_control.get("asr_active_count", 0)
+    if asr_active == 0:
+        app_score -= 3
+        app_issues.append("No Attack Surface Reduction rules are active")
+    return app_score, app_issues
+
+
+def _score_system_health(sys_health: dict) -> tuple[int, list[str]]:
+    """System Health — 5 pts: pending reboot, uptime, driver errors."""
+    hlth_score = 5
+    hlth_issues: list[str] = []
+    if sys_health.get("pending_reboot"):
+        hlth_score -= 3
+        hlth_issues.append("System restart pending (security patches waiting)")
+    uptime = sys_health.get("uptime_days")
+    if uptime is not None and uptime > 30:
+        hlth_score -= 2
+        hlth_issues.append(f"System uptime {uptime}d (reboot to apply patches)")
+    if sys_health.get("driver_errors", 0) > 0:
+        hlth_score -= 1
+        hlth_issues.append(f"{sys_health['driver_errors']} driver(s) in error state")
+    return hlth_score, hlth_issues
+
+
 def get_security_score(
     defender_status: dict | None = None,
     firewall_profiles: dict | None = None,
@@ -696,120 +832,19 @@ def get_security_score(
     breakdown: dict[str, dict] = {}
     total_score = 0
 
-    # ── Defender (25 pts) ─────────────────────────────────────────────────────
-    dfn_score = 25
-    dfn_issues: list[str] = []
-    if defender_status and defender_status.get("available"):
-        if not defender_status.get("RealTimeProtectionEnabled"):
-            dfn_score -= 15
-            dfn_issues.append("Real-time protection is OFF")
-        if not defender_status.get("AntivirusEnabled"):
-            dfn_score -= 10
-            dfn_issues.append("Antivirus is disabled")
-        sig_age = _safe_int(str(defender_status.get("AntivirusSignatureAge", 0)))
-        if sig_age > 7:
-            dfn_score -= 5
-            dfn_issues.append(f"Signatures {sig_age}d old (>7d)")
-    else:
-        dfn_score = 0
-        dfn_issues.append("Defender status unavailable")
-    breakdown["Defender"] = {"score": max(0, dfn_score), "max": 25, "issues": dfn_issues}
-    total_score += max(0, dfn_score)
-
-    # ── Firewall (20 pts) ─────────────────────────────────────────────────────
-    fw_score = 20
-    fw_issues: list[str] = []
-    for profile, state in firewall_profiles.items():
-        if state.get("enabled") is False:
-            fw_score -= 7
-            fw_issues.append(f"{profile} firewall profile is OFF")
-        elif state.get("enabled") is None:
-            fw_score -= 2
-            fw_issues.append(f"{profile} firewall state unknown")
-    breakdown["Firewall"] = {"score": max(0, fw_score), "max": 20, "issues": fw_issues}
-    total_score += max(0, fw_score)
-
-    # ── Device Security (20 pts) ──────────────────────────────────────────────
-    dv_score = 20
-    dv_issues: list[str] = []
-    if device_sec.get("secure_boot") is False:
-        dv_score -= 7
-        dv_issues.append("Secure Boot is disabled")
-    elif device_sec.get("secure_boot_needs_elevation"):
-        dv_score -= 3
-        dv_issues.append("Secure Boot status unknown (requires admin)")
-    if device_sec.get("tpm_present") is False:
-        dv_score -= 7
-        dv_issues.append("TPM not present")
-    elif device_sec.get("tpm_needs_elevation"):
-        dv_score -= 3
-        dv_issues.append("TPM status unknown (requires admin)")
-    if device_sec.get("vbs_enabled") is False:
-        dv_score -= 6
-        dv_issues.append("Virtualization-Based Security is off")
-    elif device_sec.get("vbs_needs_elevation"):
-        dv_score -= 2
-        dv_issues.append("VBS status unknown (requires admin)")
-    breakdown["Device Security"] = {"score": max(0, dv_score), "max": 20, "issues": dv_issues}
-    total_score += max(0, dv_score)
-
-    # ── Account Security (15 pts) ─────────────────────────────────────────────
-    acc_score = 15
-    acc_issues: list[str] = []
-    if account_data.get("available"):
-        flagged = account_data.get("flagged_count", 0)
-        if flagged:
-            acc_score -= min(10, flagged * 5)
-            acc_issues.append(f"{flagged} account(s) with security risks")
-        policy = get_account_policy()
-        if policy.get("available"):
-            threshold = policy.get("lockout_threshold", 0)
-            if threshold == 0:
-                acc_score -= 5
-                acc_issues.append("Account lockout is not configured")
-            elif threshold > 10:
-                acc_score -= 2
-                acc_issues.append(f"Lockout threshold is high ({threshold} attempts)")
-    else:
-        acc_score -= 5
-        acc_issues.append("Account data unavailable")
-    breakdown["Account Security"] = {"score": max(0, acc_score), "max": 15, "issues": acc_issues}
-    total_score += max(0, acc_score)
-
-    # ── App & Browser Control (15 pts) ────────────────────────────────────────
-    app_score = 15
-    app_issues: list[str] = []
-    if not app_control.get("smartscreen_on", True):
-        app_score -= 7
-        app_issues.append("SmartScreen is disabled")
-    if not app_control.get("cfa_enabled") and not app_control.get("cfa_audit"):
-        app_score -= 5
-        app_issues.append("Controlled Folder Access is off")
-    elif app_control.get("cfa_audit"):
-        app_score -= 2
-        app_issues.append("Controlled Folder Access is in audit mode (not blocking)")
-    asr_active = app_control.get("asr_active_count", 0)
-    if asr_active == 0:
-        app_score -= 3
-        app_issues.append("No Attack Surface Reduction rules are active")
-    breakdown["App & Browser Control"] = {"score": max(0, app_score), "max": 15, "issues": app_issues}
-    total_score += max(0, app_score)
-
-    # ── System Health (5 pts) ─────────────────────────────────────────────────
-    hlth_score = 5
-    hlth_issues: list[str] = []
-    if sys_health.get("pending_reboot"):
-        hlth_score -= 3
-        hlth_issues.append("System restart pending (security patches waiting)")
-    uptime = sys_health.get("uptime_days")
-    if uptime is not None and uptime > 30:
-        hlth_score -= 2
-        hlth_issues.append(f"System uptime {uptime}d (reboot to apply patches)")
-    if sys_health.get("driver_errors", 0) > 0:
-        hlth_score -= 1
-        hlth_issues.append(f"{sys_health['driver_errors']} driver(s) in error state")
-    breakdown["System Health"] = {"score": max(0, hlth_score), "max": 5, "issues": hlth_issues}
-    total_score += max(0, hlth_score)
+    # Each category floors at 0 rather than going negative -- two of them carry
+    # more penalty than they have points.  The scorers run in this order, which
+    # is also the order the breakdown and top_issue are read in.
+    for label, maximum, (score, issues) in (
+        ("Defender",              25, _score_defender(defender_status)),
+        ("Firewall",              20, _score_firewall(firewall_profiles)),
+        ("Device Security",       20, _score_device_security(device_sec)),
+        ("Account Security",      15, _score_account(account_data)),
+        ("App & Browser Control", 15, _score_app_browser(app_control)),
+        ("System Health",          5, _score_system_health(sys_health)),
+    ):
+        breakdown[label] = {"score": max(0, score), "max": maximum, "issues": issues}
+        total_score += max(0, score)
 
     # Overall label
     if total_score >= 90:

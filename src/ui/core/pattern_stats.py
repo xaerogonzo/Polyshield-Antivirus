@@ -18,7 +18,6 @@ from __future__ import annotations
 import sqlite3
 import threading
 from datetime import datetime, timezone
-from pathlib import Path
 from ui.core import paths
 
 _DB_PATH = paths.telemetry_dir() / "pattern_stats.sqlite"
