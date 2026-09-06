@@ -306,6 +306,15 @@ $guiArgs = $commonArgs + @(
     # customtkinter ships its themes and fonts as package data. Without this the
     # app starts and renders with no theme at all.
     "--include-package-data=customtkinter",
+    # PolyBedrock is installed as an editable package during development, which
+    # Nuitka cannot always follow statically -- the __editable__ finder resolves
+    # at import time. Named explicitly rather than as --include-package=polybedrock
+    # because `polybedrock` is a PEP 420 namespace shared by two distributions and
+    # naming the namespace is the less predictable of the two spellings.
+    "--include-module=polybedrock.ps_run",
+    "--include-module=polybedrock.win_security",
+    "--include-module=polybedrock.settings",
+    "--include-module=polybedrock.ui.theme",
     "--output-filename=PolyShield.exe",
     # attach, not disable. `disable` would take stdout with it, and this binary
     # is also its own diagnostic tool -- PolyShield.exe --paths / --engines are
@@ -332,6 +341,14 @@ $serviceArgs = $commonArgs + @(
     "--nofollow-import-to=tkinter",
     "--nofollow-import-to=customtkinter",
     "--nofollow-import-to=ui.views",
+    # ui.core.{ps_run,win_security,settings} are aliases for these; without them
+    # the service compiles cleanly and then cannot start, which is the same
+    # failure --include-package=ui.core exists to prevent.
+    # polybedrock.ui.theme is deliberately absent: it would pull customtkinter back
+    # in past the nofollow above.
+    "--include-module=polybedrock.ps_run",
+    "--include-module=polybedrock.win_security",
+    "--include-module=polybedrock.settings",
     "--output-filename=PolyShieldService.exe"
 )
 
