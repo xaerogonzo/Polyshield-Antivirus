@@ -151,7 +151,16 @@ function Invoke-Nuitka {
 #: closed on a changed file rather than staging whatever arrived.
 $RUNTIME_VERSION = "3.12.7"
 $RUNTIME_SHA256  = "0D57BB6CB078B74D23DBFE91F77D6780D45BED328911609F1F7EE2BA1606BF44"
-$RUNTIME_PKGS    = @("pywin32", "psutil", "watchdog", "kicomav")
+# polybedrock-core, not -ui: the source-mode service imports ui.core.settings
+# and ui.core.win_security, which alias into the core package. It never
+# touches the theme or the capture harness, and pulling -ui in would drag
+# customtkinter into a component that must never need a display.
+#
+# A git URL rather than a version: PolyBedrock is not on PyPI yet. Pin it to a
+# tag before cutting a release -- a build that resolves "whatever master is
+# today" is not reproducible, and this is the interpreter that ships.
+$POLYBEDROCK     = "polybedrock-core @ git+https://github.com/xaerogonzo/PolyBedrock.git#subdirectory=core"
+$RUNTIME_PKGS    = @("pywin32", "psutil", "watchdog", "kicomav", $POLYBEDROCK)
 
 function Get-Sha256 {
     param([string]$Path)
