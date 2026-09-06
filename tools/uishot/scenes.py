@@ -11,37 +11,14 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-_SCENES: dict[str, callable] = {}
-_GOLDEN: set[str] = set()
+from polybedrock.ui.uishot import SceneRegistry
 
-
-def scene(name: str, golden: bool = True):
-    """Register a scene.
-
-    `golden=False` marks a scene whose content depends on live data — feed ages
-    tick over, row counts change after an update. Those shots are documentary:
-    useful to look at, useless as a regression baseline, because they drift for
-    reasons that have nothing to do with the code. A baseline that depends on
-    the wall clock is worse than no baseline, so --check skips them.
-
-    Making a live scene comparable means pinning its inputs (freeze the clock,
-    fix the counts) rather than lowering the tolerance.
-    """
-    def register(fn):
-        _SCENES[name] = fn
-        if golden:
-            _GOLDEN.add(name)
-        return fn
-    return register
-
-
-def all_scenes() -> dict[str, callable]:
-    return dict(_SCENES)
-
-
-def golden_scenes() -> set[str]:
-    """Scene names whose shots are stable enough to compare against goldens."""
-    return set(_GOLDEN)
+#: PolyShield's scenes. The registry itself moved to PolyBedrock so PolyScour
+#: can use the same decorator; every call site below is unchanged.
+REGISTRY = SceneRegistry()
+scene = REGISTRY.scene
+all_scenes = REGISTRY.all_scenes
+golden_scenes = REGISTRY.golden_scenes
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

@@ -67,3 +67,11 @@ pywin32>=307
 
 # Bloom filter for NSRL known-safe lookup (72M hashes → ~150 MB vs 4-6 GB for a plain set)
 pybloom-live>=3.0.0
+
+# Shared Windows substrate — paths, settings, PowerShell, security posture,
+# theming and the uishot capture harness. Extracted so PolyScour does not carry
+# a second copy; PolyShield imports it through the shims in src/ui/core/ and
+# tools/uishot/, so this is NOT optional — without it the app will not start.
+# Not on PyPI yet; installed straight from the repository.
+polybedrock-core @ git+https://github.com/xaerogonzo/PolyBedrock.git#subdirectory=core
+polybedrock-ui   @ git+https://github.com/xaerogonzo/PolyBedrock.git#subdirectory=ui

@@ -151,7 +151,16 @@ function Invoke-Nuitka {
 #: closed on a changed file rather than staging whatever arrived.
 $RUNTIME_VERSION = "3.12.7"
 $RUNTIME_SHA256  = "0D57BB6CB078B74D23DBFE91F77D6780D45BED328911609F1F7EE2BA1606BF44"
-$RUNTIME_PKGS    = @("pywin32", "psutil", "watchdog", "kicomav")
+# polybedrock-core, not -ui: the source-mode service imports ui.core.settings
+# and ui.core.win_security, which alias into the core package. It never
+# touches the theme or the capture harness, and pulling -ui in would drag
+# customtkinter into a component that must never need a display.
+#
+# A git URL rather than a version: PolyBedrock is not on PyPI yet. Pin it to a
+# tag before cutting a release -- a build that resolves "whatever master is
+# today" is not reproducible, and this is the interpreter that ships.
+$POLYBEDROCK     = "polybedrock-core @ git+https://github.com/xaerogonzo/PolyBedrock.git#subdirectory=core"
+$RUNTIME_PKGS    = @("pywin32", "psutil", "watchdog", "kicomav", $POLYBEDROCK)
 
 function Get-Sha256 {
     param([string]$Path)
@@ -306,6 +315,15 @@ $guiArgs = $commonArgs + @(
     # customtkinter ships its themes and fonts as package data. Without this the
     # app starts and renders with no theme at all.
     "--include-package-data=customtkinter",
+    # PolyBedrock is installed as an editable package during development, which
+    # Nuitka cannot always follow statically -- the __editable__ finder resolves
+    # at import time. Named explicitly rather than as --include-package=polybedrock
+    # because `polybedrock` is a PEP 420 namespace shared by two distributions and
+    # naming the namespace is the less predictable of the two spellings.
+    "--include-module=polybedrock.ps_run",
+    "--include-module=polybedrock.win_security",
+    "--include-module=polybedrock.settings",
+    "--include-module=polybedrock.ui.theme",
     "--output-filename=PolyShield.exe",
     # attach, not disable. `disable` would take stdout with it, and this binary
     # is also its own diagnostic tool -- PolyShield.exe --paths / --engines are
@@ -332,6 +350,14 @@ $serviceArgs = $commonArgs + @(
     "--nofollow-import-to=tkinter",
     "--nofollow-import-to=customtkinter",
     "--nofollow-import-to=ui.views",
+    # ui.core.{ps_run,win_security,settings} are aliases for these; without them
+    # the service compiles cleanly and then cannot start, which is the same
+    # failure --include-package=ui.core exists to prevent.
+    # polybedrock.ui.theme is deliberately absent: it would pull customtkinter back
+    # in past the nofollow above.
+    "--include-module=polybedrock.ps_run",
+    "--include-module=polybedrock.win_security",
+    "--include-module=polybedrock.settings",
     "--output-filename=PolyShieldService.exe"
 )
 

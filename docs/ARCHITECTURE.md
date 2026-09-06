@@ -1162,6 +1162,58 @@ application. `emulate_engine` already treats the import as optional and
 `test_emulate_report.py` covers the half that matters — the report parser —
 without an emulator. Speakeasy stays a source-checkout feature.
 
+### PolyBedrock is a hard dependency, and the build has to say so
+
+`src/ui/core/{ps_run,settings,win_security}.py`, `src/ui/theme.py` and
+`tools/uishot/{desktop,capture,session}.py` are **module aliases**, not
+implementations:
+
+```python
+sys.modules[__name__] = _impl        # this module IS polybedrock.<x>
+```
+
+The alias rather than a re-export is deliberate. `tests/` monkeypatches
+attributes on these modules -- `cfg._SETTINGS_FILE`, `ws._run_ps`,
+`ws.get_account_policy`, `ps_run.subprocess` -- and then calls functions that
+read those names. A re-export would bind the patch to one module object while
+the code kept reading another's globals, silently. One object is what every
+existing caller and test already assumes.
+
+Consequence: **PolyShield does not start without PolyBedrock.** Verified by
+stubbing it out -- `from ui.core import ps_run` raises `ModuleNotFoundError`.
+It is not an optional engine and must never be treated like one.
+
+Three places carry the dependency, and all three are needed:
+
+| Where | Why |
+|---|---|
+| `requirements.txt` | the source-checkout install (`scripts/install.bat`) |
+| `requirements-ci.txt` | the test job; the suite imports the shims |
+| `build.ps1` `$RUNTIME_PKGS` | the staged runtime the source-mode service runs from |
+
+`build.ps1` stages **`polybedrock-core` only**. The service imports
+`ui.core.settings` and `ui.core.win_security`, which alias into the core
+package; it never touches the theme or the capture harness, and adding `-ui`
+would pull `customtkinter` into a component that must never need a display.
+
+Nuitka is told about the modules explicitly (`--include-module=polybedrock.*`)
+for both targets. An editable install resolves through an `__editable__` finder
+at *import* time, which the compiler cannot always follow at *compile* time --
+the same failure class `--include-package=ui.core` already exists to prevent.
+Verified by compiling a probe with these flags: the core import succeeds inside
+a compiled standalone binary and the bundled tree contains
+`probe.dist/polybedrock/ui/theme.py`.
+
+> **Before cutting a release: pin the git URL to a tag.**
+>
+> PolyBedrock is not on PyPI, so `requirements*.txt` and `$RUNTIME_PKGS` name
+> `git+https://github.com/xaerogonzo/PolyBedrock.git`. Unpinned, that resolves
+> to whatever `master` happens to be on build day -- and this is the interpreter
+> that ships inside the installer. A release built twice from the same PolyShield
+> tag would not be the same product.
+>
+> Replace with `@vX.Y.Z` in all three places, and bump them together.
+
 ## Path Resolution (v1.15, extended v1.16)
 
 `src/ui/core/paths.py` is the only module that decides where anything lives.
