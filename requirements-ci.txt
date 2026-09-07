@@ -32,6 +32,8 @@ customtkinter>=5.2.2
 # theming and the uishot capture harness. Extracted so PolyScour does not carry
 # a second copy; PolyShield imports it through the shims in src/ui/core/ and
 # tools/uishot/, so this is NOT optional — without it the app will not start.
-# Not on PyPI yet; installed straight from the repository.
-polybedrock-core @ git+https://github.com/xaerogonzo/PolyBedrock.git#subdirectory=core
-polybedrock-ui   @ git+https://github.com/xaerogonzo/PolyBedrock.git#subdirectory=ui
+# Not on PyPI yet, and pinned to a commit for the reason spelled out in
+# requirements.txt. The revision here must match the other two sites;
+# tests/test_substrate_pin.py fails if it does not.
+polybedrock-core @ git+https://github.com/xaerogonzo/PolyBedrock.git@3a5028854bc1f2d4288ba2115fb26d1fbb946c91#subdirectory=core
+polybedrock-ui   @ git+https://github.com/xaerogonzo/PolyBedrock.git@3a5028854bc1f2d4288ba2115fb26d1fbb946c91#subdirectory=ui

@@ -156,10 +156,14 @@ $RUNTIME_SHA256  = "0D57BB6CB078B74D23DBFE91F77D6780D45BED328911609F1F7EE2BA1606
 # touches the theme or the capture harness, and pulling -ui in would drag
 # customtkinter into a component that must never need a display.
 #
-# A git URL rather than a version: PolyBedrock is not on PyPI yet. Pin it to a
-# tag before cutting a release -- a build that resolves "whatever master is
-# today" is not reproducible, and this is the interpreter that ships.
-$POLYBEDROCK     = "polybedrock-core @ git+https://github.com/xaerogonzo/PolyBedrock.git#subdirectory=core"
+# A git URL rather than a version: PolyBedrock is not on PyPI yet. Pinned to a
+# commit, because a build that resolves "whatever master is today" is not
+# reproducible and this is the interpreter that ships -- the same PolyShield
+# tag built twice would not be the same product. A SHA rather than a tag only
+# because PolyBedrock carries no tags yet; it becomes a tag when it has one.
+# Must match requirements{,-ci}.txt -- tests/test_substrate_pin.py fails if
+# the three drift apart.
+$POLYBEDROCK     = "polybedrock-core @ git+https://github.com/xaerogonzo/PolyBedrock.git@3a5028854bc1f2d4288ba2115fb26d1fbb946c91#subdirectory=core"
 $RUNTIME_PKGS    = @("pywin32", "psutil", "watchdog", "kicomav", $POLYBEDROCK)
 
 function Get-Sha256 {

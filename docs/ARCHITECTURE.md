@@ -1204,15 +1204,45 @@ Verified by compiling a probe with these flags: the core import succeeds inside
 a compiled standalone binary and the bundled tree contains
 `probe.dist/polybedrock/ui/theme.py`.
 
-> **Before cutting a release: pin the git URL to a tag.**
->
-> PolyBedrock is not on PyPI, so `requirements*.txt` and `$RUNTIME_PKGS` name
-> `git+https://github.com/xaerogonzo/PolyBedrock.git`. Unpinned, that resolves
-> to whatever `master` happens to be on build day -- and this is the interpreter
-> that ships inside the installer. A release built twice from the same PolyShield
-> tag would not be the same product.
->
-> Replace with `@vX.Y.Z` in all three places, and bump them together.
+#### The pin and the range are two different things
+
+All three sites are **pinned to a commit** -- today
+`@3a5028854bc1f2d4288ba2115fb26d1fbb946c91`. Unpinned, the URL resolved to
+whatever `master` happened to be on build day, and `build.ps1` bakes it into the
+interpreter that ships inside the installer: the same PolyShield tag built twice
+would not have been the same product. It is a SHA rather than a tag only because
+PolyBedrock carries no tags yet; it becomes `@vX.Y.Z` when there is one.
+PolyBedrock's own CI pins its consumers the same way, for the same reason.
+
+A pin is not a compatibility claim, though. PolyShield supports
+**polybedrock-{core,ui} >=0.1,<0.2**, and that cannot be written beside the URL:
+PolyBedrock is not on PyPI, so it arrives as a PEP 508 *direct reference*
+(`name @ url`), and a direct reference may not carry a version specifier --
+`polybedrock-core>=0.1,<0.2 @ git+https://...` is not a parseable requirement.
+That is why PolyScour, which installs the same substrate as an ordinary
+dependency from its `pyproject.toml`, can declare the range and PolyShield
+cannot.
+
+So the range is asserted instead of declared, in `tests/test_substrate_pin.py`,
+against the metadata of whatever is actually installed. That placement earns its
+keep: PolyBedrock's CI installs its own working tree over whatever a consumer
+declared -- deliberately, so a consumer job cannot go green against the wrong
+substrate -- which makes the pin inert there and the range the only thing left
+that can object. PolyBedrock 0.2.0 therefore turns PolyShield's consumer job red
+rather than arriving unannounced.
+
+The same test guards the drift three copies of one URL invite: it fails if any
+site is unpinned, if a site stops declaring the package it should, or if the
+three name different revisions. It reads only live lines -- scanning the raw
+text kept every assertion green after the real requirement was commented out,
+which was found by trying it rather than by reading the code.
+
+> **To bump the substrate:** run this suite against the new revision, then update
+> the SHA in `requirements.txt`, `requirements-ci.txt` and `build.ps1` together
+> -- and, if the major or minor moved, `SUPPORTED_RANGE` in
+> `tests/test_substrate_pin.py`. Bumping is the act of declaring support, so it
+> stays deliberate; automating it would restore the moving target the pin
+> removed.
 
 ## Path Resolution (v1.15, extended v1.16)
 
