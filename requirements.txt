@@ -72,6 +72,15 @@ pybloom-live>=3.0.0
 # theming and the uishot capture harness. Extracted so PolyScour does not carry
 # a second copy; PolyShield imports it through the shims in src/ui/core/ and
 # tools/uishot/, so this is NOT optional — without it the app will not start.
-# Not on PyPI yet; installed straight from the repository.
-polybedrock-core @ git+https://github.com/xaerogonzo/PolyBedrock.git#subdirectory=core
-polybedrock-ui   @ git+https://github.com/xaerogonzo/PolyBedrock.git#subdirectory=ui
+# Not on PyPI yet, so this is a git URL -- and it is pinned to a commit.
+# Unpinned, it resolves to whatever master happens to be on install day,
+# which is the master-vs-master trap PolyBedrock's own CI exists to remove:
+# two moving branches proving each other. Bump it deliberately, as the act
+# of declaring support for a newer substrate.
+#
+# The supported range is polybedrock-{core,ui} >=0.1,<0.2. It cannot be
+# written here -- PEP 508 forbids a version specifier on a direct reference
+# -- so tests/test_substrate_pin.py asserts it against what is installed,
+# and also fails if the three declaration sites drift onto different revs.
+polybedrock-core @ git+https://github.com/xaerogonzo/PolyBedrock.git@3a5028854bc1f2d4288ba2115fb26d1fbb946c91#subdirectory=core
+polybedrock-ui   @ git+https://github.com/xaerogonzo/PolyBedrock.git@3a5028854bc1f2d4288ba2115fb26d1fbb946c91#subdirectory=ui
