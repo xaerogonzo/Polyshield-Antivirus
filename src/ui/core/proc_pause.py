@@ -1,9 +1,22 @@
 """
 Cross-engine process pause/resume helper.
 
-Uses Windows NtSuspendProcess / NtResumeProcess via ctypes — the same mechanism
-ScanController uses for k2.exe, exposed here so other subprocess engines
-(ClamAV, future engines) can share the implementation.
+`suspend_pid` and `resume_pid` moved to ``polybedrock.proc_control`` (PolyScour's
+Game Mode is the second consumer ADR 0003 was waiting for). They are re-exported
+here rather than the whole module being aliased, because `watch_pause_event`
+**stayed**: it is this application's scan-pause convention, its only caller is
+`clamav_engine`, and moving it would have been the speculative shared API the
+extraction gate exists to refuse.
+
+The re-export is by name on purpose. `test_scan_control.py` does::
+
+    monkeypatch.setattr(proc_pause, "suspend_pid", fake)
+
+and expects `_watch` below to call the fake. `_watch` resolves `suspend_pid`
+from this module's globals at call time, so patching the name here is what it
+reads — which is exactly what a `from ... import` binding gives. An aliased
+module (the `ps_run` pattern) would also work, but only by moving
+`watch_pause_event` out with it.
 
 For Python-loop engines (Guardian AI, YARA), pause is implemented in the
 engine's per-file loop via `pause_event.wait()` — no PID involvement needed.
@@ -14,42 +27,11 @@ Convention for pause_event:
     pause_event.set()     → engine resumed
 """
 
-import ctypes
 import subprocess
 import threading
 import time
 
-_PROCESS_SUSPEND_RESUME = 0x0800
-
-
-def suspend_pid(pid: int) -> bool:
-    """Suspend a process by PID via NtSuspendProcess. Returns True on success."""
-    try:
-        handle = ctypes.windll.kernel32.OpenProcess(
-            _PROCESS_SUSPEND_RESUME, False, pid)
-        if not handle:
-            return False
-        try:
-            return ctypes.windll.ntdll.NtSuspendProcess(handle) == 0
-        finally:
-            ctypes.windll.kernel32.CloseHandle(handle)
-    except Exception:
-        return False
-
-
-def resume_pid(pid: int) -> bool:
-    """Resume a process by PID via NtResumeProcess. Returns True on success."""
-    try:
-        handle = ctypes.windll.kernel32.OpenProcess(
-            _PROCESS_SUSPEND_RESUME, False, pid)
-        if not handle:
-            return False
-        try:
-            return ctypes.windll.ntdll.NtResumeProcess(handle) == 0
-        finally:
-            ctypes.windll.kernel32.CloseHandle(handle)
-    except Exception:
-        return False
+from polybedrock.proc_control import resume_pid, suspend_pid  # noqa: F401
 
 
 def watch_pause_event(
