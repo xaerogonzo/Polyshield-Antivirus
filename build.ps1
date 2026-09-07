@@ -323,6 +323,7 @@ $guiArgs = $commonArgs + @(
     "--include-module=polybedrock.ps_run",
     "--include-module=polybedrock.win_security",
     "--include-module=polybedrock.settings",
+    "--include-module=polybedrock.proc_control",
     "--include-module=polybedrock.ui.theme",
     "--output-filename=PolyShield.exe",
     # attach, not disable. `disable` would take stdout with it, and this binary
@@ -350,14 +351,16 @@ $serviceArgs = $commonArgs + @(
     "--nofollow-import-to=tkinter",
     "--nofollow-import-to=customtkinter",
     "--nofollow-import-to=ui.views",
-    # ui.core.{ps_run,win_security,settings} are aliases for these; without them
-    # the service compiles cleanly and then cannot start, which is the same
-    # failure --include-package=ui.core exists to prevent.
+    # ui.core.{ps_run,win_security,settings} alias these, and ui.core.proc_pause
+    # imports proc_control by name. Without them the service compiles cleanly
+    # and then cannot start -- the same failure --include-package=ui.core
+    # exists to prevent.
     # polybedrock.ui.theme is deliberately absent: it would pull customtkinter back
     # in past the nofollow above.
     "--include-module=polybedrock.ps_run",
     "--include-module=polybedrock.win_security",
     "--include-module=polybedrock.settings",
+    "--include-module=polybedrock.proc_control",
     "--output-filename=PolyShieldService.exe"
 )
 
