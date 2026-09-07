@@ -324,6 +324,7 @@ $guiArgs = $commonArgs + @(
     "--include-module=polybedrock.win_security",
     "--include-module=polybedrock.settings",
     "--include-module=polybedrock.proc_control",
+    "--include-module=polybedrock.startup",
     "--include-module=polybedrock.ui.theme",
     "--output-filename=PolyShield.exe",
     # attach, not disable. `disable` would take stdout with it, and this binary
@@ -361,6 +362,7 @@ $serviceArgs = $commonArgs + @(
     "--include-module=polybedrock.win_security",
     "--include-module=polybedrock.settings",
     "--include-module=polybedrock.proc_control",
+    "--include-module=polybedrock.startup",
     "--output-filename=PolyShieldService.exe"
 )
 
