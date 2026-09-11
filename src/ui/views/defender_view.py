@@ -23,7 +23,7 @@ class DefenderView(ctk.CTkFrame):
 
     def _build(self):
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(3, weight=1)
+        self.grid_rowconfigure(6, weight=1)
 
         # ── Title ──
         header = ctk.CTkFrame(self, fg_color="transparent")
@@ -112,17 +112,35 @@ class DefenderView(ctk.CTkFrame):
             scan_frame, text="", font=ctk.CTkFont(size=12), text_color=theme.color("subtext"))
         self._scan_status_lbl.grid(row=1, column=2, padx=8, sticky="ew")
 
+        # ── Coexistence ──
+        #
+        # PolyShield cannot register with Windows Security Center: that route is
+        # Microsoft's antimalware-partner path (ELAM signing / the Microsoft
+        # Virus Initiative) and is not open to an unsigned application shipped as
+        # source. Nothing here tries. What this line does is stop the product
+        # from implying otherwise -- and, when Defender's real-time protection is
+        # off, say what PolyShield is actually covering instead of leaving the
+        # user to assume.
+        self._coexist_frame = ctk.CTkFrame(self, corner_radius=8,
+                                           fg_color=theme.color("card2"))
+        self._coexist_frame.grid(row=4, column=0, sticky="ew", padx=24, pady=(4, 8))
+        self._coexist_frame.grid_columnconfigure(0, weight=1)
+        self._coexist_lbl = ctk.CTkLabel(
+            self._coexist_frame, text="", anchor="w", justify="left",
+            font=ctk.CTkFont(size=11), wraplength=820)
+        self._coexist_lbl.grid(row=0, column=0, sticky="w", padx=14, pady=9)
+
         # ── Threat history ──
         ctk.CTkLabel(self, text="Threat History",
                      font=ctk.CTkFont(size=14, weight="bold")).grid(
-            row=4, column=0, sticky="w", padx=24, pady=(8, 4))
+            row=5, column=0, sticky="w", padx=24, pady=(8, 4))
 
         self._threats_scroll = ctk.CTkScrollableFrame(
             self, corner_radius=8, fg_color=theme.color("card"))
-        self._threats_scroll.grid(row=5, column=0, sticky="nsew",
+        self._threats_scroll.grid(row=6, column=0, sticky="nsew",
                                    padx=24, pady=(0, 16))
         self._threats_scroll.grid_columnconfigure((0, 1), weight=1)
-        self.grid_rowconfigure(5, weight=1)
+        self.grid_rowconfigure(6, weight=1)
 
         self._no_threat_lbl = ctk.CTkLabel(
             self._threats_scroll, text="No threat history found",
@@ -140,7 +158,76 @@ class DefenderView(ctk.CTkFrame):
 
         threading.Thread(target=_load, daemon=True).start()
 
+    #: (defender_rtp_on, polyshield_state) -> (text, colour).
+    #: polyshield_state is "service" | "watcher" | "none".
+    _COEXISTENCE = {
+        (True, "service"): (
+            "PolyShield runs alongside Microsoft Defender. Defender remains your "
+            "registered antivirus in Windows Security; PolyShield adds real-time "
+            "file, process and network monitoring on top of it.", "subtext"),
+        (True, "watcher"): (
+            "PolyShield runs alongside Microsoft Defender. Defender remains your "
+            "registered antivirus in Windows Security; PolyShield is monitoring "
+            "files in-process \u2014 process and network monitoring need the "
+            "background service.", "subtext"),
+        (True, "none"): (
+            "PolyShield runs alongside Microsoft Defender, which is doing the "
+            "real-time protection right now: PolyShield's own watcher and service "
+            "are both stopped.", "subtext"),
+        (False, "service"): (
+            "Defender real-time protection is off. PolyShield's background service "
+            "is running, but PolyShield is NOT a Windows Security Center-registered "
+            "antivirus \u2014 Windows still lists Defender as your registered AV.",
+            "#ffb86c"),
+        (False, "watcher"): (
+            "Defender real-time protection is off. PolyShield is monitoring files "
+            "only \u2014 no process or network monitoring \u2014 and it does not "
+            "replace Defender as your Windows-registered antivirus.", "#ffb86c"),
+        (False, "none"): (
+            "Defender real-time protection is off and PolyShield is not providing "
+            "file, process or network protection either. Nothing on this machine "
+            "is scanning in real time.", "#ff5555"),
+    }
+
+    def _polyshield_state(self) -> str:
+        from ui.core import service_client as svc
+        from ui.core import watcher as wtch
+
+        try:
+            if svc.is_service_running():
+                return "service"
+        except Exception:
+            pass
+        try:
+            if wtch.is_running():
+                return "watcher"
+        except Exception:
+            pass
+        return "none"
+
+    def _apply_coexistence(self, status: dict) -> None:
+        """Say what is true, including when it is unflattering.
+
+        Computed from the same two facts the Dashboard banner uses, so the two
+        pages cannot disagree about whether PolyShield is protecting anything --
+        which is how a reassuring sentence ends up on a machine that has nothing
+        running.
+        """
+        if not status.get("available"):
+            self._coexist_lbl.configure(
+                text="Defender status is unavailable, so PolyShield cannot say what "
+                     "is covering this machine. PolyShield is not a Windows Security "
+                     "Center-registered antivirus in any case.",
+                text_color=theme.color("subtext"))
+            return
+        rtp = bool(status.get("RealTimeProtectionEnabled"))
+        text, colour = self._COEXISTENCE[(rtp, self._polyshield_state())]
+        self._coexist_lbl.configure(
+            text=text,
+            text_color=theme.color(colour) if not colour.startswith("#") else colour)
+
     def _apply(self, status: dict, threats: list):
+        self._apply_coexistence(status)
         if not status.get("available"):
             for lbl in self._status_labels.values():
                 lbl.configure(text="N/A", text_color=theme.color("subtext"))
