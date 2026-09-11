@@ -66,6 +66,142 @@ def _sc(*args: str) -> tuple[int, str]:
         return -1, str(exc)
 
 
+# ── Registration side: how the service is configured once it exists ──────────
+#
+# `sc`, not pywin32, for these two.  pywin32 registers the service but has no
+# convenient expression for failure actions -- ChangeServiceConfig2 with
+# SERVICE_CONFIG_FAILURE_ACTIONS wants a hand-built struct and SC_MANAGER write
+# access -- and `installer/register_service.ps1` already shells out to the same
+# two commands.  Two implementations of one policy is the drift this module
+# exists to prevent, so there is one, here, returned as data.
+
+#: Recovery policy.  Kept beside the start type because they answer the same
+#: question -- "is this service actually going to be running tomorrow?".
+_FAILURE_RESET_S = "86400"
+_FAILURE_ACTIONS = "restart/60000/restart/60000/restart/60000"
+
+
+def service_startup_commands(delayed: bool = False) -> list[list[str]]:
+    r"""The `sc` commands that make the service start at boot and stay started.
+
+    Returned as data rather than run, because three callers need it in three
+    shapes: `configure_service_startup` runs it here, `ServiceView` renders it
+    into an elevated shell, and `tests/test_service_startup.py` compares it
+    against the literals still hard-coded in `scripts/service/setup_service.bat`
+    and `installer/register_service.ps1`.
+
+    `start= auto` is belt to `polyshield_service._with_startup_flag`'s braces:
+    the flag covers a fresh registration, this covers an upgrade over an older
+    one, where the existing start type survives the reinstall.
+
+    The failure actions are the half `register_service.ps1:119` had and the
+    developer script did not.  Its comment is the reason, and it is right: a
+    service that dies once and stays dead is a protection product that is off
+    without saying so.
+
+    Note the spelling.  `sc config` wants ``delayed-auto``; pywin32's
+    ``--startup`` wants ``delayed``.  They are not interchangeable.
+    """
+    return [
+        ["config", SERVICE_NAME, "start=", "delayed-auto" if delayed else "auto"],
+        ["failure", SERVICE_NAME, "reset=", _FAILURE_RESET_S,
+         "actions=", _FAILURE_ACTIONS],
+    ]
+
+
+def configure_service_startup(delayed: bool = False) -> tuple[bool, str]:
+    """Apply :func:`service_startup_commands`. Needs elevation.
+
+    **An absent service is a failure here, not a no-op.**  Every other function
+    in this module treats "it was not there" as success, because they are
+    teardown and a rollback runs after an unknown amount of an install.  This
+    one is the opposite: its only caller runs it immediately after a
+    registration it believes succeeded, so absence means the registration did
+    not happen and saying "ok" would hide it.  Use :func:`service_state` to
+    *ask* whether the service is there.
+    """
+    for args in service_startup_commands(delayed):
+        code, out = _sc(*args)
+        if code == _SC_SERVICE_ABSENT:
+            return False, f"{SERVICE_NAME} is not installed"
+        if code != 0:
+            return False, f"sc {args[0]} failed: {out or code}"
+    return True, ("start= delayed-auto, restart-on-failure configured" if delayed
+                  else "start= auto, restart-on-failure configured")
+
+
+#: `Start` under HKLM\SYSTEM\CurrentControlSet\Services\<name>.  Read from the
+#: registry rather than parsed out of `sc qc` because sc's field labels and value
+#: names are localised -- the same reason `unregister_scheduled_task` refuses to
+#: read schtasks' failure text.  These numbers are not.
+_START_TYPE_NAMES = {0: "boot", 1: "system", 2: "auto", 3: "manual", 4: "disabled"}
+
+#: win32service.SERVICE_* current-state codes, likewise numeric.
+_STATE_NAMES = {
+    1: "stopped", 2: "start_pending", 3: "stop_pending", 4: "running",
+    5: "continue_pending", 6: "pause_pending", 7: "paused",
+}
+
+#: ERROR_SERVICE_NEVER_STARTED.  Its own diagnosis: the service is registered,
+#: the SCM has simply never been asked to launch it since boot -- which is what
+#: a DEMAND_START registration looks like from the outside.
+SERVICE_NEVER_STARTED = 1077
+
+
+def service_state() -> dict:
+    r"""What the SCM actually holds for this service.
+
+    Start type and current state are **two separate facts** and are never
+    collapsed here.  `auto` + `stopped` is not "Automatic" and is not "healthy";
+    it is a service that is meant to run and is not running, which is a
+    different problem from one registered `manual`.  Callers render both.
+
+    Returns::
+
+        {"present": bool,
+         "start_type": "auto"|"delayed-auto"|"manual"|"disabled"|"boot"|
+                       "system"|"absent"|"unknown",
+         "state": "running"|"stopped"|...|"absent"|"unknown",
+         "exit_code": int}
+
+    Never raises.  Every unreadable answer degrades to "unknown" rather than to
+    a confident wrong one -- a status line that lies is worse than one that
+    admits it does not know.
+    """
+    info = {"present": False, "start_type": "absent", "state": "absent",
+            "exit_code": 0}
+
+    import winreg
+
+    key_path = rf"SYSTEM\CurrentControlSet\Services\{SERVICE_NAME}"
+    try:
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
+            info["present"] = True
+            try:
+                start = winreg.QueryValueEx(key, "Start")[0]
+                info["start_type"] = _START_TYPE_NAMES.get(start, "unknown")
+            except OSError:
+                info["start_type"] = "unknown"
+            if info["start_type"] == "auto":
+                try:
+                    if winreg.QueryValueEx(key, "DelayedAutostart")[0]:
+                        info["start_type"] = "delayed-auto"
+                except OSError:
+                    pass            # absent means not delayed, which is the default
+    except OSError:
+        return info                 # not registered: both fields stay "absent"
+
+    try:
+        import win32serviceutil
+
+        status = win32serviceutil.QueryServiceStatus(SERVICE_NAME)
+        info["state"] = _STATE_NAMES.get(status[1], "unknown")
+        info["exit_code"] = int(status[3])
+    except Exception:
+        info["state"] = "unknown"
+    return info
+
+
 def unregister_service() -> tuple[bool, str]:
     """Stop and delete the Windows service. Absent is success.
 

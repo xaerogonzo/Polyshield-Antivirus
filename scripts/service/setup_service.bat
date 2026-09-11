@@ -171,10 +171,20 @@ if errorlevel 1 (
 echo   [OK] Service registered: PolyShield Realtime Protection
 
 REM -- Step 7: Start the service --------------------------------------------
-REM  Also force start= auto in case the service was previously registered as
-REM  DEMAND_START (manual).  win32serviceutil install sets the type from the
-REM  _svc_start_type_ attribute, but sc config ensures it on upgrade paths too.
+REM  Force start= auto on the UPGRADE path: an existing DEMAND_START
+REM  registration survives a reinstall.  This comment used to say that
+REM  win32serviceutil reads _svc_start_type_ -- it does not, and never did
+REM  (win32serviceutil.py:221 defaults startType to SERVICE_DEMAND_START).
+REM  polyshield_service._with_startup_flag() now injects --startup, so a
+REM  fresh registration is already correct and this line covers a reinstall.
 sc config PolyShieldService start= auto >nul 2>&1
+REM  Recovery actions. installer/register_service.ps1 has always set these and
+REM  this script never did, so a developer install was the one deployment where
+REM  a service that died once stayed dead -- which is a protection product that
+REM  is off without saying so. Kept in step with
+REM  ui.core.integration.service_startup_commands(), which
+REM  tests/test_service_startup.py compares against these two literals.
+sc failure PolyShieldService reset= 86400 actions= restart/60000/restart/60000/restart/60000 >nul 2>&1
 echo  [8/8] Starting service...
 sc start PolyShieldService >nul 2>&1
 timeout /t 3 /nobreak >nul

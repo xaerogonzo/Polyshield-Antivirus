@@ -175,3 +175,270 @@ def test_the_service_still_asks_for_auto_start():
     assert _svc()._STARTUP_FLAG_BY_TYPE[win32service.SERVICE_AUTO_START] == "auto"
 
 
+# ══ Configuring the service once it exists ═══════════════════════════════════
+#
+# `--startup auto` covers a fresh registration.  `sc config` covers the upgrade
+# path, where an existing DEMAND_START registration survives a reinstall.  The
+# failure actions cover the case nobody was covering: a service that dies once
+# and stays dead is a protection product that is off without saying so.
+
+
+def _it():
+    from ui.core import integration
+
+    return integration
+
+
+def test_the_startup_commands_are_config_then_failure():
+    cmds = _it().service_startup_commands()
+    assert [c[0] for c in cmds] == ["config", "failure"]
+
+
+def test_sc_wants_its_arguments_as_separate_tokens():
+    r"""`reset=` and its value are two argv entries, not one.
+
+    `sc` parses ``reset=`` as a keyword and the next token as its value; writing
+    ``reset=86400`` is what it does NOT accept.  Easy to "tidy up" into a bug
+    that only shows on a real machine.
+    """
+    config, failure = _it().service_startup_commands()
+    assert config[-2:] == ["start=", "auto"]
+    assert "reset=" in failure and failure[failure.index("reset=") + 1] == "86400"
+    assert "actions=" in failure
+    assert failure[failure.index("actions=") + 1].count("restart/") == 3
+
+
+def test_delayed_uses_the_sc_spelling_not_the_pywin32_one():
+    """`sc config` says ``delayed-auto``; pywin32's ``--startup`` says
+    ``delayed``.  Each half of the system must speak its own dialect."""
+    config = _it().service_startup_commands(delayed=True)[0]
+    assert config[-2:] == ["start=", "delayed-auto"]
+
+
+def test_configuring_an_absent_service_is_a_failure(monkeypatch):
+    """The one function in integration.py where "it was not there" is NOT
+    success.
+
+    Every teardown step treats absence as success, because a rollback runs after
+    an unknown amount of an install.  This runs immediately after a registration
+    the caller believes succeeded, so absence means the registration did not
+    happen -- and reporting "ok" would hide exactly the failure it exists to
+    catch.
+    """
+    it = _it()
+    monkeypatch.setattr(it, "_sc", lambda *a: (it._SC_SERVICE_ABSENT, ""))
+    ok, msg = it.configure_service_startup()
+    assert ok is False
+    assert "not installed" in msg
+
+
+def test_a_failing_sc_step_stops_and_names_itself(monkeypatch):
+    it = _it()
+    seen = []
+
+    def fake_sc(*args):
+        seen.append(args[0])
+        return (0, "") if args[0] == "config" else (5, "Access is denied.")
+
+    monkeypatch.setattr(it, "_sc", fake_sc)
+    ok, msg = it.configure_service_startup()
+    assert ok is False and "failure" in msg
+    assert seen == ["config", "failure"]
+
+
+def test_all_steps_succeeding_reports_the_mode(monkeypatch):
+    it = _it()
+    monkeypatch.setattr(it, "_sc", lambda *a: (0, ""))
+    assert it.configure_service_startup() == (
+        True, "start= auto, restart-on-failure configured")
+    ok, msg = it.configure_service_startup(delayed=True)
+    assert ok and "delayed-auto" in msg
+
+
+# ══ The drift guard ══════════════════════════════════════════════════════════
+#
+# Three places configure this service and they are written in three languages:
+# a batch file, a PowerShell script, and now Python.  Leaving all three in place
+# is only defensible if something notices when they stop agreeing.
+
+_ROOT = pathlib.Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("rel", [
+    "scripts/service/setup_service.bat",
+    "installer/register_service.ps1",
+])
+def test_the_shell_installers_still_agree_with_the_python_policy(rel):
+    it = _it()
+    text = (_ROOT / rel).read_text(encoding="utf-8", errors="replace")
+    config, failure = it.service_startup_commands()
+
+    assert "start= auto" in text, f"{rel} no longer sets start= auto"
+    assert f"reset= {failure[failure.index('reset=') + 1]}" in text, \
+        f"{rel} has a different failure-reset window"
+    assert failure[failure.index("actions=") + 1] in text, \
+        f"{rel} has a different recovery action list"
+
+
+# ══ service_state: two facts, never one ══════════════════════════════════════
+
+
+def test_state_reports_start_type_and_state_separately():
+    """`auto` + stopped is not "Automatic" and is not "healthy".  Collapsing
+    them is how a registered-and-never-started service reads as fine."""
+    state = _it().service_state()
+    assert set(state) == {"present", "start_type", "state", "exit_code"}
+
+
+def test_an_unregistered_service_reads_as_absent_on_both_axes(monkeypatch):
+    import winreg
+
+    it = _it()
+
+    def boom(*a, **k):
+        raise FileNotFoundError(2, "nope")
+
+    monkeypatch.setattr(winreg, "OpenKey", boom)
+    state = it.service_state()
+    assert state == {"present": False, "start_type": "absent",
+                     "state": "absent", "exit_code": 0}
+
+
+def test_an_unreadable_start_type_degrades_to_unknown(monkeypatch):
+    """A status line that lies is worse than one that admits it does not know."""
+    import contextlib
+    import winreg
+
+    it = _it()
+
+    @contextlib.contextmanager
+    def fake_open(*a, **k):
+        yield object()
+
+    monkeypatch.setattr(winreg, "OpenKey", fake_open)
+    monkeypatch.setattr(winreg, "QueryValueEx",
+                        lambda *a: (_ for _ in ()).throw(OSError("denied")))
+    monkeypatch.setattr(
+        "win32serviceutil.QueryServiceStatus",
+        lambda *a: (_ for _ in ()).throw(RuntimeError("no")))
+    state = it.service_state()
+    assert state["present"] is True
+    assert state["start_type"] == "unknown"
+    assert state["state"] == "unknown"
+
+
+def test_never_started_has_its_own_code():
+    assert _it().SERVICE_NEVER_STARTED == 1077
+
+
+# ══ The elevated helper ══════════════════════════════════════════════════════
+#
+# Moving the helper out of the read-only install directory must not trade it for
+# a user-writable file that a privileged process then executes.
+
+
+def _sv():
+    import ui.views.service_view as service_view
+
+    return service_view
+
+
+def test_the_elevated_script_is_never_written_to_disk(tmp_path, monkeypatch):
+    r"""The whole reason this stopped being a `.bat`.
+
+    Between writing an executable file and elevating, any process running as the
+    user can replace its contents -- and the user's own account is exactly the
+    boundary elevation exists to cross.  A random filename does not close a
+    window whose path is handed to the elevating call.
+    """
+    sv = _sv()
+    captured = {}
+
+    def fake_run(argv, **kw):
+        captured["argv"] = argv
+        # Everything the helper created must be data. If any of it is something
+        # Windows would execute, the fix did not work.
+        for path in tmp_path.rglob("*"):
+            assert path.suffix.lower() not in {".bat", ".cmd", ".ps1", ".vbs",
+                                               ".exe", ".psm1"}, path
+        raise RuntimeError("stop here; the launch itself is not under test")
+
+    monkeypatch.setattr(sv.tempfile, "mkdtemp",
+                        lambda **kw: str(tmp_path / "helper"))
+    (tmp_path / "helper").mkdir()
+    monkeypatch.setattr(sv.subprocess, "run", fake_run)
+
+    out = {}
+    sv._run_elevated([sv._step("x", ["sc.exe", "query", "X"])],
+                     done_cb=lambda ok, detail: out.update(ok=ok, detail=detail))
+
+    assert out["ok"] is False                      # the launch was sabotaged
+    joined = " ".join(captured["argv"])
+    assert "-EncodedCommand" in joined
+    assert "RunAs" in joined
+
+
+def test_the_script_is_recoverable_from_the_encoded_command():
+    """Round-trip, so the encoding cannot silently produce a script Windows
+    would run as something other than what was written."""
+    import base64
+
+    sv = _sv()
+    script = sv._build_elevated_script(
+        [sv._step("x", ["sc.exe", "query", "PolyShieldService"])],
+        pathlib.Path("C:/tmp/r.json"))
+    b64 = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    assert base64.b64decode(b64).decode("utf-16-le") == script
+
+
+def test_a_later_step_cannot_run_after_an_earlier_one_failed():
+    sv = _sv()
+    script = sv._build_elevated_script(
+        [sv._step("first", ["a.exe"]), sv._step("second", ["b.exe"])],
+        pathlib.Path("C:/tmp/r.json"))
+    # Both calls are guarded on $failed, so the second is unreachable once the
+    # first has set it. Without this, an install that succeeded and a config
+    # that failed would still be followed by a start, and the UI would report
+    # the last command's result as the sequence's.
+    assert script.count("if (-not $failed) {") == 2
+
+
+def test_a_command_that_never_runs_is_not_a_success():
+    r"""If the executable cannot be found, PowerShell raises into the error
+    stream and never touches $LASTEXITCODE.  Seeding it with 0 -- the obvious
+    thing to write -- reports a command that never ran as a step that passed."""
+    sv = _sv()
+    script = sv._build_elevated_script(
+        [sv._step("x", ["a.exe"])], pathlib.Path("C:/tmp/r.json"))
+    assert "$global:LASTEXITCODE = -1" in script
+    assert "$LASTEXITCODE = 0" not in script
+
+
+def test_the_generated_script_never_invokes_bare_sc():
+    r"""In PowerShell `sc` is an ALIAS FOR Set-Content.
+
+    `& 'sc' 'config' 'PolyShieldService' 'start=' 'auto'` therefore resolves to
+    a cmdlet, not to the service controller -- silently, with a plausible exit
+    code.  installer/register_service.ps1 writes `& sc.exe` for this reason.
+    """
+    sv = _sv()
+    assert sv._SC_EXE == "sc.exe"
+    script = sv._build_elevated_script(
+        [sv._step("x", [sv._SC_EXE, "query", "X"])],
+        pathlib.Path("C:/tmp/r.json"))
+    assert "& 'sc.exe'" in script
+    assert "& 'sc'" not in script
+
+
+def test_single_quotes_in_a_path_cannot_break_out_of_the_literal():
+    sv = _sv()
+    assert sv._ps_lit("C:/it's here/x.exe") == "'C:/it''s here/x.exe'"
+
+
+def test_the_install_button_no_longer_names_sys_executable():
+    r"""`sys.executable` happens to be right when the GUI runs it and names a
+    file that DOES NOT EXIST in a Nuitka build -- the trap paths.py exists to
+    remove, sitting in the one code path that registers a Windows service."""
+    src = (_ROOT / "src" / "ui" / "views" / "service_view.py").read_text(
+        encoding="utf-8")
+    assert "sys.executable" not in src

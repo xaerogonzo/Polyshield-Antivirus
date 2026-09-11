@@ -1,5 +1,8 @@
+import base64
+import json
+import shutil
 import subprocess
-import sys
+import tempfile
 import threading
 from pathlib import Path
 
@@ -7,7 +10,9 @@ import customtkinter as ctk
 
 from ui.core import service_client as svc
 import ui.theme as theme
+from ui.core import integration
 from ui.core import paths
+from ui.core import settings as cfg
 
 _GREEN  = "#50fa7b"
 _RED    = "#ff5555"
@@ -18,31 +23,160 @@ _CARD   = "#1a1a2e"
 _ROW0   = "#1e1e2e"
 _ROW1   = "#232340"
 
-_SVC_NAME   = "PolyShieldService"
-_SVC_SCRIPT = str(paths.resource_root() / "polyshield_service.py")
-_PYTHON_EXE = sys.executable
+_SVC_NAME = "PolyShieldService"
+
+# How long to wait for the elevated helper.  60s was not enough: the sequence is
+# a service registration, a start, and Defender scanning python.exe in the
+# middle of it.  Matches _fix_crash, which already learned this.
+_ELEVATED_TIMEOUT_S = 180
+
+# `sc` exit codes that mean "already in the state this step wanted".
+_SC_ABSENT          = 1060   # the specified service does not exist
+_SC_NOT_STARTED     = 1062   # the service has not been started
+_SC_ALREADY_RUNNING = 1056
+
+# Defender blocking python.exe as the SCM memory-maps it. Its own banner.
+_EXIT_DEFENDER_BLOCKED = 1067
+
+# What each `integration.service_startup_commands()` entry is called in the UI.
+# `sc.exe`, never bare `sc`.  In PowerShell `sc` is an ALIAS FOR Set-Content,
+# so `& 'sc' 'config' ...` resolves to a cmdlet that will happily accept the
+# arguments and do something entirely unrelated.  register_service.ps1 already
+# writes `& sc.exe` for this reason.
+_SC_EXE = "sc.exe"
+
+_SC_STEP_LABELS = {
+    "config":  "set the start type",
+    "failure": "set the recovery actions",
+}
 
 
-def _run_elevated(args: list[str], done_cb):
-    """Run a list of commands elevated (UAC prompt) via a batch file, then call done_cb()."""
-    bat_lines = "\n".join(args) + "\n"
-    bat_path = Path(__file__).resolve().parent / "_svc_helper.bat"
-    bat_path.write_text(bat_lines, encoding="ascii")
+def _step(label, argv, ok_codes=(0,), delay_after=0.0):
+    """One elevated command, and what counts as success for it."""
+    return {"label": label, "argv": [str(a) for a in argv],
+            "ok": tuple(ok_codes), "delay": float(delay_after)}
+
+
+def _ps_lit(value) -> str:
+    """A PowerShell single-quoted literal.  Doubling is the only escape needed."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _build_elevated_script(steps, result_path) -> str:
+    """The script the elevated shell runs.
+
+    Stops at the first step whose exit code is outside that step's allow-list,
+    and records which one.  Without this, an `install` that succeeded followed
+    by a `config` that failed would still run `start`, and the UI would report
+    the result of the last command as though it were the result of the
+    sequence.
+    """
+    lines = ["$ErrorActionPreference = 'Continue'", "$failed = $null"]
+    for st in steps:
+        exe, rest = st["argv"][0], st["argv"][1:]
+        call = "& " + _ps_lit(exe)
+        if rest:
+            call += " " + " ".join(_ps_lit(a) for a in rest)
+        ok_list = ",".join(str(c) for c in st["ok"])
+        lines += [
+            "if (-not $failed) {",
+            # A sentinel, not 0.  If the executable cannot be found, PowerShell
+            # raises into the error stream (captured by 2>&1) and NEVER TOUCHES
+            # $LASTEXITCODE -- so seeding it with 0 would report a command that
+            # never ran as a step that succeeded.
+            "  $global:LASTEXITCODE = -1",
+            "  $o = (" + call + " 2>&1 | Out-String)",
+            "  $c = $LASTEXITCODE",
+            "  if (@(" + ok_list + ") -notcontains $c) {",
+            "    $failed = @{ step = " + _ps_lit(st["label"])
+            + "; code = $c; detail = $o }",
+            "  }",
+        ]
+        if st["delay"]:
+            lines.append("  Start-Sleep -Seconds " + str(st["delay"]))
+        lines.append("}")
+    lines += [
+        "if ($failed) { $payload = @{ ok = $false; step = $failed.step; "
+        "code = $failed.code; detail = $failed.detail } }",
+        "else { $payload = @{ ok = $true; step = ''; code = 0; detail = '' } }",
+        "$payload | ConvertTo-Json -Compress | Set-Content -Path "
+        + _ps_lit(str(result_path)) + " -Encoding UTF8",
+    ]
+    return "\n".join(lines)
+
+
+def _run_elevated(steps, done_cb):
+    r"""Run `steps` elevated, stopping at the first failure.
+
+    **The script is never written to disk.**  Until v1.17 this function wrote a
+    ``.bat`` next to ``__file__`` and asked an elevated shell to execute it,
+    which had two problems.  The lesser is that the install directory is
+    read-only in a packaged build.  The greater one is the obvious fix: moving
+    that file to ``%TEMP%`` produces a *user-writable file that a privileged
+    process then executes*, and the window between writing it and elevating is
+    exactly the boundary elevation exists to cross.  A random filename does not
+    close a window whose path is handed to the elevating call.
+
+    So the script travels as ``-EncodedCommand`` (base64 UTF-16LE) and lives
+    only on the elevated process's command line.  There is no artefact to swap.
+
+    The result comes back through a JSON file, which is a different class of
+    thing: it is *data*, never executed, and the worst a tampered copy can do is
+    put a wrong sentence in the status bar.
+
+    Calls ``done_cb(ok: bool, detail: str)``.  The old signature took no
+    arguments and fired identically whether the sequence succeeded, failed, or
+    was never elevated at all because the prompt was dismissed -- so the UI
+    re-probed, saw that nothing had changed, and said nothing.
+    """
+    tmpdir = Path(tempfile.mkdtemp(prefix="polyshield-svc-"))
+    result_path = tmpdir / "result.json"
     try:
-        subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             f"Start-Process -FilePath '{bat_path}' -Verb RunAs -Wait"],
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            timeout=60,
-        )
-    except Exception:
-        pass
-    finally:
+        script = _build_elevated_script(steps, result_path)
+        b64 = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+        inner = ("@('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',"
+                 + _ps_lit(b64) + ")")
+        launch = ("Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait "
+                  "-WindowStyle Hidden -ArgumentList " + inner)
         try:
-            bat_path.unlink()
-        except Exception:
-            pass
-    done_cb()
+            subprocess.run(
+                ["powershell", "-NoProfile", "-Command", launch],
+                capture_output=True, text=True,
+                # DEVNULL, not inherited: this view runs under pythonw, which
+                # has no console and therefore no valid standard handles.
+                stdin=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                timeout=_ELEVATED_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            done_cb(False,
+                    f"the elevated step did not finish in {_ELEVATED_TIMEOUT_S}s")
+            return
+        except Exception as exc:
+            done_cb(False, f"could not elevate: {exc}")
+            return
+
+        if not result_path.exists():
+            # Nothing wrote a result: the prompt was declined, or the elevated
+            # shell never started.  Both are failures, and neither is silent.
+            done_cb(False, "the elevated step reported nothing "
+                           "(the prompt may have been declined)")
+            return
+        try:
+            res = json.loads(result_path.read_text(encoding="utf-8-sig"))
+        except Exception as exc:
+            done_cb(False, f"unreadable result from the elevated step: {exc}")
+            return
+
+        if res.get("ok"):
+            done_cb(True, "")
+        else:
+            first = (res.get("detail") or "").strip().splitlines()
+            done_cb(False,
+                    f"{res.get('step')} failed (exit {res.get('code')})"
+                    + (f": {first[0]}" if first else ""))
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 class ServiceView(ctk.CTkFrame):
@@ -93,10 +227,32 @@ class ServiceView(ctk.CTkFrame):
             font=ctk.CTkFont(size=11), text_color=theme.color("subtext"))
         self._stats_lbl.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 4))
 
+        # ── Start type ──
+        # Its own line, beside the state and never folded into it. They are two
+        # separate facts: `auto` + stopped is a service that is meant to be
+        # running and is not, which is a different problem from one registered
+        # `manual` -- and for a year this page showed neither, which is how a
+        # DEMAND_START registration sat here unnoticed reporting exit code 1077.
+        starttype_row = ctk.CTkFrame(status_card, fg_color="transparent")
+        starttype_row.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 6))
+        starttype_row.grid_columnconfigure(0, weight=1)
+
+        self._starttype_lbl = ctk.CTkLabel(
+            starttype_row, text="", anchor="w",
+            font=ctk.CTkFont(size=11), text_color=theme.color("subtext"))
+        self._starttype_lbl.grid(row=0, column=0, sticky="w")
+
+        self._fix_start_btn = ctk.CTkButton(
+            starttype_row, text="Set to Automatic", width=140, height=26,
+            fg_color="#7a3800", hover_color="#5a2800",
+            font=ctk.CTkFont(size=11), command=self._fix_start_type)
+        self._fix_start_btn.grid(row=0, column=1, padx=(12, 0))
+        self._fix_start_btn.grid_remove()
+
         # ── Crash banner (hidden until exit-1067 detected) ──
         self._crash_banner = ctk.CTkFrame(
             status_card, fg_color="#3d1a08", corner_radius=6)
-        self._crash_banner.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 10))
+        self._crash_banner.grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 10))
         self._crash_banner.grid_columnconfigure(0, weight=1)
         self._crash_banner.grid_remove()
 
@@ -192,12 +348,42 @@ class ServiceView(ctk.CTkFrame):
                 status = svc.get_status() or {}
             else:
                 status = {}
+            # Registration facts come from the SCM's own record rather than from
+            # parsing `sc` output: sc's field labels are localised, and this page
+            # has to be right on a machine that is not in English.
+            state = integration.service_state()
             if self.winfo_exists():
-                self.after(0, lambda r=running, s=status: self._apply_status(r, s))
+                self.after(0, lambda r=running, s=status, t=state:
+                           self._apply_status(r, s, t))
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _apply_status(self, running: bool, status: dict):
+    _START_TYPE_TEXT = {
+        "auto":         ("Start type: Automatic", _GREEN, False),
+        "delayed-auto": ("Start type: Automatic (delayed start)", _GREEN, False),
+        "manual":       ("Start type: Manual — will not start at boot", _AMBER, True),
+        "disabled":     ("Start type: Disabled — the SCM will refuse to start it",
+                         _RED, True),
+        "boot":         ("Start type: Boot", _GREEN, False),
+        "system":       ("Start type: System", _GREEN, False),
+    }
+
+    def _apply_start_type(self, state: dict):
+        if not state.get("present"):
+            self._starttype_lbl.configure(text="")
+            self._fix_start_btn.grid_remove()
+            return
+        text, color, offer_fix = self._START_TYPE_TEXT.get(
+            state.get("start_type"), ("Start type: unknown", _GREY, False))
+        self._starttype_lbl.configure(text=text, text_color=color)
+        if offer_fix and not self._busy:
+            self._fix_start_btn.grid()
+        else:
+            self._fix_start_btn.grid_remove()
+
+    def _apply_status(self, running: bool, status: dict, state: dict | None = None):
+        state = state or {}
+        self._apply_start_type(state)
         if running:
             uptime = status.get("uptime_seconds", 0)
             h, m, s = uptime // 3600, (uptime % 3600) // 60, uptime % 60
@@ -231,25 +417,24 @@ class ServiceView(ctk.CTkFrame):
                     for ev in events_list:
                         self._add_event_row(ev)
         else:
-            # Determine if installed (service exists in SCM) or not
-            try:
-                result = subprocess.run(
-                    ["sc", "query", _SVC_NAME],
-                    capture_output=True, text=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW
-                )
-                installed = _SVC_NAME.lower() in result.stdout.lower()
-            except Exception:
-                installed = False
-
-            if installed:
+            if state.get("present"):
                 self._state_lbl.configure(text="● STOPPED", text_color=_AMBER)
-                self._stats_lbl.configure(text="Service is installed but not running.")
+                # 1077 is its own diagnosis: registered, and the SCM has never
+                # been asked to launch it since this boot. That is what a
+                # manual-start registration looks like from the outside, and
+                # saying so is more use than "installed but not running".
+                if state.get("exit_code") == integration.SERVICE_NEVER_STARTED:
+                    self._stats_lbl.configure(
+                        text="Installed, and has not started since this boot.")
+                else:
+                    self._stats_lbl.configure(
+                        text="Service is installed but not running.")
                 self._install_btn.configure(state="disabled")
                 self._uninstall_btn.configure(state="normal")
                 self._start_btn.configure(state="normal")
                 self._stop_btn.configure(state="disabled")
-                self._check_crash_code_async()
+                self._show_crash_banner(
+                    state.get("exit_code") == _EXIT_DEFENDER_BLOCKED)
             else:
                 self._state_lbl.configure(text="● NOT INSTALLED", text_color=_GREY)
                 self._stats_lbl.configure(text="Install the service for persistent real-time protection.")
@@ -345,16 +530,36 @@ class ServiceView(ctk.CTkFrame):
     # ── Control actions ───────────────────────────────────────────────────────
 
     def _install(self):
+        """Register the service the way the shell installers already do.
+
+        Four steps, not two.  `polyshield_service.py install` now injects
+        `--startup auto` itself, but `sc config` is still needed on the upgrade
+        path -- an existing DEMAND_START registration survives a reinstall --
+        and the failure actions have never been set from here at all.  The
+        commands come from `integration.service_startup_commands()` so that this
+        button, `setup_service.bat` and `register_service.ps1` cannot drift into
+        three different ideas of how the service should be configured.
+        """
         if self._busy:
             return
+        try:
+            install_argv = paths.service_install_argv("install")
+        except paths.StagedRuntimeMissing as exc:
+            self._status_cb(f"Cannot install: {exc}")
+            return
+
         self._set_busy(True)
         self._status_cb("Installing service (UAC prompt will appear)…")
 
+        delayed = bool(cfg.get("service_start_delayed"))
+        steps = [_step("register the service", install_argv)]
+        steps += [_step(_SC_STEP_LABELS.get(c[0], c[0]), [_SC_EXE, *c])
+                  for c in integration.service_startup_commands(delayed)]
+        steps.append(_step("start the service", [_SC_EXE, "start", _SVC_NAME],
+                           (0, _SC_ALREADY_RUNNING)))
+
         def _run():
-            _run_elevated([
-                f'"{_PYTHON_EXE}" "{_SVC_SCRIPT}" install',
-                f'sc start {_SVC_NAME}',
-            ], done_cb=self._after_action)
+            _run_elevated(steps, done_cb=self._after_action)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -366,12 +571,24 @@ class ServiceView(ctk.CTkFrame):
         if self._event_stop:
             self._event_stop.set()
 
+        try:
+            remove_argv = paths.service_install_argv("remove")
+        except paths.StagedRuntimeMissing as exc:
+            self._set_busy(False)
+            self._status_cb(f"Cannot uninstall: {exc}")
+            return
+
+        steps = [
+            # `sc stop` RETURNS BEFORE THE SERVICE HAS STOPPED, hence the delay;
+            # 1062/1060 mean it was already stopped or already gone, which is
+            # the state this step wanted.
+            _step("stop the service", [_SC_EXE, "stop", _SVC_NAME],
+                  (0, _SC_NOT_STARTED, _SC_ABSENT), delay_after=2),
+            _step("remove the registration", remove_argv),
+        ]
+
         def _run():
-            _run_elevated([
-                f'sc stop {_SVC_NAME}',
-                'timeout /t 2 /nobreak > nul',
-                f'"{_PYTHON_EXE}" "{_SVC_SCRIPT}" remove',
-            ], done_cb=self._after_action)
+            _run_elevated(steps, done_cb=self._after_action)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -383,7 +600,8 @@ class ServiceView(ctk.CTkFrame):
 
         def _run():
             _run_elevated(
-                [f'sc start {_SVC_NAME}'],
+                [_step("start the service", [_SC_EXE, "start", _SVC_NAME],
+                       (0, _SC_ALREADY_RUNNING))],
                 done_cb=self._after_action,
             )
 
@@ -399,12 +617,32 @@ class ServiceView(ctk.CTkFrame):
 
         def _run():
             _run_elevated(
-                [
-                    f'sc stop {_SVC_NAME}',
-                    'timeout /t 2 /nobreak > nul',
-                ],
+                [_step("stop the service", [_SC_EXE, "stop", _SVC_NAME],
+                       (0, _SC_NOT_STARTED), delay_after=2)],
                 done_cb=self._after_action,
             )
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _fix_start_type(self):
+        """Repair a registration that will not start at boot.
+
+        Reachable from the start-type row, which is the only place in the app
+        that has ever said out loud that a service can be installed and still
+        never run.
+        """
+        if self._busy:
+            return
+        self._set_busy(True)
+        self._status_cb("Setting the service to start automatically…")
+        delayed = bool(cfg.get("service_start_delayed"))
+        steps = [_step(_SC_STEP_LABELS.get(c[0], c[0]), [_SC_EXE, *c])
+                 for c in integration.service_startup_commands(delayed)]
+        steps.append(_step("start the service", [_SC_EXE, "start", _SVC_NAME],
+                           (0, _SC_ALREADY_RUNNING)))
+
+        def _run():
+            _run_elevated(steps, done_cb=self._after_action)
 
         threading.Thread(target=_run, daemon=True).start()
 
@@ -424,7 +662,7 @@ class ServiceView(ctk.CTkFrame):
                      text_color=theme.color("dim"), font=ctk.CTkFont(size=12)).grid(
             row=0, column=0, pady=20)
 
-    def _after_action(self):
+    def _after_action(self, ok: bool = True, detail: str = ""):
         import time; time.sleep(1)
         # Install, uninstall, start and stop all land here, and all four change
         # the answer every other screen caches. Drop it so the next caller
@@ -434,23 +672,11 @@ class ServiceView(ctk.CTkFrame):
         self._set_busy(False)
         if self.winfo_exists():
             self.after(0, self._update_status_async)
-            self.after(0, lambda: self._status_cb(""))
-
-    def _check_crash_code_async(self):
-        """Check sc queryex for WIN32_EXIT_CODE 1067 (Defender blocked python.exe)."""
-        def _run():
-            try:
-                result = subprocess.run(
-                    ["sc", "queryex", _SVC_NAME],
-                    capture_output=True, text=True,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                )
-                crashed = "1067" in result.stdout
-            except Exception:
-                crashed = False
-            if self.winfo_exists():
-                self.after(0, lambda c=crashed: self._show_crash_banner(c))
-        threading.Thread(target=_run, daemon=True).start()
+            # A failure keeps its sentence.  The old version cleared the status
+            # bar either way, so a declined elevation prompt and a completed
+            # install were indistinguishable from the outside.
+            msg = "" if ok else f"Failed: {detail}"
+            self.after(0, lambda m=msg: self._status_cb(m))
 
     def _show_crash_banner(self, show: bool):
         if show:
@@ -485,6 +711,6 @@ class ServiceView(ctk.CTkFrame):
         state = "disabled" if busy else "normal"
         for btn in (self._install_btn, self._uninstall_btn,
                     self._start_btn, self._stop_btn, self._refresh_btn,
-                    self._fix_crash_btn):
+                    self._fix_crash_btn, self._fix_start_btn):
             if self.winfo_exists():
                 self.after(0, lambda b=btn, s=state: b.configure(state=s))
