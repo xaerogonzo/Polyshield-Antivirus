@@ -52,7 +52,7 @@ echo   Checkout: %ROOT%
 echo.
 
 REM -- Step 0: pre-flight ----------------------------------------------------
-echo  [1/5] Checking the virtual environment...
+echo  [1/4] Checking the virtual environment...
 if not exist "%PY%" (
     echo.
     echo  [ERROR] kicomav_env not found.
@@ -76,14 +76,27 @@ if /i "!ANSWER!"=="y" set "WITH_STARTUP=--with-startup"
 echo.
 
 REM -- Step 2: the service ---------------------------------------------------
-echo  [2/5] Registering the realtime protection service...
-call "%~dp0service\setup_service.bat" >nul 2>&1
-sc query PolyShieldService >nul 2>&1
+REM
+REM  Output is NOT redirected. It used to be `>nul 2>&1`, which threw away every
+REM  message setup_service.bat prints AND hid its "Press any key" prompt, so a
+REM  run that did nothing at all looked exactly like one that worked.
+echo  [2/4] Registering the realtime protection service...
+call "%~dp0service\setup_service.bat" /nopause
 if errorlevel 1 (
-    echo   [FAIL] the service did not register
+    echo   [FAIL] setup_service.bat reported an error
     goto :ROLLBACK
 )
-echo   [OK] PolyShieldService registered
+
+REM  Verify the OUTCOME, not the existence. `sc query` succeeds for a service
+REM  that was already registered, so it passes whether or not this step did
+REM  anything -- which is how a DEMAND_START registration survived a run of this
+REM  script and reported success. Ask what the SCM actually holds instead.
+"%PY%" -c "import sys;sys.path[:0]=['src','.'];from ui.core import integration as i;s=i.service_state();print('   start type:',s['start_type'],'| state:',s['state']);sys.exit(0 if s['present'] and s['start_type'] in ('auto','delayed-auto') else 1)"
+if errorlevel 1 (
+    echo   [FAIL] the service is not set to start automatically
+    goto :ROLLBACK
+)
+echo   [OK] PolyShieldService registered and set to start at boot
 
 REM -- Step 3: the per-user integrations -------------------------------------
 REM  These run in the ELEVATED context, which is fine when the person running
@@ -96,23 +109,20 @@ REM  entry would all land in the admin's profile, and the person who installed
 REM  would never see them. Fixing that means doing these three steps BEFORE
 REM  self-elevating and letting setup_service.bat raise its own prompt, which is
 REM  a restructure of this script rather than a flag.
-echo  [3/5] Registering the Explorer menu !WITH_STARTUP!...
+echo  [3/4] Registering the Explorer menu, Settings ^> Apps entry !WITH_STARTUP!...
 "%PY%" "%APP%" --register !WITH_STARTUP!
 if errorlevel 1 (
     echo   [FAIL] the per-user integrations did not register
     goto :ROLLBACK
 )
 
-REM -- Step 4: the uninstall entry -------------------------------------------
-echo  [4/5] Adding PolyShield to Settings ^> Apps...
-"%PY%" "%APP%" --register-uninstall-entry
-if errorlevel 1 (
-    echo   [FAIL] the uninstall entry could not be written
-    goto :ROLLBACK
-)
+REM  Step 3 already wrote the Settings > Apps entry: register_all() includes it.
+REM  Calling --register-uninstall-entry again here was a second, independent way
+REM  for an already-successful registration to fail and trigger a rollback of
+REM  work that had gone fine. The flag stays for repairing one on its own.
 
-REM -- Step 5: report --------------------------------------------------------
-echo  [5/5] Done.
+REM -- Step 4: report --------------------------------------------------------
+echo  [4/4] Done.
 echo.
 echo  Registered against this checkout:
 echo    - PolyShieldService, set to start automatically

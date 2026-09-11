@@ -23,7 +23,13 @@ if errorlevel 1 (
     exit /b
 )
 
-REM -- Handle /remove argument -----------------------------------------------
+REM -- Handle arguments -------------------------------------------------------
+REM  /nopause exists because install_dev.bat calls this script and cannot answer
+REM  a "Press any key" prompt. Swallowing the output instead -- which is what it
+REM  used to do -- hid the prompt AND every error this script prints.
+set "NOPAUSE="
+if /i "%1"=="/nopause" set "NOPAUSE=1"
+if /i "%2"=="/nopause" set "NOPAUSE=1"
 if /i "%1"=="/remove" goto UNINSTALL
 if /i "%1"=="/uninstall" goto UNINSTALL
 
@@ -212,7 +218,7 @@ echo  ^|                                                      ^|
 echo  ^|  In PolyShield UI — click "Service" in the sidebar.  ^|
 echo  +-------------------------------------------------------+
 echo.
-pause
+if not defined NOPAUSE pause
 exit /b 0
 
 
