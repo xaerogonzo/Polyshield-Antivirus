@@ -130,8 +130,13 @@ class PolyShieldService(win32serviceutil.ServiceFramework):
         "Monitors watched folders for malware; "
         "persists when the PolyShield UI is closed."
     )
-    # Start automatically with Windows — users should not need to manually
+    # Start automatically with Windows -- users should not need to manually
     # start the service after each reboot.
+    #
+    # pywin32 DOES NOT READ THIS ATTRIBUTE.  It is made load-bearing by
+    # _with_startup_flag() at the bottom of this file, which reads it and
+    # injects the `--startup` option pywin32 does look at.  See the comment
+    # there for the measurement.
     _svc_start_type_   = win32service.SERVICE_AUTO_START
     # How the SCM should start us. In a checkout that is the venv interpreter
     # plus this script; in a build it is the executable itself, which reaches
@@ -950,6 +955,105 @@ class PolyShieldService(win32serviceutil.ServiceFramework):
         log.info("Service stopped.")
 
 
+# ── Service registration: making --startup real ─────────────────────────────
+#
+# `_svc_start_type_` on the class above LOOKS like it controls the SCM start
+# type.  It does not: pywin32 never reads that attribute.  Measured in the
+# installed copy at kicomav_env/Lib/site-packages/win32/lib/win32serviceutil.py:
+#
+#     :203  def InstallService(..., startType=None, ...)
+#     :221      if startType is None:
+#     :222          startType = win32service.SERVICE_DEMAND_START
+#     :852      InstallService(..., startType=startup, ...)
+#
+# where `startup` is filled ONLY from an explicit `--startup` option.  So
+# `polyshield_service.py install` had always registered a DEMAND_START service,
+# and scripts/service/setup_service.bat and installer/register_service.ps1 were
+# both papering over it afterwards with `sc config ... start= auto`.  The in-app
+# Install button did not -- which is how a machine ends up reporting
+# START_TYPE 3 and WIN32_EXIT_CODE 1077 (the service has never been started).
+#
+# Rather than add a fourth compensating call site, the flag is injected here, at
+# the one point every caller funnels through.  That is what makes
+# `_svc_start_type_` load-bearing after all: this function is what reads it.
+
+_STARTUP_FLAG_BY_TYPE = {
+    win32service.SERVICE_AUTO_START:   "auto",
+    win32service.SERVICE_DEMAND_START: "manual",
+    win32service.SERVICE_DISABLED:     "disabled",
+}
+
+#: The verbs that register or re-register the service -- the only ones for which
+#: pywin32 consults `startType` at all.
+_INSTALL_VERBS = frozenset({"install", "update"})
+
+#: Long options HandleCommandLine's getopt spec declares as taking a value.
+#: Needed to locate the command verb: in `--username bob install` the verb is
+#: the third token, not the second.
+_VALUE_OPTIONS = frozenset({
+    "--password", "--username", "--startup",
+    "--perfmonini", "--perfmondll", "--wait",
+})
+
+
+def _find_verb_index(argv):
+    """Index of the command verb in `argv`, or None if there is not one.
+
+    Mirrors getopt's own walk rather than searching for a known word: getopt
+    stops at the first non-option, and a long option may carry its value inline
+    (``--startup=auto``) or in the following token (``--startup auto``).
+    """
+    i = 1
+    while i < len(argv):
+        tok = argv[i]
+        if tok == "--":                       # getopt: end of options
+            return i + 1 if i + 1 < len(argv) else None
+        if tok.startswith("-") and tok != "-":
+            if "=" not in tok and tok in _VALUE_OPTIONS:
+                i += 2                        # the option and its separate value
+            else:
+                i += 1
+            continue
+        return i
+    return None
+
+
+def _with_startup_flag(argv, start_type=None, delayed=False):
+    """Return `argv` with ``--startup <mode>`` inserted before the command verb.
+
+    Pure: touches no registry, calls no pywin32, returns a new list.
+
+    Returned unchanged when
+
+      * there is no command verb, or it is not one that registers the service;
+      * the caller already passed ``--startup`` in any form.  **An explicitly
+        requested mode is never overridden** -- including a spelling pywin32
+        will reject, which is better rejected loudly by pywin32 than silently
+        rewritten here.
+
+    Inserted BEFORE the verb because getopt stops at the first non-option, so an
+    option written after the verb is never parsed.
+
+    The two spellings are not interchangeable: pywin32 wants
+    ``--startup delayed``; ``sc config`` wants ``start= delayed-auto``.
+    """
+    argv = list(argv)
+    idx = _find_verb_index(argv)
+    if idx is None or argv[idx] not in _INSTALL_VERBS:
+        return argv
+    if any(a == "--startup" or a.startswith("--startup=") for a in argv[1:idx]):
+        return argv
+    if delayed:
+        mode = "delayed"
+    else:
+        if start_type is None:
+            start_type = PolyShieldService._svc_start_type_
+        mode = _STARTUP_FLAG_BY_TYPE.get(start_type)
+        if mode is None:            # unknown type -- do not guess on the caller's behalf
+            return argv
+    return argv[:idx] + ["--startup", mode] + argv[idx:]
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -982,4 +1086,17 @@ if __name__ == "__main__":
         servicemanager.PrepareToHostSingle(PolyShieldService)
         servicemanager.StartServiceCtrlDispatcher()
     else:
-        win32serviceutil.HandleCommandLine(PolyShieldService)
+        # `service_start_delayed` is read here rather than baked in so a slow
+        # machine can choose delayed-auto without the parity claim in
+        # installer/register_service.ps1 becoming a lie.  A settings read must
+        # never be what stops a service from registering, hence the guard.
+        _delayed = False
+        try:
+            from ui.core import settings as _cfg
+            _delayed = bool(_cfg.get("service_start_delayed"))
+        except Exception:
+            pass
+        win32serviceutil.HandleCommandLine(
+            PolyShieldService,
+            argv=_with_startup_flag(sys.argv, delayed=_delayed),
+        )

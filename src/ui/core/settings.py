@@ -84,6 +84,11 @@ _DEFAULTS: dict = {
     # Launch behaviour
     "launch_as_admin": False,        # Rewrite launch_ui.vbs to use RunAs (takes effect next launch)
     "context_menu_enabled": False,   # Windows Explorer right-click "Scan with PolyShield"
+    # Registered with the SCM as start= delayed-auto instead of plain auto.
+    # Read by polyshield_service.py at registration time. Default off: an AV
+    # that is off for the first two minutes of every boot is off during the
+    # window that matters most.
+    "service_start_delayed": False,
     # Windows Service IPC
     "service_port": 52614,
     # Scan pipeline engine toggles
