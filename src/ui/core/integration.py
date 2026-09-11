@@ -244,6 +244,13 @@ def unregister_context_menu() -> tuple[bool, str]:
     return shell_ext.unregister()
 
 
+def unregister_startup_entry() -> tuple[bool, str]:
+    """Remove the per-user login entry. Already-absent is success."""
+    from ui.core import autostart
+
+    return autostart.unregister()
+
+
 def unregister_scheduled_task() -> tuple[bool, str]:
     """Remove the scheduled scan. Already-absent is success.
 
@@ -271,8 +278,68 @@ def unregister_scheduled_task() -> tuple[bool, str]:
 _STEPS = (
     ("service", "unregister_service"),
     ("context menu", "unregister_context_menu"),
+    ("startup entry", "unregister_startup_entry"),
     ("scheduled task", "unregister_scheduled_task"),
 )
+
+
+def register_context_menu() -> tuple[bool, str]:
+    """Add the Explorer verb. Per-user; no elevation."""
+    from ui.core import shell_ext
+
+    return shell_ext.register()
+
+
+def register_startup_entry() -> tuple[bool, str]:
+    """Add the per-user login entry. Per-user; no elevation."""
+    from ui.core import autostart
+
+    return autostart.register()
+
+
+#: Registration steps, and whether each is on by default.
+#:
+#: The startup entry is the odd one out and the tuple says so structurally
+#: rather than in a comment: ``register_all()`` with no argument does not create
+#: it.  PolyShield writing a Run value into somebody's registry because they ran
+#: an installer that mentioned "integration" is precisely the behaviour this
+#: feature is not allowed to have, and the way that rule gets broken is a future
+#: caller reading ``register_all`` as "register everything".
+_REGISTER_STEPS = (
+    ("context menu", "register_context_menu", True),
+    ("startup entry", "register_startup_entry", False),
+)
+
+
+def register_all(startup: bool = False, log=None) -> dict:
+    """Create the machine-level integrations. Mirror of :func:`unregister_all`.
+
+    ``startup`` must be passed explicitly to get a login entry.  There is no way
+    to opt in by omission, and the setup flow passes the answer the user
+    actually gave rather than a default of its own.
+
+    The **service is deliberately not here.**  It needs elevation and has its own
+    script; folding it in would make this whole call require administrator
+    rights for the sake of two registry writes that do not.
+    """
+    report = {"ok": True, "steps": {}}
+    for name, attr, on_by_default in _REGISTER_STEPS:
+        if attr == "register_startup_entry" and not startup:
+            report["steps"][name] = {"ok": True, "detail": "not requested"}
+            if log:
+                log(f"[SKIP] {name}: not requested")
+            continue
+        if not on_by_default and not startup:
+            continue
+        try:
+            ok, detail = globals()[attr]()
+        except Exception as exc:
+            ok, detail = False, f"raised: {exc!r}"
+        report["steps"][name] = {"ok": ok, "detail": detail}
+        report["ok"] = report["ok"] and ok
+        if log:
+            log(f"[{'OK  ' if ok else 'FAIL'}] {name}: {detail}")
+    return report
 
 
 def unregister_all(log=None) -> dict:

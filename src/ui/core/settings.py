@@ -84,6 +84,14 @@ _DEFAULTS: dict = {
     # Launch behaviour
     "launch_as_admin": False,        # Rewrite launch_ui.vbs to use RunAs (takes effect next launch)
     "context_menu_enabled": False,   # Windows Explorer right-click "Scan with PolyShield"
+    # Records the user's INTENT for the login entry. The registry is the state:
+    # ui.core.autostart.is_registered() is what the Settings switch reads, the
+    # same way the context-menu switch reads shell_ext. Off by default, and only
+    # ever written by the Settings toggle or by a setup flow the user answered.
+    "start_with_windows": False,
+    # Quick Scan two minutes after a --minimized launch. Meaningless without
+    # start_with_windows, which is why the switch is greyed out without it.
+    "scan_on_login": False,
     # Registered with the SCM as start= delayed-auto instead of plain auto.
     # Read by polyshield_service.py at registration time. Default off: an AV
     # that is off for the first two minutes of every boot is off during the

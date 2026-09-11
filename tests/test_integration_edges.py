@@ -23,6 +23,11 @@ import urllib.error
 
 import pytest
 
+from ui.core import paths
+
+#: The repository itself. Several assertions below deliberately read the real
+#: tree rather than a fixture -- a mocked path cannot notice a file that moved.
+_ROOT_DIR = pathlib.Path(__file__).resolve().parents[1]
 from ui.core import scheduler as sch
 from ui.core import shell_ext
 from ui.core import startup_scanner as ss
@@ -54,7 +59,9 @@ class _FakeWinreg:
     HKEY_CURRENT_USER = "HKCU"
     HKEY_LOCAL_MACHINE = "HKLM"
     REG_SZ = 1
+    REG_BINARY = 3
     KEY_READ = 0x20019
+    KEY_SET_VALUE = 0x0002
     KEY_WOW64_64KEY = 0x0100
 
     def __init__(self):
@@ -102,12 +109,38 @@ class _FakeWinreg:
             raise FileNotFoundError(2, "The system cannot find the file specified")
         del self.tree[(hive, subkey)]
 
+    # -- single values --
+    # autostart writes a VALUE under a key Windows owns, so it needs these three
+    # where shell_ext only ever needed whole keys.
+    def QueryValueEx(self, key, name):
+        values = self.tree[(self._hive_of(key.path), key.path)]
+        if name not in values:
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+        data = values[name]
+        return data, (self.REG_BINARY if isinstance(data, (bytes, bytearray))
+                      else self.REG_SZ)
+
+    def DeleteValue(self, key, name):
+        values = self.tree[(self._hive_of(key.path), key.path)]
+        if name not in values:
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+        del values[name]
+
 
 @pytest.fixture
 def registry(monkeypatch):
+    """One fake hive, shared by every module that writes to the real one.
+
+    shell_ext and autostart both live in HKCU and a teardown removes both, so
+    giving them separate fakes would let a test tear down against a tree nothing
+    was written to and call that a pass.
+    """
+    from ui.core import autostart
+
     fake = _FakeWinreg()
-    monkeypatch.setattr(shell_ext, "winreg", fake)
-    monkeypatch.setattr(shell_ext, "_HKCU", fake.HKEY_CURRENT_USER)
+    for mod in (shell_ext, autostart):
+        monkeypatch.setattr(mod, "winreg", fake)
+        monkeypatch.setattr(mod, "_HKCU", fake.HKEY_CURRENT_USER)
     return fake
 
 
@@ -885,3 +918,260 @@ def test_the_setup_script_is_launched_when_present(tmp_path, monkeypatch):
 
     assert launched == [["cmd", "/c", str(bat)]]
     assert view.said and "launched" in view.said[0].lower()
+
+
+# ══ autostart ════════════════════════════════════════════════════════════════
+#
+# The login entry, modelled on the Explorer verb above and tested against the
+# same failures, because they are the same two registry writes with different
+# consequences: a bad verb produces a menu item that does nothing, a bad Run
+# value produces a product that quietly does not start.
+
+
+def _as():
+    from ui.core import autostart
+
+    return autostart
+
+
+def test_the_startup_command_carries_the_minimized_flag(registry):
+    """Without it the login launch opens a 1200x760 window over whatever the
+    user was about to do, at every single sign-in."""
+    ok, _msg = _as().register()
+    assert ok
+    assert "--minimized" in _as().current_command()
+
+
+def test_the_startup_command_is_never_taken_from_sys_executable(registry, monkeypatch):
+    r"""The sibling of test_the_menu_icon_is_never_taken_from_sys_executable.
+
+    In a Nuitka build sys.executable names a python.exe beside the real binary
+    that DOES NOT EXIST, and this value has to still be valid months from now.
+    """
+    monkeypatch.setattr(sys, "executable", r"C:\nowhere\python.exe")
+    monkeypatch.setattr(paths, "is_frozen", lambda: True)
+    monkeypatch.setattr(paths, "running_executable",
+                        lambda: pathlib.Path(r"C:\Program Files\PolyShield\PolyShield.exe"))
+    _as().register()
+    cmd = _as().current_command()
+    assert r"C:\nowhere" not in cmd
+    assert "PolyShield.exe" in cmd
+
+
+@pytest.mark.parametrize("exe_dir", [
+    r"C:\Program Files\PolyShield",
+    r"C:\Users\a b\Poly Shield (x64)",
+    r"C:\tools\Poly&Shield",
+])
+def test_the_startup_command_survives_an_awkward_directory(
+        registry, monkeypatch, exe_dir):
+    monkeypatch.setattr(paths, "is_frozen", lambda: True)
+    monkeypatch.setattr(paths, "running_executable",
+                        lambda: pathlib.Path(exe_dir) / "PolyShield.exe")
+    _as().register()
+    cmd = _as().current_command()
+    # One parseable command line: the exe quoted as a unit, the flag outside it.
+    assert cmd == f'"{exe_dir}\\PolyShield.exe" "--minimized"'
+
+
+def test_registering_twice_leaves_one_value(registry):
+    a = _as()
+    a.register()
+    a.register()
+    key = (registry.HKEY_CURRENT_USER, a._RUN_KEY)
+    assert list(registry.tree[key]) == ["PolyShield"]
+
+
+def test_unregister_is_quiet_when_nothing_is_registered(registry):
+    ok, msg = _as().unregister()
+    assert ok is True
+    assert "no startup entry" in msg
+
+
+def test_unregister_removes_the_value_and_not_the_key(registry):
+    r"""...\CurrentVersion\Run belongs to Windows and holds every other
+    application's entry. Deleting the key would take all of them."""
+    a = _as()
+    a.register()
+    key = (registry.HKEY_CURRENT_USER, a._RUN_KEY)
+    registry.tree[key]["SomebodyElse"] = "other.exe"
+
+    assert a.unregister()[0] is True
+    assert key in registry.tree
+    assert list(registry.tree[key]) == ["SomebodyElse"]
+
+
+def test_is_registered_treats_an_unreadable_key_as_absent(registry):
+    """shell_ext.is_registered's lesson, applied before it can be relearned: a
+    PermissionError here propagates out of SettingsView._build()."""
+    a = _as()
+    a.register()
+    registry.open_errors[a._RUN_KEY] = PermissionError(5, "Access is denied")
+    assert a.is_registered() is False
+
+
+def test_is_current_is_false_after_the_checkout_moves(registry, monkeypatch):
+    """The failure mode a source install has and a packaged one does not.
+
+    The value embeds an absolute path. Rename the folder and Windows says
+    nothing at every subsequent login; the switch in Settings would otherwise
+    sit there reading ON over a command that cannot run.
+    """
+    a = _as()
+    monkeypatch.setattr(paths, "is_frozen", lambda: True)
+    monkeypatch.setattr(paths, "running_executable",
+                        lambda: pathlib.Path(r"D:\Projects\PolyShield\PolyShield.exe"))
+    a.register()
+    assert a.is_current() is True
+
+    monkeypatch.setattr(paths, "running_executable",
+                        lambda: pathlib.Path(r"D:\Archive\PolyShield\PolyShield.exe"))
+    assert a.is_registered() is True
+    assert a.is_current() is False
+
+
+# ── StartupApproved: what Task Manager writes ────────────────────────────────
+#
+# The byte layout below is not folklore. It was dumped from a live machine on
+# which two entries had been switched off in Task Manager and the rest had not:
+#
+#     OneDrive        02 00 00 00 00 00 00 00 00 00 00 00   enabled
+#     SecurityHealth  06 00 00 00 00 00 00 00 00 00 00 00   enabled
+#     Discord         03 00 00 00 d4 37 9b 21 e2 9e dc 01   DISABLED
+#     VoicemodV3      03 00 00 00 b4 9b 0a d0 ab e4 dc 01   DISABLED
+#
+# Bit 0 of the first byte is set for exactly the disabled pair, and the trailing
+# eight bytes are a FILETIME of when that happened. An earlier draft had it as
+# bit 1, which is the value most often repeated online and would have reported
+# every enabled entry as switched off.
+
+_OBSERVED_ENABLED = bytes.fromhex("02 00 00 00 00 00 00 00 00 00 00 00".replace(" ", ""))
+_OBSERVED_ENABLED_HKLM = bytes.fromhex("060000000000000000000000")
+_OBSERVED_DISABLED = bytes.fromhex("03000000d4379b21e29edc01")
+
+
+def _approve(registry, value):
+    a = _as()
+    key = (registry.HKEY_CURRENT_USER, a._APPROVED_KEY)
+    registry.tree.setdefault(key, {})["PolyShield"] = value
+
+
+@pytest.mark.parametrize(("blob", "expected"), [
+    (_OBSERVED_ENABLED, "enabled"),
+    (_OBSERVED_ENABLED_HKLM, "enabled"),
+    (_OBSERVED_DISABLED, "disabled"),
+])
+def test_startup_approval_matches_the_observed_bytes(registry, blob, expected):
+    _approve(registry, blob)
+    assert _as().startup_approval() == expected
+
+
+def test_no_approval_record_means_enabled(registry):
+    """The normal case: nobody has ever touched the Startup tab for this entry."""
+    assert _as().startup_approval() == "enabled"
+
+
+@pytest.mark.parametrize("blob", [b"", b"\x03", b"\x03\x00"])
+def test_a_short_value_is_unknown_not_disabled(registry, blob):
+    """If Windows changes the representation, saying "we cannot tell" beats
+    telling somebody their startup entry is off when it is not."""
+    _approve(registry, blob)
+    assert _as().startup_approval() == "unknown"
+
+
+def test_a_wrong_type_is_unknown_not_disabled(registry):
+    _approve(registry, "not binary at all")
+    assert _as().startup_approval() == "unknown"
+
+
+def test_startup_approval_never_raises(registry):
+    a = _as()
+    registry.open_errors[a._APPROVED_KEY] = PermissionError(5, "denied")
+    assert a.startup_approval() == "unknown"
+
+
+# ── status precedence ────────────────────────────────────────────────────────
+
+
+def test_a_user_disabled_entry_outranks_a_stale_path(registry, monkeypatch):
+    """Both are true at once and only one is worth saying.
+
+    Offering Repair here would fix a path the user did not ask about and leave
+    the entry still not firing, because they are the one who switched it off.
+    """
+    a = _as()
+    monkeypatch.setattr(paths, "is_frozen", lambda: True)
+    monkeypatch.setattr(paths, "running_executable",
+                        lambda: pathlib.Path(r"D:\Old\PolyShield.exe"))
+    a.register()
+    monkeypatch.setattr(paths, "running_executable",
+                        lambda: pathlib.Path(r"D:\New\PolyShield.exe"))
+    _approve(registry, _OBSERVED_DISABLED)
+
+    assert a.is_current() is False
+    assert a.status() == a.STATUS_USER_DISABLED
+
+
+def test_status_walks_the_whole_ladder(registry, monkeypatch):
+    a = _as()
+    assert a.status() == a.STATUS_NOT_REGISTERED
+    monkeypatch.setattr(paths, "is_frozen", lambda: True)
+    monkeypatch.setattr(paths, "running_executable",
+                        lambda: pathlib.Path(r"D:\Old\PolyShield.exe"))
+    a.register()
+    assert a.status() == a.STATUS_OK
+    monkeypatch.setattr(paths, "running_executable",
+                        lambda: pathlib.Path(r"D:\New\PolyShield.exe"))
+    assert a.status() == a.STATUS_STALE
+
+
+def test_an_unknown_approval_does_not_raise_a_false_alarm(registry):
+    a = _as()
+    a.register()
+    _approve(registry, b"\x03")            # unrecognised layout
+    assert a.startup_approval() == "unknown"
+    assert a.status() == a.STATUS_OK
+
+
+# ══ register_all: opt-in, structurally ═══════════════════════════════════════
+
+
+def test_register_all_does_not_create_the_run_value_by_default(registry):
+    """The invariant the whole feature rests on.
+
+    PolyShield writing a Run value because somebody ran an installer that
+    mentioned "integration" is the behaviour this is not allowed to have, and
+    the way that rule gets broken is a future caller reading `register_all` as
+    "register everything".
+    """
+    from ui.core import integration
+
+    report = integration.register_all()
+    assert report["ok"] is True
+    assert _as().is_registered() is False
+    assert report["steps"]["startup entry"]["detail"] == "not requested"
+
+
+def test_register_all_creates_it_when_asked(registry):
+    from ui.core import integration
+
+    report = integration.register_all(startup=True)
+    assert report["ok"] is True
+    assert _as().is_registered() is True
+
+
+def test_unregister_all_removes_the_run_value(registry, monkeypatch):
+    from ui.core import integration
+
+    monkeypatch.setattr(integration, "unregister_service",
+                        lambda: (True, "stubbed"))
+    monkeypatch.setattr(integration, "unregister_scheduled_task",
+                        lambda: (True, "stubbed"))
+    integration.register_all(startup=True)
+    assert _as().is_registered() is True
+
+    report = integration.unregister_all()
+    assert report["steps"]["startup entry"]["ok"] is True
+    assert _as().is_registered() is False
+
+

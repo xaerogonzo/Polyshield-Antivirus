@@ -391,3 +391,143 @@ def test_scanview_methods_resolve_to_the_class_that_owns_them():
         resolved = next(c for c in ScanView.__mro__ if name in c.__dict__)
         assert resolved is owner, (
             f"{name} resolves to {resolved.__name__}, expected {owner.__name__}")
+
+
+# ── --minimized: never hidden with no way back ────────────────────────────────
+#
+# The login entry launches PolyShield with --minimized so it goes straight to
+# the notification area instead of opening a 1200x760 window over whatever the
+# user was doing. withdraw() takes the window off the screen AND off the
+# taskbar, so if the tray icon is not actually there the result is a running
+# process with no window, no taskbar button and no icon -- reachable only from
+# Task Manager, at every single sign-in.
+#
+# The guard is `self._tray_started`, set after run_detached() returns, and not
+# `_USE_TRAY`, which only says pystray imported.
+
+_MINIMIZED_PROBE = '''
+import json, sys
+from pathlib import Path
+
+root = Path(sys.argv[1])
+tray_mode = sys.argv[2]          # "works" | "absent" | "raises"
+out_path = Path(sys.argv[3])
+
+sys.path.insert(0, str(root / "tools"))
+from uishot.desktop import hidden_desktop
+
+for _p in (root, root / "src"):
+    if str(_p) not in sys.path:
+        sys.path.insert(0, str(_p))
+
+
+class _StubMonitor:
+    def __init__(self, *a, **k): pass
+    def start(self): pass
+    def stop(self): pass
+    def is_running(self): return False
+
+
+class _FakeIcon:
+    def __init__(self, raises): self._raises = raises
+    def run_detached(self):
+        if self._raises:
+            raise RuntimeError("no notification area on this desktop")
+    def stop(self): pass
+
+
+def main():
+    import ui.app as app_mod
+    from ui.core import watcher as wtch
+    from ui.core import service_client as svc
+    import ui.core.process_monitor as pm
+
+    wtch.start = lambda *a, **k: None
+    svc.is_service_running = lambda *a, **k: True
+    pm.ProcessMonitor = _StubMonitor
+
+    if tray_mode == "absent":
+        app_mod._USE_TRAY = False
+    else:
+        app_mod._USE_TRAY = True
+        app_mod.App._build_tray_icon = (
+            lambda self, r=(tray_mode == "raises"): _FakeIcon(r))
+
+    app = app_mod.App(start_minimized=True)
+    result = {"state": app.state(), "tray_started": app._tray_started}
+    try:
+        for job in app.tk.call("after", "info"):
+            try:
+                app.after_cancel(job)
+            except Exception:
+                pass
+    except Exception:
+        pass
+    try:
+        app.destroy()
+    except Exception:
+        pass
+    out_path.write_text(json.dumps(result), encoding="utf-8")
+
+
+with hidden_desktop("MinimizedProbe"):
+    main()
+'''
+
+
+def _probe_minimized(tmp_path, tray_mode: str) -> dict:
+    script = tmp_path / "minimized_probe.py"
+    script.write_text(_MINIMIZED_PROBE, encoding="utf-8")
+    out = tmp_path / f"minimized_{tray_mode}.json"
+    proc = subprocess.run(
+        [sys.executable, str(script), str(ROOT), tray_mode, str(out)],
+        cwd=str(ROOT), capture_output=True, text=True, timeout=300)
+    if not out.exists():
+        pytest.skip(
+            "minimized probe could not run here (no interactive window station?):"
+            f"\n{proc.stdout[-2000:]}\n{proc.stderr[-2000:]}")
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+@pytestmark_win
+def test_minimized_withdraws_when_the_tray_actually_started(tmp_path):
+    result = _probe_minimized(tmp_path, "works")
+    assert result["tray_started"] is True
+    assert result["state"] == "withdrawn"
+
+
+@pytestmark_win
+@pytest.mark.parametrize("tray_mode", ["absent", "raises"])
+def test_minimized_falls_back_to_a_reachable_window(tmp_path, tray_mode):
+    """The unrecoverable case, in both of its flavours.
+
+    "absent" is pystray failing to import.  "raises" is the one a check on
+    _USE_TRAY would miss entirely: the import worked and run_detached() did not,
+    which is what a sign-in looks like when explorer.exe is not up yet.
+    """
+    result = _probe_minimized(tmp_path, tray_mode)
+    assert result["tray_started"] is False
+    assert result["state"] != "withdrawn", (
+        "launched into a hidden state with no tray icon: the window is "
+        "unreachable except from Task Manager")
+    assert result["state"] == "iconic"
+
+
+def test_the_minimized_guard_reads_tray_started_not_use_tray():
+    """Pinned in source as well as in behaviour.
+
+    The probe above needs a window station and skips without one, so on a
+    machine where it cannot run this is the only thing standing between the
+    fallback and a future tidy-up that swaps the condition back to `_USE_TRAY`.
+    """
+    tree = ast.parse(APP_PY.read_text(encoding="utf-8"))
+    init = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "__init__")
+    guarded = [n for n in ast.walk(init)
+               if isinstance(n, ast.If)
+               and any(isinstance(c, ast.Name) and c.id == "start_minimized"
+                       for c in ast.walk(n.test))]
+    assert guarded, "nothing in App.__init__ branches on start_minimized"
+    body = ast.dump(guarded[0])
+    assert "_tray_started" in body
+    assert "withdraw" in body and "iconify" in body

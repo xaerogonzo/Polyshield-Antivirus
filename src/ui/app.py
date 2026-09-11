@@ -115,7 +115,8 @@ def _acquire_instance_lock() -> bool:
 
 
 class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
-    def __init__(self, initial_scan_path: str | None = None):
+    def __init__(self, initial_scan_path: str | None = None,
+                 start_minimized: bool = False):
         super().__init__()
         # ── Theme + appearance (must be after super().__init__() — Tk root required) ──
         theme.init(cfg)
@@ -131,6 +132,10 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
         self._views: dict[str, ctk.CTkFrame] = {}          # built on first show
         self._view_factories: dict = {}                    # filled by _build()
         self._tray_icon: "pystray.Icon | None" = None
+        # Whether the tray icon actually STARTED, which is not the same question
+        # as whether pystray imported. See the --minimized handling at the end
+        # of this constructor.
+        self._tray_started = False
         self._bg_label = None   # CTkLabel for background image (created on first use)
         self._bg_ctk_img = None
         self._build()
@@ -185,11 +190,22 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
 
         # Set up system tray
         if _USE_TRAY:
-            self._tray_icon = self._build_tray_icon()
-            self._tray_icon.run_detached()
-            # Wire threat notifications from watcher to tray
-            from ui.views.watcher_view import set_notify_callback
-            set_notify_callback(self._notify_threat)
+            try:
+                self._tray_icon = self._build_tray_icon()
+                self._tray_icon.run_detached()
+                self._tray_started = True
+            except Exception:
+                # A tray icon can fail to start for reasons the import cannot
+                # predict -- no shell, an explorer.exe that is not up yet at
+                # login, a session with no notification area. The app still
+                # works; what must not happen is the branch below trusting a
+                # tray that is not there.
+                self._tray_icon = None
+                self._tray_started = False
+            if self._tray_started:
+                # Wire threat notifications from watcher to tray
+                from ui.views.watcher_view import set_notify_callback
+                set_notify_callback(self._notify_threat)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -197,6 +213,19 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
         # when minimize_to_tray is enabled.
         self._quitting = False
         self.bind("<Unmap>", self._on_unmap)
+
+        # ── Started by the login entry: go straight to the notification area ──
+        #
+        # Keyed on _tray_started, NOT on _USE_TRAY. The latter only says pystray
+        # imported. withdraw() with no tray icon produces a running process with
+        # no window, no taskbar button and no icon -- reachable only from Task
+        # Manager. That is the one failure in this feature a user cannot undo,
+        # so the fallback is a visible window rather than a hidden one.
+        if start_minimized:
+            if self._tray_started:
+                self.withdraw()
+            else:
+                self.iconify()
 
     def _build(self):
         self.grid_columnconfigure(1, weight=1)
@@ -705,6 +734,19 @@ def main():
         print(msg)
         sys.exit(0 if ok else 1)
 
+    if "--register-autostart" in sys.argv[1:]:
+        # The login entry, written by the app itself for the same reason the
+        # Explorer verb is: the command string has ONE implementation, in
+        # paths.app_launch_argv(), and a second one in an .iss file or a .bat is
+        # a second thing to keep correct when the launch target changes.
+        # Per-user (HKCU), so no elevation and it lands in the profile of
+        # whoever asked for it.
+        from ui.core import autostart as _autostart
+
+        ok, msg = _autostart.register()
+        print(msg)
+        sys.exit(0 if ok else 1)
+
     if "--unregister" in sys.argv[1:]:
         import json
 
@@ -736,7 +778,9 @@ def main():
         idx = args.index("--scan")
         if idx + 1 < len(args):
             scan_path = args[idx + 1]
-    app = App(initial_scan_path=scan_path)
+    # --tray is accepted as a synonym because it is what people type.
+    start_minimized = "--minimized" in args or "--tray" in args
+    app = App(initial_scan_path=scan_path, start_minimized=start_minimized)
     app.mainloop()
 
 

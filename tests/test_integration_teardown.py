@@ -23,20 +23,33 @@ import pytest
 from ui.core import integration
 
 
+#: Every module `unregister_all` reaches HKCU through.  A step added to
+#: `_STEPS` without its module added here would run against the developer's
+#: live hive in every test in this file -- see _never_touch_the_real_hive.
+_HKCU_MODULES = ("ui.core.shell_ext", "ui.core.autostart", "ui.core.dev_install")
+
+
 @pytest.fixture(autouse=True)
 def _never_touch_the_real_hive(monkeypatch):
-    """shell_ext talks to winreg directly, not through subprocess.
+    """The HKCU-touching modules talk to winreg directly, not through subprocess.
 
     Learned the hard way: a test here stubbed subprocess, assumed that covered
     every step, and unregister_context_menu went straight to the live HKCU and
     deleted the user real Explorer verb. Autouse so a future test cannot
     reintroduce that by forgetting.
+
+    Every module in _HKCU_MODULES shares ONE fake hive, because they share one
+    real one: a test that registers through one and tears down through another
+    has to see the same tree, and giving each its own would let a teardown
+    "succeed" against a hive nothing was ever written to.
     """
-    from ui.core import shell_ext
+    import importlib
 
     class _FakeWinreg:
         HKEY_CURRENT_USER = "HKCU"
         REG_SZ = 1
+        REG_DWORD = 4
+        REG_BINARY = 3
 
         def __init__(self):
             self.tree = {}
@@ -50,8 +63,20 @@ def _never_touch_the_real_hive(monkeypatch):
                 raise FileNotFoundError(2, "not found")
             return _Key(self, hive, sub)
 
-        def SetValueEx(self, key, name, _r, _t, data):
-            self.tree[(key.hive, key.sub)][name] = data
+        def SetValueEx(self, key, name, _r, typ, data):
+            self.tree[(key.hive, key.sub)][name] = (data, typ)
+
+        def QueryValueEx(self, key, name):
+            try:
+                return self.tree[(key.hive, key.sub)][name]
+            except KeyError:
+                raise FileNotFoundError(2, "not found") from None
+
+        def DeleteValue(self, key, name):
+            try:
+                del self.tree[(key.hive, key.sub)][name]
+            except KeyError:
+                raise FileNotFoundError(2, "not found") from None
 
         def DeleteKey(self, hive, sub):
             if (hive, sub) not in self.tree:
@@ -69,8 +94,40 @@ def _never_touch_the_real_hive(monkeypatch):
             return False
 
     fake = _FakeWinreg()
-    monkeypatch.setattr(shell_ext, "winreg", fake)
+    for name in _HKCU_MODULES:
+        try:
+            mod = importlib.import_module(name)
+        except ImportError:
+            continue        # not written yet; the guard below is what enforces it
+        monkeypatch.setattr(mod, "winreg", fake, raising=False)
     return fake
+
+
+def test_every_hkcu_teardown_step_is_covered_by_the_fake_hive():
+    """The guard on the guard.
+
+    _STEPS growing an HKCU step whose module is not in _HKCU_MODULES would not
+    fail loudly -- it would quietly run against the developer's live registry in
+    every test in this file. So the list is asserted, not trusted.
+    """
+    import importlib
+    import inspect
+
+    for _label, attr in integration._STEPS:
+        src = inspect.getsource(getattr(integration, attr))
+        for line in src.splitlines():
+            line = line.strip()
+            if not line.startswith("from ui.core import "):
+                continue
+            mod_name = "ui.core." + line.split("import ", 1)[1].split()[0]
+            try:
+                mod = importlib.import_module(mod_name)
+            except ImportError:
+                continue
+            if hasattr(mod, "winreg"):
+                assert mod_name in _HKCU_MODULES, (
+                    f"{attr} reaches HKCU through {mod_name}, which "
+                    "_never_touch_the_real_hive does not stub")
 
 
 @pytest.fixture
@@ -103,11 +160,17 @@ def sc_calls(monkeypatch):
 
 @pytest.fixture
 def no_side_effects(monkeypatch):
-    """The two non-service steps, stubbed to succeed."""
-    monkeypatch.setattr(integration, "unregister_context_menu",
-                        lambda: (True, "menu removed"))
-    monkeypatch.setattr(integration, "unregister_scheduled_task",
-                        lambda: (True, "task removed"))
+    """Every non-service step, stubbed to succeed.
+
+    Derived from _STEPS rather than listed, so a new step is stubbed the moment
+    it is added instead of quietly executing for real in tests that only meant
+    to exercise the service branch.
+    """
+    for _label, attr in integration._STEPS:
+        if attr == "unregister_service":
+            continue
+        monkeypatch.setattr(integration, attr,
+                            lambda a=attr: (True, f"{a} stubbed"))
 
 
 # == Absent is success ========================================================
@@ -217,7 +280,12 @@ def test_a_clean_machine_reports_success(sc_calls, no_side_effects):
     report = integration.unregister_all()
 
     assert report["ok"] is True
-    assert set(report["steps"]) == {"service", "context menu", "scheduled task"}
+    # A literal set, not `set(integration._STEPS)`. Deriving it would make this
+    # assertion agree with whatever the code says, including a step silently
+    # dropped -- and the report shape is what an uninstaller and a rollback both
+    # read to decide whether they are finished.
+    assert set(report["steps"]) == {
+        "service", "context menu", "startup entry", "scheduled task"}
 
 
 def test_unregister_all_is_idempotent(sc_calls, no_side_effects):
@@ -364,3 +432,5 @@ def test_schtasks_is_never_given_an_inherited_stdin(monkeypatch):
     scheduler.get_task_info()
 
     assert seen.get("stdin") is subprocess.DEVNULL
+
+
