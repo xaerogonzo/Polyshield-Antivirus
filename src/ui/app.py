@@ -221,11 +221,13 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
         # no window, no taskbar button and no icon -- reachable only from Task
         # Manager. That is the one failure in this feature a user cannot undo,
         # so the fallback is a visible window rather than a hidden one.
+        self._login_scan_job = None
         if start_minimized:
             if self._tray_started:
                 self.withdraw()
             else:
                 self.iconify()
+            self._schedule_login_scan()
 
     def _build(self):
         self.grid_columnconfigure(1, weight=1)
@@ -537,6 +539,71 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
 
         _th.Thread(target=_work, daemon=True, name="IntelLaunchUpdate").start()
 
+    # ── Scan after login ──────────────────────────────────────────────────────
+
+    #: Two minutes. Long enough that the scan is not competing with the rest of
+    #: the login storm -- Defender's own startup work, OneDrive, everything else
+    #: in the Run key -- and short enough that it still happens in the session
+    #: the user just started.
+    _LOGIN_SCAN_DELAY_MS = 120_000
+
+    def _schedule_login_scan(self) -> None:
+        """Arm the post-login scan. Called once, from a --minimized launch only.
+
+        Not from an ordinary launch: a scan starting two minutes after somebody
+        double-clicks the icon, with no explanation, is a product doing
+        something surprising with their disk.
+        """
+        if self._login_scan_job is not None:
+            return                       # armed already; never twice
+        if not cfg.get("scan_on_login"):
+            return
+        self._login_scan_job = self.after(
+            self._LOGIN_SCAN_DELAY_MS, self._run_login_scan)
+
+    def _cancel_login_scan(self) -> None:
+        if self._login_scan_job is None:
+            return
+        try:
+            self.after_cancel(self._login_scan_job)
+        except Exception:
+            pass                         # already fired, or the root is going away
+        self._login_scan_job = None
+
+    def _run_login_scan(self) -> None:
+        """Start the Quick Scan, unless anything has changed in two minutes.
+
+        Every one of these guards is a way to end up running two scans at once
+        or one nobody asked for, and two minutes is long enough for all of them.
+        """
+        self._login_scan_job = None
+        if not self.winfo_exists():
+            return
+        if not cfg.get("scan_on_login"):
+            return                       # switched off during the delay
+
+        try:
+            from ui.core import service_client as _svc
+
+            if _svc.is_service_running() and cfg.get("watcher_enabled"):
+                # The service is already watching. A second full scan on top of
+                # that is duplicated disk work, not extra protection.
+                return
+        except Exception:
+            pass
+
+        view = self.get_view("scan")
+        if getattr(view, "_scanning", False):
+            return                       # a scan is already running
+
+        self._navigate("scan")
+        try:
+            view._on_preset_change("Quick")
+            view._start_scan()
+            self._set_status("Quick Scan started (scheduled after sign-in)")
+        except Exception:
+            self._set_status("Could not start the scheduled scan after sign-in")
+
     def _set_status(self, text: str):
         self.after(0, lambda t=text: self._status_lbl.configure(text=t))
 
@@ -597,6 +664,7 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
         """Fully exit the app — called from tray Quit or when minimize_to_tray is off."""
         def _do():
             self._quitting = True   # stop <Unmap> from re-entering withdraw logic
+            self._cancel_login_scan()
             if self._tray_icon:
                 self._tray_icon.stop()
             wtch.stop()

@@ -32,7 +32,9 @@ a release.
 """
 from __future__ import annotations
 
+import os
 import re
+import warnings
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -146,3 +148,112 @@ def test_the_installed_substrate_is_inside_the_supported_range(dist):
         "this suite against that substrate, then raise SUPPORTED_RANGE here and "
         "bump the pinned revision in all three declaration sites together."
     )
+
+
+# ══ The case the pin and the range both miss ═════════════════════════════════
+#
+# `pip install -e ..\PolyBedrock\core` is the natural thing to do while working
+# on both projects at once, and it makes every assertion above vacuous: the pin
+# is not what is imported, and the metadata still reports 0.1.0 no matter how far
+# the working tree has moved. Measured on a live checkout: the venv resolved
+#
+#     polybedrock.__path__ = ['D:\...\PolyBedrock\core\src\polybedrock', ...]
+#
+# ten commits past the revision requirements.txt names -- all of them CI and docs
+# commits, so harmless that day, and invisible on any other day too.
+#
+# Locally that is a warning: it is the correct developer setup and saying so is
+# the point. In CI it is a hard failure, because a job that tests a working tree
+# nobody declared is the master-vs-master trap PolyBedrock's own CI exists to
+# remove.
+
+def _editable_source(dist: str):
+    """The checkout an editable install points at, or None if it is a real one."""
+    import json
+    from importlib.metadata import distribution
+
+    try:
+        direct = distribution(dist).read_text("direct_url.json")
+    except PackageNotFoundError:
+        return None
+    if not direct:
+        return None
+    try:
+        info = json.loads(direct)
+    except ValueError:
+        return None
+    if not info.get("dir_info", {}).get("editable"):
+        return None
+    url = info.get("url", "")
+    if not url.startswith("file:"):
+        return None
+    from urllib.parse import unquote, urlparse
+
+    return Path(unquote(urlparse(url).path).lstrip("/"))
+
+
+@pytest.mark.parametrize("dist", ["polybedrock-core", "polybedrock-ui"])
+def test_an_editable_substrate_is_reported_and_never_silent(dist, request):
+    """The pin is inert against an editable install; this is what is left.
+
+    Deliberately not a plain xfail or skip. A developer working on both repos
+    should see which tree is actually being imported and how far it is from the
+    declared revision -- and CI, where an editable install cannot legitimately
+    happen, should stop.
+    """
+    source = _editable_source(dist)
+    if source is None:
+        return                      # an ordinary pinned install; the tests above apply
+
+    in_ci = bool(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"))
+    detail = f"{dist} is installed EDITABLE from {source}"
+
+    declared = _declared_revisions().get("requirements.txt")
+    drift = _commits_ahead(source, declared) if declared else None
+    if drift is not None:
+        detail += f", {drift} commit(s) past the pinned {declared[:7]}"
+
+    assert not in_ci, (
+        detail + ". CI must test the declared revision: an editable install "
+        "makes the pin inert and the range unable to object.")
+
+    warnings.warn(UserWarning(
+        detail + ". Edits there take effect immediately in PolyShield, and "
+        "requirements.txt no longer describes what is running."))
+
+
+def _declared_revisions() -> dict:
+    """Revision each site pins, keyed by filename."""
+    out = {}
+    for filename in _SITES:
+        text = (ROOT / filename).read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            m = _URL.search(line)
+            if m and m.group("rev"):
+                out[filename] = m.group("rev")
+                break
+    return out
+
+
+def _commits_ahead(checkout: Path, revision: str):
+    """How far the checkout's HEAD is past `revision`, or None if unanswerable."""
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(
+            ["git", "-C", str(checkout), *args],
+            capture_output=True, text=True, timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+    try:
+        # The checkout may be core/ or ui/ inside the repo; git resolves that.
+        if git("cat-file", "-e", f"{revision}^{{commit}}").returncode != 0:
+            return None
+        result = git("rev-list", "--count", f"{revision}..HEAD")
+        if result.returncode != 0:
+            return None
+        return int(result.stdout.strip())
+    except Exception:
+        return None

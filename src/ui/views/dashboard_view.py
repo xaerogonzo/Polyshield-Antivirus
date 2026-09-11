@@ -15,18 +15,18 @@ _INTEL_DB  = paths.intelligence_dir() / "threat_db.sqlite"
 
 
 def _svc_installed() -> bool:
-    """Check if PolyShieldService is registered in the Windows SCM via registry."""
-    try:
-        import winreg
-        winreg.OpenKey(
-            winreg.HKEY_LOCAL_MACHINE,
-            r"SYSTEM\CurrentControlSet\Services\PolyShieldService",
-        ).Close()
-        return True
-    except OSError:
-        return False
-    except Exception:
-        return False
+    """True when the service is registered AND set to start at boot.
+
+    "Registered" alone was the old test, and it made the Getting Started step
+    tick green over a service registered DEMAND_START that had never once run --
+    which is exactly the state this project was in when the start-type bug was
+    found. A checklist that says a thing is done when it is not is worse than no
+    checklist.
+    """
+    from ui.core import integration
+
+    state = integration.service_state()
+    return bool(state["present"]) and state["start_type"] in ("auto", "delayed-auto")
 
 
 def _has_intel() -> bool:
@@ -108,17 +108,57 @@ class DashboardView(ctk.CTkFrame):
         self._last_refresh_lbl.grid(row=1, column=0, columnspan=2, sticky="w")
         theme.register(self._themed, self._last_refresh_lbl, text_color="dim")
 
-        # ── Getting Started card (row=1, hidden by default) ──
+        # ── Protection state (row=1, hidden when the service is running) ──
+        #
+        # Three states, not two. PolyShield deliberately supports running
+        # without the service -- the watcher falls back in-process -- so
+        # collapsing that into "protected / not protected" would either hide a
+        # real gap or cry wolf about a supported configuration.
+        self._protect_banner = ctk.CTkFrame(self, corner_radius=8)
+        self._protect_banner.grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 8))
+        self._protect_banner.grid_columnconfigure(0, weight=1)
+        self._protect_banner.grid_remove()
+
+        self._protect_lbl = ctk.CTkLabel(
+            self._protect_banner, text="", anchor="w", justify="left",
+            font=ctk.CTkFont(size=12), wraplength=760)
+        self._protect_lbl.grid(row=0, column=0, sticky="w", padx=14, pady=10)
+
+        self._protect_btn = ctk.CTkButton(
+            self._protect_banner, text="Service", width=110, height=28,
+            font=ctk.CTkFont(size=11),
+            command=lambda: self._navigate and self._navigate("service"))
+        self._protect_btn.grid(row=0, column=1, padx=(8, 14))
+
+        # ── Stale integrations (row=1 as well; the two are never both shown
+        # for long, and a moved checkout is the more actionable of the two) ──
+        self._stale_frame = ctk.CTkFrame(self, corner_radius=8, fg_color="#3d2a08")
+        self._stale_frame.grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 8))
+        self._stale_frame.grid_columnconfigure(0, weight=1)
+        self._stale_frame.grid_remove()
+
+        self._stale_lbl = ctk.CTkLabel(
+            self._stale_frame, text="", anchor="w", justify="left",
+            font=ctk.CTkFont(size=12), text_color="#ffb86c", wraplength=760)
+        self._stale_lbl.grid(row=0, column=0, sticky="w", padx=14, pady=10)
+        ctk.CTkButton(
+            self._stale_frame, text="Repair", width=110, height=28,
+            fg_color="#7a3800", hover_color="#5a2800",
+            font=ctk.CTkFont(size=11),
+            command=self._repair_stale_integrations,
+        ).grid(row=0, column=1, padx=(8, 14))
+
+        # ── Getting Started card (row=2, hidden by default) ──
         self._gs_frame = ctk.CTkFrame(self, corner_radius=10,
                                       border_width=1, border_color="#2a3a6a")
-        self._gs_frame.grid(row=1, column=0, sticky="ew", padx=24, pady=(0, 8))
+        self._gs_frame.grid(row=2, column=0, sticky="ew", padx=24, pady=(0, 8))
         theme.register(self._themed, self._gs_frame, fg_color="card2")
         self._gs_frame.grid_columnconfigure(0, weight=1)
         self._gs_frame.grid_remove()   # hidden until _refresh_getting_started() decides
 
         # ── Status card grid (2×2) ──
         grid = ctk.CTkFrame(self, fg_color="transparent")
-        grid.grid(row=2, column=0, sticky="ew", padx=24, pady=(0, 8))
+        grid.grid(row=3, column=0, sticky="ew", padx=24, pady=(0, 8))
         grid.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
         self._cards["defender"]   = self._make_card(grid, 0, 0, "Security Posture",       "—", [],
@@ -132,7 +172,7 @@ class DashboardView(ctk.CTkFrame):
 
         # ── Quick actions ──
         actions = ctk.CTkFrame(self, corner_radius=10)
-        actions.grid(row=3, column=0, sticky="ew", padx=24, pady=(0, 8))
+        actions.grid(row=4, column=0, sticky="ew", padx=24, pady=(0, 8))
         actions.grid_columnconfigure((0, 1, 2, 3), weight=1)
         theme.register(self._themed, actions, fg_color="card")
 
@@ -155,21 +195,21 @@ class DashboardView(ctk.CTkFrame):
             theme.register(self._themed, qb,
                            fg_color="nav_active", hover_color="accent_hover")
 
-        # ── Threat intelligence freshness (row=4) ──
+        # ── Threat intelligence freshness (row=5) ──
         self._intel_frame = ctk.CTkFrame(self, corner_radius=10, border_width=1,
                                          border_color="#2a3a6a")
-        self._intel_frame.grid(row=4, column=0, sticky="ew", padx=24, pady=(0, 8))
+        self._intel_frame.grid(row=5, column=0, sticky="ew", padx=24, pady=(0, 8))
         theme.register(self._themed, self._intel_frame, fg_color="card2")
         self._intel_frame.grid_columnconfigure(0, weight=1)
 
         # ── Recent threats ──
         ctk.CTkLabel(self, text="Recent Threats",
                      font=ctk.CTkFont(size=14, weight="bold")).grid(
-            row=5, column=0, sticky="w", padx=24, pady=(4, 4))
+            row=6, column=0, sticky="w", padx=24, pady=(4, 4))
 
         self._threats_frame = ctk.CTkScrollableFrame(
             self, height=140, corner_radius=8)
-        self._threats_frame.grid(row=6, column=0, sticky="ew", padx=24, pady=(0, 16))
+        self._threats_frame.grid(row=7, column=0, sticky="ew", padx=24, pady=(0, 16))
         self._threats_frame.grid_columnconfigure(0, weight=1)
         theme.register(self._themed, self._threats_frame, fg_color="card")
 
@@ -478,6 +518,66 @@ class DashboardView(ctk.CTkFrame):
         if hasattr(self, "_intel_btn") and self._intel_btn.winfo_exists():
             self._intel_btn.configure(state="normal", text="Update now")
 
+    # ── Protection state ──────────────────────────────────────────────────────
+
+    #: (service_running, watcher_running) -> (text, colour, button, nav key).
+    #: None means the banner stays hidden.
+    _PROTECTION_BANNER = {
+        (True, True):  None,
+        (True, False): None,
+        (False, True): (
+            "Running without the background service \u2014 file monitoring is active, "
+            "but process and network monitoring stop when PolyShield closes.",
+            "#3d2a08", "#ffb86c", "Service", "service"),
+        (False, False): (
+            "Real-time protection is off \u2014 nothing is watching your files.",
+            "#3d0d0d", "#ff5555", "Service", "service"),
+    }
+
+    def _refresh_protection_banner(self) -> None:
+        """Say what is actually missing, not whether the product is 'on'.
+
+        The service owns process and network monitoring; the in-process watcher
+        does not. Reporting both configurations as simply "protected" would hide
+        a real gap, and reporting the fallback as "off" would cry wolf about a
+        configuration this product supports on purpose.
+        """
+        from ui.core import integration
+        from ui.core import service_client as svc
+
+        try:
+            running = bool(svc.is_service_running())
+        except Exception:
+            running = False
+        try:
+            watching = bool(wtch.is_running())
+        except Exception:
+            watching = False
+
+        entry = self._PROTECTION_BANNER.get((running, watching))
+        if entry is None:
+            # One more way to be off while looking fine: registered, not running,
+            # and not set to start at boot either. That is the exact state this
+            # release was written to make visible.
+            state = integration.service_state()
+            if (running and state["present"]
+                    and state["start_type"] not in ("auto", "delayed-auto")):
+                entry = (
+                    "The background service is running, but it is not set to start "
+                    "with Windows \u2014 protection will be off after the next restart.",
+                    "#3d2a08", "#ffb86c", "Service", "service")
+        if entry is None:
+            self._protect_banner.grid_remove()
+            return
+
+        text, bg, fg, btn_text, nav_key = entry
+        self._protect_banner.configure(fg_color=bg)
+        self._protect_lbl.configure(text=text, text_color=fg)
+        self._protect_btn.configure(
+            text=btn_text,
+            command=lambda k=nav_key: self._navigate and self._navigate(k))
+        self._protect_banner.grid()
+
     # ── Getting Started card ──────────────────────────────────────────────────
 
     def _refresh_getting_started(self) -> None:
@@ -486,21 +586,27 @@ class DashboardView(ctk.CTkFrame):
             self._gs_frame.grid_remove()
             return
 
+        from ui.core import autostart as _autostart
+        from ui.core import shell_ext as _shell_ext
+
         has_db   = _has_intel()
         has_svc  = _svc_installed()
         has_scan = _has_scan_history()
+        has_boot = _autostart.is_registered()
+        has_menu = _shell_ext.is_registered()
 
         # All steps complete — auto-dismiss permanently
-        if has_db and has_svc and has_scan:
+        if has_db and has_svc and has_scan and has_boot and has_menu:
             cfg.set_value("getting_started_dismissed", True)
             self._gs_frame.grid_remove()
             return
 
-        self._build_getting_started(has_db, has_svc, has_scan)
+        self._build_getting_started(has_db, has_svc, has_scan, has_boot, has_menu)
         self._gs_frame.grid()
 
     def _build_getting_started(self, has_db: bool, has_svc: bool,
-                                has_scan: bool) -> None:
+                                has_scan: bool, has_boot: bool = False,
+                                has_menu: bool = False) -> None:
         """Rebuild the Getting Started card contents."""
         for w in self._gs_frame.winfo_children():
             w.destroy()
@@ -528,13 +634,21 @@ class DashboardView(ctk.CTkFrame):
              "Run Update All in Update Center to download MalwareBazaar signatures.",
              "update"),
             (has_svc,
-             "Install Windows Service",
-             "Enables persistent background protection and folder watching.",
+             "Install and enable the Windows Service",
+             "Persistent background protection, started automatically at boot.",
              "service"),
             (has_scan,
              "Run your first scan",
              "Use the Scan view to scan a folder or your whole system.",
              "scan"),
+            (has_boot,
+             "Start PolyShield with Windows",
+             "Launches minimised to the notification area when you sign in.",
+             "settings"),
+            (has_menu,
+             "Add the Explorer right-click menu",
+             "Scan any file, folder or drive without opening PolyShield.",
+             "settings"),
         ]
         for i, (done, title, desc, nav_key) in enumerate(steps):
             row_f = ctk.CTkFrame(self._gs_frame, fg_color="transparent")
@@ -565,6 +679,42 @@ class DashboardView(ctk.CTkFrame):
         ctk.CTkFrame(self._gs_frame, fg_color="transparent", height=10).grid(
             row=len(steps) + 1, column=0)
 
+    # ── Stale integrations ────────────────────────────────────────────────────
+
+    def _refresh_stale_integrations(self) -> None:
+        r"""The failure mode a source install has and a packaged one does not.
+
+        The login entry and the Add/Remove Programs entry both embed an absolute
+        path into this checkout. Rename or move the folder and Windows says
+        nothing: the entry simply stops working, at every login, forever. This
+        is the only place that notices.
+        """
+        from ui.core import autostart as _autostart
+        from ui.core import dev_install as _dev_install
+
+        stale = []
+        if _autostart.is_registered() and not _autostart.is_current():
+            stale.append("the startup entry")
+        if _dev_install.is_registered() and not _dev_install.is_current():
+            stale.append("the entry in Settings > Apps")
+        if not stale:
+            self._stale_frame.grid_remove()
+            return
+
+        self._stale_lbl.configure(
+            text="PolyShield seems to have moved since it was set up, so "
+                 + " and ".join(stale) + " now point somewhere it is not.")
+        self._stale_frame.grid()
+
+    def _repair_stale_integrations(self) -> None:
+        from ui.core import autostart as _autostart
+        from ui.core import dev_install as _dev_install
+
+        for mod in (_autostart, _dev_install):
+            if mod.is_registered():
+                mod.register()
+        self._refresh_stale_integrations()
+
     def _dismiss_getting_started(self) -> None:
         cfg.set_value("getting_started_dismissed", True)
         self._gs_frame.grid_remove()
@@ -573,6 +723,8 @@ class DashboardView(ctk.CTkFrame):
 
     def on_show(self):
         """Called by App when this view becomes visible."""
+        self._refresh_protection_banner()
+        self._refresh_stale_integrations()
         self._refresh_getting_started()
         self._refresh_intel_card()
         self.refresh()
