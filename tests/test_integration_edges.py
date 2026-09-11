@@ -1319,14 +1319,49 @@ def test_the_uninstaller_is_where_dev_install_points_it():
     assert dev_install.uninstaller_path().is_file()
 
 
-def test_both_scripts_self_elevate():
-    """Neither can do its job unelevated: one registers a service, the other
-    deletes one. The uninstaller especially -- it is what Windows runs from
-    Settings > Apps, and Windows runs it as the ordinary user."""
-    for name in ("install_dev.bat", "uninstall_dev.bat"):
-        text = (_ROOT_DIR / "scripts" / name).read_text(encoding="utf-8")
-        assert "NET SESSION" in text, name
-        assert "-Verb RunAs" in text, name
+def test_the_uninstaller_self_elevates():
+    """It is what Windows runs from Settings > Apps, and Windows runs an
+    uninstall string as the ordinary user -- while the first teardown step is
+    the service, which needs rights."""
+    text = (_ROOT_DIR / "scripts" / "uninstall_dev.bat").read_text(encoding="utf-8")
+    assert "NET SESSION" in text
+    assert "-Verb RunAs" in text
+
+
+def test_the_installer_does_not_self_elevate():
+    r"""Deliberately the opposite of its sibling, and it cost two failed runs to
+    learn why.
+
+    Elevating the whole script puts the prompt and every message into a spawned
+    console that closes the moment the script ends, so a failure is unreadable
+    and a step that silently does nothing is indistinguishable from one that
+    worked. It is also the wrong hive: the three per-user registrations write to
+    HKCU, and an elevated process writes to the administrator's HKCU when that
+    is a different account.
+
+    Only the service step elevates, and setup_service.bat raises that prompt
+    itself.
+    """
+    text = (_ROOT_DIR / "scripts" / "install_dev.bat").read_text(encoding="utf-8")
+    body = chr(10).join(ln for ln in text.splitlines()
+                     if not ln.strip().upper().startswith("REM"))
+    assert "-Verb RunAs" not in body, (
+        "install_dev.bat elevates itself again; its prompt and its errors go "
+        "into a console that vanishes")
+    assert "NET SESSION" not in body
+    assert "setup_service.bat" in body, "something still has to register the service"
+
+
+def test_the_installer_verifies_the_outcome_not_the_existence():
+    r"""`sc query` passes for a service that was already registered, so it could
+    not tell "this step configured the service" from "this step did nothing".
+    That is how a DEMAND_START registration survived a run and was reported as a
+    success. Twice."""
+    text = (_ROOT_DIR / "scripts" / "install_dev.bat").read_text(encoding="utf-8")
+    body = chr(10).join(ln for ln in text.splitlines()
+                     if not ln.strip().upper().startswith("REM"))
+    assert "service_state()" in body
+    assert "sc query" not in body.lower()
 
 
 def test_the_dev_installer_never_creates_a_distribution_marker():
