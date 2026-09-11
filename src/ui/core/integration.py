@@ -251,6 +251,13 @@ def unregister_startup_entry() -> tuple[bool, str]:
     return autostart.unregister()
 
 
+def unregister_arp_entry() -> tuple[bool, str]:
+    """Remove the Add/Remove Programs entry. Already-absent is success."""
+    from ui.core import dev_install
+
+    return dev_install.unregister()
+
+
 def unregister_scheduled_task() -> tuple[bool, str]:
     """Remove the scheduled scan. Already-absent is success.
 
@@ -275,11 +282,16 @@ def unregister_scheduled_task() -> tuple[bool, str]:
 #: at import, so a caller -- or a test -- that substitutes one would be ignored
 #: while appearing to succeed, and the substitution would silently run the real
 #: thing against the real machine.
+#: The uninstall entry is LAST, and that is not alphabetical.  It is the thing
+#: that advertises this uninstall: if an earlier step fails, the entry has to
+#: still be in Settings > Apps for the user to retry from.  Removing it first
+#: would strand a half-uninstalled product with no visible way to finish.
 _STEPS = (
     ("service", "unregister_service"),
     ("context menu", "unregister_context_menu"),
     ("startup entry", "unregister_startup_entry"),
     ("scheduled task", "unregister_scheduled_task"),
+    ("uninstall entry", "unregister_arp_entry"),
 )
 
 
@@ -297,6 +309,13 @@ def register_startup_entry() -> tuple[bool, str]:
     return autostart.register()
 
 
+def register_arp_entry() -> tuple[bool, str]:
+    """List PolyShield in Settings > Apps. Per-user; no elevation."""
+    from ui.core import dev_install
+
+    return dev_install.register()
+
+
 #: Registration steps, and whether each is on by default.
 #:
 #: The startup entry is the odd one out and the tuple says so structurally
@@ -308,6 +327,7 @@ def register_startup_entry() -> tuple[bool, str]:
 _REGISTER_STEPS = (
     ("context menu", "register_context_menu", True),
     ("startup entry", "register_startup_entry", False),
+    ("uninstall entry", "register_arp_entry", True),
 )
 
 

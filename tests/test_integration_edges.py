@@ -60,6 +60,7 @@ class _FakeWinreg:
     HKEY_LOCAL_MACHINE = "HKLM"
     REG_SZ = 1
     REG_BINARY = 3
+    REG_DWORD = 4
     KEY_READ = 0x20019
     KEY_SET_VALUE = 0x0002
     KEY_WOW64_64KEY = 0x0100
@@ -1175,3 +1176,220 @@ def test_unregister_all_removes_the_run_value(registry, monkeypatch):
     assert _as().is_registered() is False
 
 
+# ══ dev_install: the Add/Remove Programs entry ═══════════════════════════════
+
+
+def _di():
+    from ui.core import dev_install
+
+    return dev_install
+
+
+@pytest.fixture
+def dev_registry(monkeypatch, registry, tmp_path):
+    """`registry`, plus a checkout that actually contains the uninstaller.
+
+    register() refuses to write an entry whose Uninstall button would run a file
+    that is not there, so the fixture has to lay one down.
+    """
+    from ui.core import dev_install
+
+    monkeypatch.setattr(dev_install, "winreg", registry)
+    monkeypatch.setattr(dev_install, "_HKCU", registry.HKEY_CURRENT_USER)
+    checkout = tmp_path / "PolyShield"
+    (checkout / "scripts").mkdir(parents=True)
+    (checkout / "scripts" / "uninstall_dev.bat").write_text("@echo off", encoding="utf-8")
+    monkeypatch.setattr(paths, "install_root", lambda: checkout)
+    monkeypatch.setattr(paths, "is_distribution", lambda: False)
+    return checkout
+
+
+def _values(registry):
+    return registry.tree[(registry.HKEY_CURRENT_USER, _di()._UNINSTALL_KEY)]
+
+
+def test_the_arp_uninstall_string_points_at_the_elevating_wrapper(
+        dev_registry, registry):
+    """The finding this whole module is shaped around.
+
+    Windows launches an uninstall string UNELEVATED, and the first teardown step
+    is the Windows service, which needs elevation. Pointing this at
+    `app.py --unregister` would clear the HKCU entries, fail on the service, and
+    still show success in Settings > Apps.
+    """
+    ok, _msg = _di().register()
+    assert ok
+    value = _values(registry)["UninstallString"]
+    assert value.lower().endswith('uninstall_dev.bat"')
+    assert "app.py" not in value.lower()
+    assert "--unregister" not in value
+
+
+def test_the_quiet_uninstall_string_is_the_same_script(dev_registry, registry):
+    values = _values(registry) if _di().register()[0] else {}
+    assert values["QuietUninstallString"] == values["UninstallString"] + " /quiet"
+
+
+def test_the_display_name_says_this_is_a_development_install(dev_registry, registry):
+    """It removes registrations, not the checkout.
+
+    Somebody who finds "PolyShield Security Suite" in Settings > Apps and
+    expects the folder to disappear has been misled by us.
+    """
+    _di().register()
+    assert "development install" in _values(registry)["DisplayName"]
+
+
+def test_the_entry_carries_no_display_icon(dev_registry, registry):
+    """There is no .ico in the checkout outside the virtualenvs, and pointing
+    this at pythonw.exe puts a Python logo beside PolyShield in the app list --
+    worse than the generic icon Windows supplies."""
+    _di().register()
+    assert "DisplayIcon" not in _values(registry)
+
+
+def test_the_version_comes_from_one_place(dev_registry, registry):
+    from ui.version import __version__
+
+    _di().register()
+    assert _values(registry)["DisplayVersion"] == __version__
+
+
+def test_a_distribution_writes_no_entry_of_its_own(dev_registry, registry, monkeypatch):
+    """Inno registers the real one under its AppId. Two entries for one product
+    is worse than none."""
+    monkeypatch.setattr(paths, "is_distribution", lambda: True)
+    ok, msg = _di().register()
+    assert ok is True
+    assert "packaged" in msg
+    assert _di().is_registered() is False
+
+
+def test_an_entry_is_refused_rather_than_written_without_its_uninstaller(
+        dev_registry):
+    """An Uninstall button that runs a missing file is worse than no entry: the
+    user cannot clear the listing either."""
+    (dev_registry / "scripts" / "uninstall_dev.bat").unlink()
+    ok, msg = _di().register()
+    assert ok is False
+    assert "no uninstaller" in msg
+    assert _di().is_registered() is False
+
+
+def test_unregister_is_quiet_when_nothing_is_registered(dev_registry):
+    ok, msg = _di().unregister()
+    assert ok is True
+    assert "no uninstall entry" in msg
+
+
+def test_is_current_is_false_after_the_checkout_moves(dev_registry, monkeypatch, tmp_path):
+    di = _di()
+    di.register()
+    assert di.is_current() is True
+
+    moved = tmp_path / "Archive" / "PolyShield"
+    (moved / "scripts").mkdir(parents=True)
+    (moved / "scripts" / "uninstall_dev.bat").write_text("@echo off", encoding="utf-8")
+    monkeypatch.setattr(paths, "install_root", lambda: moved)
+    assert di.is_registered() is True
+    assert di.is_current() is False
+
+
+def test_is_current_is_false_when_the_uninstaller_is_gone(dev_registry):
+    di = _di()
+    di.register()
+    (dev_registry / "scripts" / "uninstall_dev.bat").unlink()
+    assert di.is_registered() is True
+    assert di.is_current() is False
+
+
+# ══ The two scripts are where the code says they are ═════════════════════════
+
+
+@pytest.mark.parametrize("name", ["install_dev.bat", "uninstall_dev.bat"])
+def test_the_dev_installer_scripts_exist(name):
+    """The `if bat.exists(): ...` lesson, applied to the pair that a registry
+    value and a button both point at."""
+    assert (_ROOT_DIR / "scripts" / name).is_file(), f"scripts/{name} is missing"
+
+
+def test_the_uninstaller_is_where_dev_install_points_it():
+    from ui.core import dev_install
+
+    assert dev_install.uninstaller_path().is_file()
+
+
+def test_both_scripts_self_elevate():
+    """Neither can do its job unelevated: one registers a service, the other
+    deletes one. The uninstaller especially -- it is what Windows runs from
+    Settings > Apps, and Windows runs it as the ordinary user."""
+    for name in ("install_dev.bat", "uninstall_dev.bat"):
+        text = (_ROOT_DIR / "scripts" / name).read_text(encoding="utf-8")
+        assert "NET SESSION" in text, name
+        assert "-Verb RunAs" in text, name
+
+
+def test_the_dev_installer_never_creates_a_distribution_marker():
+    r"""The most tempting "make it feel installed" move, and the one that
+    destroys the data root.
+
+    paths.is_distribution() reads that marker and flips app_root() from the
+    checkout to %ProgramData%\PolyShield, orphaning the existing config,
+    quarantine, logs and threat database -- silently, with the app reporting a
+    clean first-run state.
+    """
+    text = (_ROOT_DIR / "scripts" / "install_dev.bat").read_text(encoding="utf-8")
+    body = "\n".join(ln for ln in text.splitlines()
+                     if not ln.strip().upper().startswith("REM"))
+    assert paths.DISTRIBUTION_MARKER not in body
+    assert paths.DATA_DIR_ENV not in body
+
+
+# ══ The packaged installer keeps the same promise ════════════════════════════
+
+
+def _iss_lines():
+    """The .iss with its line continuations joined.
+
+    Inno continues a directive with a trailing backslash, so a raw splitlines()
+    puts `Filename:` and the `Tasks:` flag that gates it on different lines --
+    and a test reading them separately would pass over an entry that runs
+    unconditionally.
+    """
+    text = (_ROOT_DIR / "installer" / "polyshield.iss").read_text(encoding="utf-8")
+    joined, buf = [], ""
+    for raw in text.splitlines():
+        if raw.rstrip().endswith(chr(92)):
+            buf += raw.rstrip()[:-1].rstrip() + " "
+            continue
+        joined.append(buf + raw.strip())
+        buf = ""
+    if buf:
+        joined.append(buf)
+    return joined
+
+
+def test_the_installer_startup_task_is_unchecked():
+    """"Off by default" has to be true of the installer, not just the Settings
+    switch. The installer is the one place where a checked-by-default box would
+    put a Run value into the registry of everybody who clicked Next."""
+    line = next((ln for ln in _iss_lines()
+                 if ln.strip().startswith('Name: "startupicon"')), None)
+    assert line is not None, "the .iss no longer declares a startupicon task"
+    assert "unchecked" in line.lower(), (
+        "the packaged installer would enable autostart by default:\n  " + line)
+
+
+def test_the_installer_registers_autostart_only_under_that_task():
+    run_lines = [ln for ln in _iss_lines() if "--register-autostart" in ln]
+    assert run_lines, "the .iss never registers the startup entry"
+    assert all("Tasks: startupicon" in ln for ln in run_lines)
+
+
+def test_the_installer_version_matches_the_python_one():
+    from ui.version import __version__
+
+    define = next(ln for ln in _iss_lines() if ln.startswith("#define AppVersion"))
+    assert f'"{__version__}"' in define, (
+        f"installer/polyshield.iss says {define.strip()} and "
+        f"ui/version.py says {__version__}")

@@ -747,6 +747,33 @@ def main():
         print(msg)
         sys.exit(0 if ok else 1)
 
+    if "--register-uninstall-entry" in sys.argv[1:]:
+        # Listed in Settings > Apps, so a source install can be removed the way
+        # any other program is. Per-user (HKCU); no elevation. A no-op in a
+        # packaged build, where Inno owns that entry.
+        from ui.core import dev_install as _dev_install
+
+        ok, msg = _dev_install.register()
+        print(msg)
+        sys.exit(0 if ok else 1)
+
+    if "--register" in sys.argv[1:]:
+        # Everything a source install registers per-user, in one call.
+        #
+        # `--with-startup` is REQUIRED for the login entry. register_all()
+        # defaults it off and there is no way to opt in by omission: a script
+        # that mentions "integration" must not be how a Run value appears in
+        # somebody's registry.
+        import json
+
+        from ui.core import integration as _integration
+
+        report = _integration.register_all(
+            startup="--with-startup" in sys.argv[1:],
+            log=lambda line: print(line))
+        print(json.dumps(report, indent=2))
+        sys.exit(0 if report["ok"] else 1)
+
     if "--unregister" in sys.argv[1:]:
         import json
 
