@@ -86,8 +86,16 @@ if errorlevel 1 (
 echo   [OK] PolyShieldService registered
 
 REM -- Step 3: the per-user integrations -------------------------------------
-REM  Unelevated work done from an elevated shell lands in the ADMINISTRATOR's
-REM  HKCU when the two are different accounts. Run it as the invoking user.
+REM  These run in the ELEVATED context, which is fine when the person running
+REM  this is themselves an Administrator: UAC keeps the same user SID, so HKCU
+REM  is the same hive either way.
+REM
+REM  It is NOT fine for a standard user who elevates with a separate admin
+REM  account -- the Explorer verb, the startup entry and the Settings > Apps
+REM  entry would all land in the admin's profile, and the person who installed
+REM  would never see them. Fixing that means doing these three steps BEFORE
+REM  self-elevating and letting setup_service.bat raise its own prompt, which is
+REM  a restructure of this script rather than a flag.
 echo  [3/5] Registering the Explorer menu !WITH_STARTUP!...
 "%PY%" "%APP%" --register !WITH_STARTUP!
 if errorlevel 1 (
