@@ -847,7 +847,11 @@ def main():
 
         from ui.core import integration as _integration
 
-        report = _integration.unregister_all(log=lambda line: print(line))
+        # --keep-service is the installer's rollback path: it has not touched
+        # the service, so it must not remove one that was already there.
+        report = _integration.unregister_all(
+            log=lambda line: print(line),
+            skip_service="--keep-service" in sys.argv[1:])
         print(json.dumps(report, indent=2))
         # Also written down. An uninstaller runs this hidden, and "the service
         # is still registered afterwards" cannot otherwise be told apart from

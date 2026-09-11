@@ -362,16 +362,25 @@ def register_all(startup: bool = False, log=None) -> dict:
     return report
 
 
-def unregister_all(log=None) -> dict:
+def unregister_all(log=None, skip_service: bool = False) -> dict:
     """Remove every machine-level integration. Returns a per-step report.
 
     Every step is attempted even when an earlier one fails: they are
     independent, and a rollback that stops at the first problem leaves more
     behind than one that keeps going. The caller decides what a partial result
     means -- an uninstaller reports it, an installer rollback retries.
+
+    ``skip_service`` is for a rollback that never got as far as the service.
+    Without it, install_dev.bat's failure path asks to delete PolyShieldService
+    whether or not that run created it -- so a failure in an earlier step would
+    take out a working, pre-existing registration as its idea of "undoing" an
+    install that never touched it. It only ever failed harmlessly because that
+    script is unelevated; from an elevated shell it would have succeeded.
     """
     report = {"ok": True, "steps": {}}
     for name, attr in _STEPS:
+        if skip_service and attr == "unregister_service":
+            continue
         try:
             ok, detail = globals()[attr]()
         except Exception as exc:                  # a step must not abort the rest

@@ -1428,3 +1428,83 @@ def test_the_installer_version_matches_the_python_one():
     assert f'"{__version__}"' in define, (
         f"installer/polyshield.iss says {define.strip()} and "
         f"ui/version.py says {__version__}")
+
+
+# ══ Self-elevation ═══════════════════════════════════════════════════════════
+#
+# `-ArgumentList '%*'` expands to `-ArgumentList ''` when a script is run with
+# no arguments, and Windows PowerShell 5.1 validates that parameter as
+# NotNullOrEmpty. Every self-elevating script in this repo had it, and every one
+# of them normally runs with no arguments -- so none of them could elevate. The
+# failure is quiet in exactly the wrong way: PowerShell prints a binding error,
+# the batch file exits 0, and the caller sees a step that "succeeded".
+#
+# It cost two failed installs to find, because the console it printed into
+# belonged to a script that self-elevated and vanished. And a check of the
+# construct under PowerShell 7, which accepts an empty ArgumentList, cleared it
+# wrongly -- the scripts invoke `powershell`, not `pwsh`.
+
+_ELEVATING_SCRIPTS = ["scripts/service/setup_service.bat",
+                      "scripts/uninstall_dev.bat",
+                      "scripts/vm_setup/build_tiny11_vm.bat"]
+
+
+@pytest.mark.parametrize("rel", _ELEVATING_SCRIPTS)
+def test_self_elevation_omits_an_empty_argument_list(rel):
+    text = (_ROOT_DIR / rel).read_text(encoding="utf-8", errors="replace")
+    body = chr(10).join(ln for ln in text.splitlines()
+                        if not ln.strip().upper().startswith("REM"))
+    if "-ArgumentList" not in body:
+        return                      # nothing to get wrong
+    assert 'if "%*"==""' in body, (
+        f"{rel} passes -ArgumentList unconditionally; an argument-less run "
+        "expands it to '' and Windows PowerShell 5.1 refuses to bind it")
+    # And the no-argument branch must be the one without -ArgumentList.
+    guard = body.index('if "%*"==""')
+    branch = body[guard:body.index("else", guard)]
+    assert "-ArgumentList" not in branch, (
+        f"{rel} still passes -ArgumentList on the no-argument branch")
+
+
+@pytest.mark.parametrize("rel", _ELEVATING_SCRIPTS)
+def test_every_elevating_script_actually_tries_to_elevate(rel):
+    """The guard above would also pass for a script that stopped elevating."""
+    body = (_ROOT_DIR / rel).read_text(encoding="utf-8", errors="replace")
+    assert "-Verb RunAs" in body, rel
+
+
+def test_the_rollback_leaves_a_service_it_did_not_create(monkeypatch):
+    r"""install_dev.bat does not elevate, so it never registers a service.
+
+    Its rollback used to call plain --unregister, which asks to delete
+    PolyShieldService regardless. That only ever failed harmlessly because the
+    script is unelevated -- run the same thing from an elevated shell and a
+    failure in an earlier step would take out a working, pre-existing service
+    registration as its idea of undoing an install that never touched it.
+    """
+    from ui.core import integration
+
+    called = []
+    for _label, attr in integration._STEPS:
+        monkeypatch.setattr(integration, attr,
+                            lambda a=attr: (called.append(a), (True, "stub"))[1])
+
+    report = integration.unregister_all(skip_service=True)
+    assert "unregister_service" not in called
+    assert "service" not in report["steps"]
+    assert report["ok"] is True
+    # Everything else still runs.
+    assert "context menu" in report["steps"]
+    assert "uninstall entry" in report["steps"]
+
+    called.clear()
+    integration.unregister_all()
+    assert "unregister_service" in called, "the default must still remove it"
+
+
+def test_the_installer_rollback_keeps_the_service():
+    body = (_ROOT_DIR / "scripts" / "install_dev.bat").read_text(encoding="utf-8")
+    body = chr(10).join(ln for ln in body.splitlines()
+                        if not ln.strip().upper().startswith("REM"))
+    assert "--unregister --keep-service" in body, (
+        "install_dev.bat's rollback would delete a service it never created")

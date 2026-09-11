@@ -169,11 +169,15 @@ REM ---------------------------------------------------------------------------
 :ROLLBACK
 echo.
 echo  Rolling back the per-user registrations...
-"%PY%" "%APP%" --unregister
+REM  --keep-service: this script never elevates, so it has not registered
+REM  or reconfigured a service, and a rollback must not delete one that was
+REM  already on the machine before it ran.
+"%PY%" "%APP%" --unregister --keep-service
 echo.
 echo  [ERROR] Installation failed and was rolled back.
-echo          If a service was registered before the failure, run
-echo          scripts\uninstall_dev.bat to remove it - that one elevates.
+echo          The service was left alone - this script never elevates, so
+echo          it did not create one. To remove an existing service too, run
+echo          scripts\uninstall_dev.bat - that one elevates.
 echo.
 popd
 if not defined QUIET pause

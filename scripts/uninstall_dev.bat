@@ -27,7 +27,18 @@ NET SESSION >nul 2>&1
 if errorlevel 1 (
     if not defined QUIET echo.
     if not defined QUIET echo  Requesting administrator privileges ^(a consent prompt will appear^)...
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList '%*' -Verb RunAs -Wait"
+    REM  -ArgumentList is omitted when there are no arguments to pass.
+    REM  `-ArgumentList '%*'` expands to `-ArgumentList ''` for an
+    REM  argument-less run, and Windows PowerShell 5.1 validates that
+    REM  parameter as NotNullOrEmpty -- so the elevation failed, the script
+    REM  exited 0, and nothing happened. PowerShell 7 accepts it, which is
+    REM  why this survives a test run under pwsh and dies under the
+    REM  `powershell` these scripts actually invoke.
+    if "%*"=="" (
+        powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs -Wait"
+    ) else (
+        powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList '%*' -Verb RunAs -Wait"
+    )
     exit /b
 )
 
