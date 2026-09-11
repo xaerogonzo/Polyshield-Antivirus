@@ -52,6 +52,7 @@ set "ROOT=%CD%"
 set "PY=%ROOT%\kicomav_env\Scripts\python.exe"
 set "APP=%ROOT%\src\ui\app.py"
 set "SVC_SETUP=%~dp0service\setup_service.bat"
+set "SLASH=\"
 
 echo.
 echo  +-------------------------------------------------------+
@@ -136,10 +137,7 @@ if errorlevel 1 (
     if defined DRYRUN (
         echo   [DRY] the service is not set to start automatically yet - expected.
     ) else (
-        echo.
-        echo   [FAIL] The service is not set to start automatically.
-        echo          Whatever the service installer printed above is the reason.
-        goto :ROLLBACK
+        goto :SERVICE_INCOMPLETE
     )
 )
 
@@ -157,6 +155,37 @@ echo.
 popd
 if not defined QUIET pause
 exit /b 0
+
+REM ---------------------------------------------------------------------------
+REM  The service step did not take, and that is NOT a reason to undo the rest.
+REM
+REM  The per-user registrations succeeded and are independently useful: the
+REM  Explorer verb, the Settings > Apps entry and the startup entry all work
+REM  without a service. Wiping them because an elevation-gated step needs rights
+REM  the user has not granted throws away good work and tells them nothing.
+REM
+REM  So this reports precisely what is missing and how to finish it, and leaves
+REM  what worked in place. A failure in step 3 still rolls back -- that one is
+REM  this script's own work, half-done.
+REM ---------------------------------------------------------------------------
+:SERVICE_INCOMPLETE
+echo.
+echo  [PARTIAL] The per-user integrations are registered. The service is not.
+echo.
+echo  The service step needs administrator rights, and the elevation this
+echo  script asked for did not take effect - no consent prompt, or one that
+echo  was dismissed.
+echo.
+echo  To finish, open PowerShell AS ADMINISTRATOR and run:
+echo.
+echo      cd "%ROOT%"
+echo      scripts%SLASH%service%SLASH%setup_service.bat
+echo.
+echo  Then re-run this script to confirm. Nothing needs undoing first.
+echo.
+popd
+if not defined QUIET pause
+exit /b 2
 
 REM ---------------------------------------------------------------------------
 REM  A failed install must not leave a half-installed machine. unregister_all()
