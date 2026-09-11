@@ -83,7 +83,7 @@ REM -- Step 2: Ensure pywin32 is installed -----------------------------------
 echo  [2/8] Checking pywin32...
 kicomav_env\Scripts\python.exe -c "import win32serviceutil" >nul 2>&1
 if errorlevel 1 (
-    echo   Installing pywin32 (not found in venv)...
+    echo   Installing pywin32 ^(not found in venv^)...
     kicomav_env\Scripts\pip.exe install "pywin32>=307"
     if errorlevel 1 (
         echo  [ERROR] pywin32 installation failed.
@@ -101,10 +101,10 @@ REM  This copies pywintypes313.dll + pythoncom313.dll to C:\Windows\System32.
 echo  [3/8] Registering pywin32 DLLs in System32...
 kicomav_env\Scripts\python.exe -m pywin32_postinstall -install >nul 2>&1
 if errorlevel 1 (
-    echo   [WARN] pywin32_postinstall reported an error (may already be registered).
+    echo   [WARN] pywin32_postinstall reported an error ^(may already be registered^).
     echo          Continuing — this is often non-fatal.
 ) else (
-    echo   [OK] DLLs registered (pywintypes3XX.dll, pythoncom3XX.dll)
+    echo   [OK] DLLs registered ^(pywintypes3XX.dll, pythoncom3XX.dll^)
 )
 
 REM -- Step 4: Register Defender exclusions ---------------------------------
@@ -259,7 +259,7 @@ sc query PolyShieldService >nul 2>&1
 if errorlevel 1 (
     echo   [OK] Service removed from SCM
 ) else (
-    echo   [WARN] Service may still appear in SCM for a moment (Windows cleanup delay)
+    echo   [WARN] Service may still appear in SCM for a moment ^(Windows cleanup delay^)
 )
 
 echo  [3/3] Cleaning up service data files...
@@ -270,7 +270,7 @@ if /i "!CLEAN_DATA!"=="y" (
         echo   [OK] C:\ProgramData\PolyShield removed
     )
 ) else (
-    echo   [OK] Data files kept (re-install will reuse them)
+    echo   [OK] Data files kept ^(re-install will reuse them^)
 )
 
 echo.

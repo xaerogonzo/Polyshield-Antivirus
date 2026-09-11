@@ -20,7 +20,7 @@ REM -- Self-elevate if not already running as Administrator -------
 NET SESSION >nul 2>&1
 if errorlevel 1 (
     echo.
-    echo  Requesting administrator privileges (UAC prompt will appear)...
+    echo  Requesting administrator privileges ^(UAC prompt will appear^)...
     echo.
     REM  -ArgumentList is omitted when there are no arguments to pass.
     REM  `-ArgumentList '%*'` expands to `-ArgumentList ''` for an

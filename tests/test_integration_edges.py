@@ -1508,3 +1508,77 @@ def test_the_installer_rollback_keeps_the_service():
                         if not ln.strip().upper().startswith("REM"))
     assert "--unregister --keep-service" in body, (
         "install_dev.bat's rollback would delete a service it never created")
+
+
+# ══ Batch blocks ═════════════════════════════════════════════════════════════
+#
+# An unescaped `)` inside a parenthesised block CLOSES that block, and whatever
+# followed it on the line is then run as a command. setup_service.bat had
+#
+#     if errorlevel 1 (
+#         echo   Installing pywin32 (not found in venv)...
+#
+# so cmd closed the `if` at "venv)" and tried to execute "...", producing
+#
+#     ... was unexpected at this time.
+#
+# and exiting at step 2 of 8 -- on every run this script has ever had. That is
+# why the service was never configured, and why the elevated console it was
+# launched in closed instantly: `cmd /C` closes when the batch dies, and the
+# `pause` at the end was never reached.
+#
+# Only the CLOSING paren matters. `(` is harmless, which is why half of
+# manage.bat escapes `^)` and leaves `(` bare.
+
+def _echo_lines_inside_blocks(path):
+    """(line number, text) for every echo that cmd parses inside a block."""
+    import re
+
+    caret = chr(94)
+    depth, found = 0, []
+    for n, raw in enumerate(path.read_text(encoding="utf-8", errors="replace")
+                            .splitlines(), 1):
+        line = raw.strip()
+        if line.upper().startswith("REM") or line.startswith("::"):
+            continue
+        is_echo = bool(re.match(r"(?i)^echo\b", line))
+        if depth > 0 and is_echo:
+            found.append((n, line))
+        code = re.sub(r'"[^"]*"', "", line)
+        code = re.sub(re.escape(caret) + r"[()]", "", code)
+        if is_echo:
+            # Echo text is not structure -- that is the bug, not the ruler.
+            code = ""
+        depth = max(0, depth + code.count("(") - code.count(")"))
+    return found
+
+
+@pytest.mark.parametrize(
+    "rel", sorted(p.relative_to(_ROOT_DIR).as_posix()
+                  for p in (_ROOT_DIR / "scripts").rglob("*.bat")))
+def test_no_batch_echo_closes_its_own_block(rel):
+    import re
+
+    caret = chr(94)
+    offenders = [
+        f"{n}: {text}"
+        for n, text in _echo_lines_inside_blocks(_ROOT_DIR / rel)
+        if re.search(r"(?<!" + re.escape(caret) + r")\)", text)
+    ]
+    assert offenders == [], (
+        f"{rel} has an echo inside a block whose unescaped ')' ends that block; "
+        "escape it as ^): " + "; ".join(offenders))
+
+
+def test_the_guard_recognises_the_bug_it_was_written_for(tmp_path):
+    """A guard that cannot fail is not a guard."""
+    import re
+
+    bad = tmp_path / "bad.bat"
+    bad.write_text(
+        "if errorlevel 1 (\n"
+        "    echo   Installing pywin32 (not found in venv)...\n"
+        ")\n", encoding="utf-8")
+    found = _echo_lines_inside_blocks(bad)
+    assert found, "the scanner did not see an echo inside the block"
+    assert any(re.search(r"(?<!\^)\)", t) for _n, t in found)
