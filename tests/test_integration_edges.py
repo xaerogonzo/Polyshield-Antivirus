@@ -136,10 +136,13 @@ def registry(monkeypatch):
     giving them separate fakes would let a test tear down against a tree nothing
     was written to and call that a pass.
     """
-    from ui.core import autostart
+    from ui.core import autostart, dev_install
 
     fake = _FakeWinreg()
-    for mod in (shell_ext, autostart):
+    # dev_install too. Leaving it out is how three register_all() tests below
+    # wrote and then deleted the developer's real Settings > Apps entry on every
+    # run of the suite. conftest's autouse floor now catches that as well.
+    for mod in (shell_ext, autostart, dev_install):
         monkeypatch.setattr(mod, "winreg", fake)
         monkeypatch.setattr(mod, "_HKCU", fake.HKEY_CURRENT_USER)
     return fake

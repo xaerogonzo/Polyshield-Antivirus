@@ -456,6 +456,144 @@ def _assert_session_leaves_no_trace():
     assert not stragglers, f"non-daemon threads outlived the suite: {stragglers}"
 
 
+# ── The user's own registry ───────────────────────────────────────────────────
+#
+# Three modules write PolyShield into the current user's HKCU: the Explorer verb
+# (shell_ext), the login entry (autostart) and the Settings > Apps entry
+# (dev_install). Every one of them talks to `winreg` directly, so stubbing
+# subprocess covers none of them.
+#
+# This used to be guarded per file. test_integration_teardown.py had
+# _never_touch_the_real_hive; test_integration_edges.py had a `registry` fixture
+# that faked the hive for shell_ext and autostart and not for dev_install. Three
+# tests there call register_all() and unregister_all() for real, so every run of
+# the suite wrote the developer's real uninstall entry and then deleted it --
+# measured: entry present, run those three tests, entry absent. It looked like an
+# installer rollback firing, and was diagnosed as one, for a full day.
+#
+# So the floor is suite-wide and autouse. A test that wants a richer fake -- the
+# edges file's `registry`, with injectable errors -- still overrides it, because
+# a fixture a test requests is applied after the autouse ones.
+
+_HKCU_MODULES = ("ui.core.shell_ext", "ui.core.autostart", "ui.core.dev_install")
+
+
+class _MemoryWinreg:
+    """Enough of winreg for the three HKCU modules, held in a dict."""
+
+    HKEY_CURRENT_USER = "HKCU"
+    HKEY_LOCAL_MACHINE = "HKLM"
+    REG_SZ, REG_BINARY, REG_DWORD = 1, 3, 4
+    KEY_READ, KEY_SET_VALUE, KEY_WOW64_64KEY = 0x20019, 0x0002, 0x0100
+
+    def __init__(self):
+        self.tree: dict = {}
+
+    class _Key:
+        def __init__(self, hive, sub):
+            self.hive, self.sub = hive, sub
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+        def Close(self):
+            pass
+
+    def CreateKey(self, hive, sub):
+        self.tree.setdefault((hive, sub), {})
+        return self._Key(hive, sub)
+
+    def OpenKey(self, hive, sub, *_a, **_k):
+        if (hive, sub) not in self.tree:
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+        return self._Key(hive, sub)
+
+    def SetValueEx(self, key, name, _reserved, typ, data):
+        self.tree[(key.hive, key.sub)][name] = (data, typ)
+
+    def QueryValueEx(self, key, name):
+        try:
+            return self.tree[(key.hive, key.sub)][name]
+        except KeyError:
+            raise FileNotFoundError(2, "The system cannot find the file specified") from None
+
+    def DeleteValue(self, key, name):
+        try:
+            del self.tree[(key.hive, key.sub)][name]
+        except KeyError:
+            raise FileNotFoundError(2, "The system cannot find the file specified") from None
+
+    def DeleteKey(self, hive, sub):
+        if (hive, sub) not in self.tree:
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+        del self.tree[(hive, sub)]
+
+
+@pytest.fixture(autouse=True)
+def _no_test_writes_the_users_registry(monkeypatch):
+    fake = _MemoryWinreg()
+    for name in _HKCU_MODULES:
+        try:
+            mod = importlib.import_module(name)
+        except ImportError:
+            continue
+        monkeypatch.setattr(mod, "winreg", fake, raising=False)
+        if hasattr(mod, "_HKCU"):
+            monkeypatch.setattr(mod, "_HKCU", fake.HKEY_CURRENT_USER)
+    return fake
+
+
+#: The real values, read with the real winreg -- never through the modules
+#: above, whose `winreg` the fixture replaces.
+_REAL_POLYSHIELD_KEYS = (
+    (r"Software\Microsoft\Windows\CurrentVersion\Run", "PolyShield"),
+    (r"Software\Classes\*\shell\PolyShield\command", ""),
+    (r"Software\Microsoft\Windows\CurrentVersion\Uninstall\PolyShield", "UninstallString"),
+)
+
+
+def _read_real_polyshield_keys():
+    import winreg
+
+    out = {}
+    for sub, value in _REAL_POLYSHIELD_KEYS:
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, sub) as key:
+                out[sub] = winreg.QueryValueEx(key, value)[0]
+        except OSError:
+            out[sub] = None
+    return out
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _assert_session_leaves_the_users_registry_alone():
+    """Read-only, and the half that would have caught the leak above.
+
+    The fixture before it prevents a write through the three modules it knows
+    about. This one asserts the outcome regardless of route: whatever the
+    developer's PolyShield entries were when the run started, they are exactly
+    that when it ends. A new module that reaches HKCU without being added to
+    _HKCU_MODULES fails here instead of quietly uninstalling somebody.
+
+    If you run install_dev.bat or toggle a switch in the app WHILE the suite is
+    running, this will fail too -- correctly, since it cannot tell you from a
+    test.
+    """
+    if sys.platform != "win32":
+        yield
+        return
+    before = _read_real_polyshield_keys()
+    yield
+    after = _read_real_polyshield_keys()
+    changed = {k: (before[k], after[k]) for k in before if before[k] != after[k]}
+    assert not changed, (
+        "the test run changed the developer's real PolyShield registry entries "
+        f"(before, after): {changed}")
+
+
 # ── Headless Tk ───────────────────────────────────────────────────────────────
 
 @pytest.fixture(scope="session")

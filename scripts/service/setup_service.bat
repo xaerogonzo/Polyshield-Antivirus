@@ -209,7 +209,7 @@ sc query PolyShieldService | find "RUNNING" >nul 2>&1
 if errorlevel 1 (
     echo   [WARN] Service may not have started yet.
     echo          Check: Event Viewer ^> Windows Logs ^> System  (source: PolyShieldService^)
-    echo          Log:   C:\ProgramData\PolyShield\service.log
+    echo          Log:   !ROOT!\state\service.log
     echo          Query: sc query PolyShieldService
 ) else (
     echo   [OK] Service is RUNNING
@@ -223,11 +223,16 @@ echo  ^|                                                      ^|
 echo  ^|  Service:  PolyShield Realtime Protection            ^|
 echo  ^|  Account:  LocalSystem                               ^|
 echo  ^|  Port:     127.0.0.1:52614 (localhost only)          ^|
-echo  ^|  Log:      C:\ProgramData\PolyShield\service.log     ^|
-echo  ^|  Token:    C:\ProgramData\PolyShield\service_token.txt^|
 echo  ^|                                                      ^|
 echo  ^|  In PolyShield UI — click "Service" in the sidebar.  ^|
 echo  +-------------------------------------------------------+
+echo.
+REM  Outside the box because the path does not fit in it. These used to name
+REM  C:\ProgramData\PolyShield, which is where a PACKAGED build keeps service
+REM  state; a source checkout has kept it in <checkout>\state since v1.16, so the
+REM  banner pointed at a log the service had stopped writing.
+echo   Log:    !ROOT!\state\service.log
+echo   Token:  !ROOT!\state\service_token.txt
 echo.
 if not defined NOPAUSE pause
 exit /b 0
