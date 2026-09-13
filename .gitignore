@@ -88,3 +88,9 @@ artifacts/
 # Settings cross-process lock sidecar (runtime artifact)
 config/ui_settings.json.lock
 config/*.corrupt
+
+# TokenSave Manager: local-only, like CLAUDE.md
+/project-baseline.md
+
+# TokenSave Manager: local-only, like CLAUDE.md
+/docs/LESSONS.md
