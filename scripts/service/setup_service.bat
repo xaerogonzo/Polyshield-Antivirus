@@ -267,15 +267,46 @@ if errorlevel 1 (
     echo   [WARN] Service may still appear in SCM for a moment ^(Windows cleanup delay^)
 )
 
-echo  [3/3] Cleaning up service data files...
-set /p CLEAN_DATA="  Remove C:\ProgramData\PolyShield (log + token files)? [y/N]: "
+REM -- Step 3: the service's log and token, and NOTHING else ------------------
+REM
+REM  This used to ask "Remove C:\ProgramData\PolyShield (log + token files)?" and
+REM  then run `rmdir /s /q` on the whole folder. The prompt named two files; the
+REM  command deleted a tree. On a machine that had ever run an older build, that
+REM  folder held intelligence\, k2\, logs\ and quarantine\ -- and quarantine may
+REM  hold the only copy of a file somebody wants back. One "y" would have
+REM  destroyed it with no confirmation of what was actually inside.
+REM
+REM  Now it deletes exactly the two files it names, in both places the service
+REM  has kept them: <checkout>\state (source installs since v1.16) and the
+REM  legacy ProgramData folder. No directory is removed, ever.
+for %%I in ("%~dp0..\..") do set "ROOT=%%~fI"
+if not defined LEGACY set "LEGACY=C:\ProgramData\PolyShield"
+
+echo  [3/3] Cleaning up the service log and token...
+echo        Only these files, wherever they exist:
+echo          !ROOT!\state\service.log
+echo          !ROOT!\state\service_token.txt
+echo          !LEGACY!\service.log
+echo          !LEGACY!\service_token.txt
+echo        No folder is removed. Quarantine, logs, the threat database and your
+echo        settings are not touched.
+set /p CLEAN_DATA="  Remove them? [y/N]: "
 if /i "!CLEAN_DATA!"=="y" (
-    if exist "C:\ProgramData\PolyShield" (
-        rmdir /s /q "C:\ProgramData\PolyShield"
-        echo   [OK] C:\ProgramData\PolyShield removed
+    set "REMOVED=0"
+    for %%F in ("!ROOT!\state\service.log" "!ROOT!\state\service_token.txt" "!LEGACY!\service.log" "!LEGACY!\service_token.txt") do (
+        if exist "%%~F" (
+            del /f /q "%%~F" >nul 2>&1
+            if exist "%%~F" (
+                echo   [WARN] could not remove %%~F
+            ) else (
+                echo   [OK] removed %%~F
+                set /a REMOVED+=1
+            )
+        )
     )
+    if "!REMOVED!"=="0" echo   [OK] nothing to remove
 ) else (
-    echo   [OK] Data files kept ^(re-install will reuse them^)
+    echo   [OK] Log and token kept ^(re-install will reuse them^)
 )
 
 echo.

@@ -1585,3 +1585,83 @@ def test_the_guard_recognises_the_bug_it_was_written_for(tmp_path):
     found = _echo_lines_inside_blocks(bad)
     assert found, "the scanner did not see an echo inside the block"
     assert any(re.search(r"(?<!\^)\)", t) for _n, t in found)
+
+
+# ══ setup_service.bat /remove deletes two files, not a folder ═════════════════
+#
+# Its data-cleanup prompt said "Remove C:\ProgramData\PolyShield (log + token
+# files)?" and then ran `rmdir /s /q` on the whole folder. On a machine that had
+# run an older build that folder held intelligence\, k2\, logs\ and quarantine\ --
+# and quarantine can hold the only copy of a file somebody wants back.
+#
+# These run the real block from the real script against a throwaway tree.
+
+def _cleanup_harness(tmp_path):
+    src = (_ROOT_DIR / "scripts" / "service" / "setup_service.bat").read_text(
+        encoding="utf-8").splitlines(keepends=True)
+    start = next(i for i, ln in enumerate(src)
+                 if ln.startswith("REM -- Step 3: the service's log and token"))
+    end = next(i for i in range(start, len(src))
+               if src[i].startswith("echo  Service removed."))
+    # The block derives ROOT from %~dp0..\.., so the harness sits two levels
+    # down inside the fake checkout, exactly where the real script does.
+    harness = tmp_path / "checkout" / "scripts" / "service" / "cleanup.bat"
+    harness.parent.mkdir(parents=True)
+    harness.write_text("@echo off\nsetlocal enabledelayedexpansion\n"
+                       + "".join(src[start:end]) + "exit /b 0\n", encoding="utf-8")
+
+    checkout, legacy = tmp_path / "checkout", tmp_path / "ProgramData" / "PolyShield"
+    keep = [checkout / "state" / "service_events.json",
+            legacy / "quarantine" / "held.bin",
+            legacy / "intelligence" / "threat_db.sqlite",
+            legacy / "logs" / "scan_1.json",
+            legacy / "k2" / "rule.yar"]
+    doomed = [checkout / "state" / "service.log",
+              checkout / "state" / "service_token.txt",
+              legacy / "service.log",
+              legacy / "service_token.txt"]
+    for f in keep + doomed:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("x", encoding="utf-8")
+    return harness, legacy, keep, doomed
+
+
+def _run_cleanup(harness, legacy, answer):
+    import os
+
+    env = dict(os.environ, LEGACY=str(legacy))
+    return subprocess.run(["cmd.exe", "/c", str(harness)], input=answer + "\n",
+                          capture_output=True, text=True, env=env, timeout=60,
+                          cwd=str(harness.parent))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="runs cmd.exe")
+def test_remove_deletes_the_two_files_and_nothing_else(tmp_path):
+    harness, legacy, keep, doomed = _cleanup_harness(tmp_path)
+    proc = _run_cleanup(harness, legacy, "y")
+
+    still_there = [str(f) for f in doomed if f.exists()]
+    assert not still_there, f"not removed: {still_there}\n{proc.stdout}{proc.stderr}"
+    lost = [str(f) for f in keep if not f.exists()]
+    assert not lost, (
+        "the log/token cleanup deleted something that is not the log or token -- "
+        f"{lost}\n{proc.stdout}{proc.stderr}")
+    assert legacy.is_dir(), "the legacy folder itself was removed"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="runs cmd.exe")
+def test_remove_deletes_nothing_when_the_answer_is_no(tmp_path):
+    harness, legacy, keep, doomed = _cleanup_harness(tmp_path)
+    proc = _run_cleanup(harness, legacy, "n")
+    assert all(f.exists() for f in keep + doomed), proc.stdout + proc.stderr
+
+
+def test_the_service_script_never_removes_a_directory():
+    """Static half, for the machines that cannot run cmd.exe."""
+    text = (_ROOT_DIR / "scripts" / "service" / "setup_service.bat").read_text(
+        encoding="utf-8")
+    body = [ln.strip().lower() for ln in text.splitlines()
+            if not ln.strip().upper().startswith("REM")]
+    offenders = [ln for ln in body
+                 if ln.startswith(("rmdir", "rd ")) or " rmdir " in f" {ln} "]
+    assert not offenders, f"setup_service.bat removes a directory: {offenders}"
