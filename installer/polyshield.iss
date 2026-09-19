@@ -70,6 +70,14 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Shortcuts:"
 Name: "contextmenu"; Description: "Add ""Scan with PolyShield"" to the Explorer right-click menu"; GroupDescription: "Integration:"
+; UNCHECKED, and it has to stay that way. PolyShield's rule is that the login
+; entry is written only when somebody asked for it, and the Settings toggle
+; being off by default is not enough on its own -- the installer is the one
+; place where a checked-by-default box would put a Run value into the registry
+; of every person who clicked Next. A silent install selects no tasks at all,
+; so /VERYSILENT registers nothing here either.
+; tests/test_integration_edges.py reads this line.
+Name: "startupicon"; Description: "Start PolyShield when I sign in (minimised to the notification area)"; GroupDescription: "Integration:"; Flags: unchecked
 
 [Files]
 Source: "{#DistDir}\{#AppExeName}";  DestDir: "{app}"; Flags: ignoreversion
@@ -122,6 +130,14 @@ Filename: "powershell.exe";   Parameters: "-ExecutionPolicy Bypass -NoProfile -F
 Filename: "{app}\{#AppExeName}"; Parameters: "--register-context-menu"; \
   StatusMsg: "Adding the Explorer menu entry..."; \
   Flags: runhidden waituntilterminated; Tasks: contextmenu
+
+; Same reasoning as the line above: one implementation of the command string,
+; in paths.app_launch_argv(). This one runs only when the user ticked the task,
+; which is what keeps "off by default" true for the packaged build as well as
+; for the Settings switch.
+Filename: "{app}\{#AppExeName}"; Parameters: "--register-autostart"; \
+  StatusMsg: "Adding the startup entry..."; \
+  Flags: runhidden waituntilterminated; Tasks: startupicon
 
 Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; \
   Flags: postinstall nowait skipifsilent

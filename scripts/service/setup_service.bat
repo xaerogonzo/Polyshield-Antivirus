@@ -19,11 +19,28 @@ if errorlevel 1 (
     echo.
     echo  Requesting administrator privileges ^(UAC prompt will appear^)...
     echo.
-    powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList '%*' -Verb RunAs -Wait"
+    REM  -ArgumentList is omitted when there are no arguments to pass.
+    REM  `-ArgumentList '%*'` expands to `-ArgumentList ''` for an
+    REM  argument-less run, and Windows PowerShell 5.1 validates that
+    REM  parameter as NotNullOrEmpty -- so the elevation failed, the script
+    REM  exited 0, and nothing happened. PowerShell 7 accepts it, which is
+    REM  why this survives a test run under pwsh and dies under the
+    REM  `powershell` these scripts actually invoke.
+    if "%*"=="" (
+        powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -Verb RunAs -Wait"
+    ) else (
+        powershell -NoProfile -Command "Start-Process -FilePath '%~f0' -ArgumentList '%*' -Verb RunAs -Wait"
+    )
     exit /b
 )
 
-REM -- Handle /remove argument -----------------------------------------------
+REM -- Handle arguments -------------------------------------------------------
+REM  /nopause exists because install_dev.bat calls this script and cannot answer
+REM  a "Press any key" prompt. Swallowing the output instead -- which is what it
+REM  used to do -- hid the prompt AND every error this script prints.
+set "NOPAUSE="
+if /i "%1"=="/nopause" set "NOPAUSE=1"
+if /i "%2"=="/nopause" set "NOPAUSE=1"
 if /i "%1"=="/remove" goto UNINSTALL
 if /i "%1"=="/uninstall" goto UNINSTALL
 
@@ -66,7 +83,7 @@ REM -- Step 2: Ensure pywin32 is installed -----------------------------------
 echo  [2/8] Checking pywin32...
 kicomav_env\Scripts\python.exe -c "import win32serviceutil" >nul 2>&1
 if errorlevel 1 (
-    echo   Installing pywin32 (not found in venv)...
+    echo   Installing pywin32 ^(not found in venv^)...
     kicomav_env\Scripts\pip.exe install "pywin32>=307"
     if errorlevel 1 (
         echo  [ERROR] pywin32 installation failed.
@@ -84,10 +101,10 @@ REM  This copies pywintypes313.dll + pythoncom313.dll to C:\Windows\System32.
 echo  [3/8] Registering pywin32 DLLs in System32...
 kicomav_env\Scripts\python.exe -m pywin32_postinstall -install >nul 2>&1
 if errorlevel 1 (
-    echo   [WARN] pywin32_postinstall reported an error (may already be registered).
+    echo   [WARN] pywin32_postinstall reported an error ^(may already be registered^).
     echo          Continuing — this is often non-fatal.
 ) else (
-    echo   [OK] DLLs registered (pywintypes3XX.dll, pythoncom3XX.dll)
+    echo   [OK] DLLs registered ^(pywintypes3XX.dll, pythoncom3XX.dll^)
 )
 
 REM -- Step 4: Register Defender exclusions ---------------------------------
@@ -171,10 +188,20 @@ if errorlevel 1 (
 echo   [OK] Service registered: PolyShield Realtime Protection
 
 REM -- Step 7: Start the service --------------------------------------------
-REM  Also force start= auto in case the service was previously registered as
-REM  DEMAND_START (manual).  win32serviceutil install sets the type from the
-REM  _svc_start_type_ attribute, but sc config ensures it on upgrade paths too.
+REM  Force start= auto on the UPGRADE path: an existing DEMAND_START
+REM  registration survives a reinstall.  This comment used to say that
+REM  win32serviceutil reads _svc_start_type_ -- it does not, and never did
+REM  (win32serviceutil.py:221 defaults startType to SERVICE_DEMAND_START).
+REM  polyshield_service._with_startup_flag() now injects --startup, so a
+REM  fresh registration is already correct and this line covers a reinstall.
 sc config PolyShieldService start= auto >nul 2>&1
+REM  Recovery actions. installer/register_service.ps1 has always set these and
+REM  this script never did, so a developer install was the one deployment where
+REM  a service that died once stayed dead -- which is a protection product that
+REM  is off without saying so. Kept in step with
+REM  ui.core.integration.service_startup_commands(), which
+REM  tests/test_service_startup.py compares against these two literals.
+sc failure PolyShieldService reset= 86400 actions= restart/60000/restart/60000/restart/60000 >nul 2>&1
 echo  [8/8] Starting service...
 sc start PolyShieldService >nul 2>&1
 timeout /t 3 /nobreak >nul
@@ -182,7 +209,7 @@ sc query PolyShieldService | find "RUNNING" >nul 2>&1
 if errorlevel 1 (
     echo   [WARN] Service may not have started yet.
     echo          Check: Event Viewer ^> Windows Logs ^> System  (source: PolyShieldService^)
-    echo          Log:   C:\ProgramData\PolyShield\service.log
+    echo          Log:   !ROOT!\state\service.log
     echo          Query: sc query PolyShieldService
 ) else (
     echo   [OK] Service is RUNNING
@@ -196,13 +223,18 @@ echo  ^|                                                      ^|
 echo  ^|  Service:  PolyShield Realtime Protection            ^|
 echo  ^|  Account:  LocalSystem                               ^|
 echo  ^|  Port:     127.0.0.1:52614 (localhost only)          ^|
-echo  ^|  Log:      C:\ProgramData\PolyShield\service.log     ^|
-echo  ^|  Token:    C:\ProgramData\PolyShield\service_token.txt^|
 echo  ^|                                                      ^|
 echo  ^|  In PolyShield UI — click "Service" in the sidebar.  ^|
 echo  +-------------------------------------------------------+
 echo.
-pause
+REM  Outside the box because the path does not fit in it. These used to name
+REM  C:\ProgramData\PolyShield, which is where a PACKAGED build keeps service
+REM  state; a source checkout has kept it in <checkout>\state since v1.16, so the
+REM  banner pointed at a log the service had stopped writing.
+echo   Log:    !ROOT!\state\service.log
+echo   Token:  !ROOT!\state\service_token.txt
+echo.
+if not defined NOPAUSE pause
 exit /b 0
 
 
@@ -232,18 +264,49 @@ sc query PolyShieldService >nul 2>&1
 if errorlevel 1 (
     echo   [OK] Service removed from SCM
 ) else (
-    echo   [WARN] Service may still appear in SCM for a moment (Windows cleanup delay)
+    echo   [WARN] Service may still appear in SCM for a moment ^(Windows cleanup delay^)
 )
 
-echo  [3/3] Cleaning up service data files...
-set /p CLEAN_DATA="  Remove C:\ProgramData\PolyShield (log + token files)? [y/N]: "
+REM -- Step 3: the service's log and token, and NOTHING else ------------------
+REM
+REM  This used to ask "Remove C:\ProgramData\PolyShield (log + token files)?" and
+REM  then run `rmdir /s /q` on the whole folder. The prompt named two files; the
+REM  command deleted a tree. On a machine that had ever run an older build, that
+REM  folder held intelligence\, k2\, logs\ and quarantine\ -- and quarantine may
+REM  hold the only copy of a file somebody wants back. One "y" would have
+REM  destroyed it with no confirmation of what was actually inside.
+REM
+REM  Now it deletes exactly the two files it names, in both places the service
+REM  has kept them: <checkout>\state (source installs since v1.16) and the
+REM  legacy ProgramData folder. No directory is removed, ever.
+for %%I in ("%~dp0..\..") do set "ROOT=%%~fI"
+if not defined LEGACY set "LEGACY=C:\ProgramData\PolyShield"
+
+echo  [3/3] Cleaning up the service log and token...
+echo        Only these files, wherever they exist:
+echo          !ROOT!\state\service.log
+echo          !ROOT!\state\service_token.txt
+echo          !LEGACY!\service.log
+echo          !LEGACY!\service_token.txt
+echo        No folder is removed. Quarantine, logs, the threat database and your
+echo        settings are not touched.
+set /p CLEAN_DATA="  Remove them? [y/N]: "
 if /i "!CLEAN_DATA!"=="y" (
-    if exist "C:\ProgramData\PolyShield" (
-        rmdir /s /q "C:\ProgramData\PolyShield"
-        echo   [OK] C:\ProgramData\PolyShield removed
+    set "REMOVED=0"
+    for %%F in ("!ROOT!\state\service.log" "!ROOT!\state\service_token.txt" "!LEGACY!\service.log" "!LEGACY!\service_token.txt") do (
+        if exist "%%~F" (
+            del /f /q "%%~F" >nul 2>&1
+            if exist "%%~F" (
+                echo   [WARN] could not remove %%~F
+            ) else (
+                echo   [OK] removed %%~F
+                set /a REMOVED+=1
+            )
+        )
     )
+    if "!REMOVED!"=="0" echo   [OK] nothing to remove
 ) else (
-    echo   [OK] Data files kept (re-install will reuse them)
+    echo   [OK] Log and token kept ^(re-install will reuse them^)
 )
 
 echo.

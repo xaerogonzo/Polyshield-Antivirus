@@ -578,6 +578,40 @@ def script_launch_argv(script: str, *args: str) -> list[str]:
     return [str(venv_python()), str(resource_root() / script), *args]
 
 
+def service_install_argv(*args: str) -> list[str]:
+    r"""argv that ADMINISTERS the service -- ``install``, ``remove``, ``update``.
+
+    Not to be confused with :func:`service_registration`, which answers a
+    different question: that one is the image path the SCM will later launch,
+    this one is the interpreter to run the registration *with*, right now.
+
+    Distribution: the staged interpreter plus the service source beside it, the
+    same pair the SCM is given.  Checkout: the virtualenv interpreter plus the
+    script at the project root.
+
+    Deliberately not ``sys.executable``.  From the GUI that happens to be
+    ``kicomav_env\Scripts\pythonw.exe`` and works, which is exactly why
+    ``service_view.py`` used it for a year -- but a Nuitka build reports a
+    ``python.exe`` beside the real binary that DOES NOT EXIST (see
+    :func:`running_executable`), so the in-app Install button would hand the
+    elevated shell a path to nothing.
+
+    Raises StagedRuntimeMissing when a distribution has no runtime, for the same
+    reason :func:`script_launch_argv` does: reporting that beats registering
+    something unrunnable.
+    """
+    if is_distribution():
+        interpreter = runtime_python()
+        target = install_root() / "service" / "polyshield_service.py"
+        if not interpreter.exists():
+            raise StagedRuntimeMissing(
+                f"cannot administer the service: no interpreter at {interpreter}. "
+                "The installer stages a runtime directory beside the executable; a "
+                "build without one cannot register its own service.")
+        return [str(interpreter), str(target), *args]
+    return [str(venv_python()), str(resource_root() / "polyshield_service.py"), *args]
+
+
 def bootstrap_sys_path() -> None:
     """Put the checkout and its `src/` on sys.path, in source mode only.
 

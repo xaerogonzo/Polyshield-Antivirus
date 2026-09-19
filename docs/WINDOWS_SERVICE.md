@@ -197,6 +197,82 @@ if __name__ == "__main__":
 
 This is the **modern pywin32 venv-compatible service entry point**. After this fix, `sc query PolyShieldService` shows `STATE: 4 RUNNING` immediately.
 
+### The second pywin32 discovery: `_svc_start_type_` does nothing
+
+`PolyShieldService._svc_start_type_` has been `win32service.SERVICE_AUTO_START`
+since the service was written. It never took effect. **pywin32 does not read that
+attribute.**
+
+Measured in the installed copy, `win32/lib/win32serviceutil.py`:
+
+```
+:203  def InstallService(..., startType=None, ...)
+:221      if startType is None:
+:222          startType = win32service.SERVICE_DEMAND_START
+:750-764  --startup maps {"manual", "auto", "delayed", "disabled"}
+:852      InstallService(..., startType=startup, ...)
+```
+
+`startup` is filled **only** from an explicit `--startup` option. Every
+`polyshield_service.py install` therefore registered a DEMAND_START service.
+
+Two of the three call sites had been quietly compensating:
+
+| Call site | `sc config start= auto` afterwards? |
+|---|---|
+| `scripts/service/setup_service.bat` | yes (line 177) |
+| `installer/register_service.ps1` | yes (line 115) |
+| `ServiceView`'s in-app Install button | **no** |
+
+So a service installed from the UI never started at boot, and nothing in the
+product said so. On the machine where this was found:
+
+```
+sc qc PolyShieldService
+  START_TYPE      : 3   DEMAND_START
+  WIN32_EXIT_CODE : 1077     (ERROR_SERVICE_NEVER_STARTED)
+```
+
+**The fix is in the callee, not in a fourth compensating caller.**
+`polyshield_service._with_startup_flag()` injects `--startup <mode>` before the
+command verb — which is what makes `_svc_start_type_` load-bearing after all,
+since that function is what reads it. It is verb-aware (the verb is the first
+non-option token, because `--username bob install` exists), it never overrides a
+caller-supplied `--startup`, and the flag goes *before* the verb because getopt
+stops at the first non-option.
+
+Two spellings, not interchangeable: pywin32 wants `--startup delayed`,
+`sc config` wants `start= delayed-auto`.
+
+`sc config` is still run afterwards, for the upgrade path — an existing
+DEMAND_START registration survives a reinstall — along with `sc failure`, which
+only `register_service.ps1` had been setting. Both now come from
+`integration.service_startup_commands()`, and `tests/test_service_startup.py`
+reads the two shell scripts from the real tree and fails if their literals drift
+from it.
+
+### Asking what the SCM actually holds
+
+`integration.service_state()` returns start type and current state as **two
+separate facts** and never collapses them:
+
+```python
+{"present": bool,
+ "start_type": "auto" | "delayed-auto" | "manual" | "disabled" | "absent" | "unknown",
+ "state": "running" | "stopped" | ... | "absent" | "unknown",
+ "exit_code": int}      # 1077 = registered, never started since boot
+```
+
+`auto` + stopped is not "Automatic" and is not "healthy". Collapsing the two is
+how a registered-and-never-started service reads as fine, which is exactly what
+happened for a year.
+
+It reads `Start` and `DelayedAutostart` from
+`HKLM\SYSTEM\CurrentControlSet\Services\PolyShieldService` and calls
+`win32serviceutil.QueryServiceStatus` — **not** `sc qc` parsing. `sc`'s field
+labels are localised; those numbers are not. Same reasoning as
+`unregister_scheduled_task`'s refusal to read schtasks' failure text.
+
 ### DLL Registration (pywin32_postinstall)
 
 Even with `_exe_name_` fixed, one more step is required. `pywin32` ships `pywintypes3XX.dll` and `pythoncom3XX.dll` inside the venv. The Windows Service host process needs these DLLs **before** Python can load anything. They must be copied to `C:\Windows\System32` so the loader finds them.

@@ -1147,6 +1147,97 @@ silently. Bundling it is a 4b.4 experiment gated on an EICAR detection test
 through the packaged build — and if the plugin loader cannot be made reliable,
 K2 stays out and the UI says so.
 
+### PolyShield is not a Windows Security Center antivirus, and says so
+
+Appearing in Windows Security as a registered antivirus goes through Microsoft's
+antimalware-partner path — ELAM signing under the Microsoft Virus Initiative —
+which is not open to an unsigned application distributed as source. Nothing in
+this codebase attempts it, and nothing should: the specifics of that path change
+and are Microsoft's to state, so anything written here beyond the conclusion
+should be checked against their current documentation first.
+
+There is also a product reason not to want it even if it were reachable:
+registering as the active antivirus turns Microsoft Defender's real-time
+protection off, and PolyShield's pipeline *drives* Defender as one of its
+engines (`pipeline_defender`, `defender.scan_paths_async`).
+
+The claim the product makes, on the Defender page, is the defensible one:
+
+> PolyShield is not a Windows Security Center-registered antivirus and does not
+> replace Microsoft Defender as the Windows-registered AV.
+
+`defender_view._apply_coexistence()` qualifies that with PolyShield's own live
+state, computed from the same two facts the Dashboard banner uses so the two
+pages cannot disagree — because "Defender real-time protection is off" is a very
+different sentence depending on whether PolyShield's service is running, only its
+in-process watcher is, or neither.
+
+`ui.core.defender` has **no** `enable()` or `disable()`. PolyShield reads
+Defender's state and drives its scanner; it never turns it off. There is
+therefore no irreversible Defender action inside PolyShield to put a
+confirmation dialog in front of, and adding one in order to warn about it would
+be theatre.
+
+### A source checkout can be installed, and it stays a checkout
+
+`scripts/install_dev.bat` registers the service (auto-start), the Explorer verb,
+optionally the login entry, and an Add/Remove Programs entry — all pointing at
+the live checkout. **It copies nothing.** The point is that the running code is
+the code being edited; a compiled build goes stale the moment a `.py` file
+changes.
+
+Two things it must never do, both of which look like improvements:
+
+* **Write `.polyshield-distribution` into the checkout root.** `is_distribution()`
+  reads that marker and flips `app_root()` from the checkout to
+  `%ProgramData%\PolyShield`. Every existing `config/ui_settings.json`,
+  `quarantine/`, `intelligence/threat_db.sqlite` and `logs/` is orphaned
+  instantly — silently, with the app reporting a clean first-run state.
+* **Set `POLYSHIELD_DATA_DIR` machine-wide.** Same outcome, different door.
+
+`tests/test_integration_edges.py` fails if either appears in the script.
+
+Registered is not installed, and the Add/Remove Programs `DisplayName` says so:
+*PolyShield Security Suite (development install)*. Its Uninstall button removes
+registrations, not the checkout.
+
+#### The uninstall string has to elevate
+
+Windows launches an Add/Remove Programs uninstall string **unelevated**, and
+`integration._STEPS[0]` is the Windows service, which needs elevation. So the
+entry points at `scripts\uninstall_dev.bat`, which self-elevates and then runs
+`--unregister`. Pointing it straight at `PolyShield.exe --unregister` would clear
+the HKCU entries, fail on the service, write the partial result into
+`logs/unregister.json` where nobody reads it, and show success in Settings > Apps.
+
+Elevation lives in the one wrapper Windows invokes; plain `--unregister` keeps
+ordinary command-line semantics and never springs a consent prompt on a script
+that did not ask for one.
+
+#### Five teardown steps, and the order is load-bearing
+
+```python
+_STEPS = (
+    ("service",         "unregister_service"),      # first: needs elevation, holds handles
+    ("context menu",    "unregister_context_menu"),
+    ("startup entry",   "unregister_startup_entry"),
+    ("scheduled task",  "unregister_scheduled_task"),
+    ("uninstall entry", "unregister_arp_entry"),     # LAST
+)
+```
+
+The uninstall entry goes last because it *advertises* the uninstall: if an
+earlier step fails, that entry has to still be in Settings > Apps for the user to
+retry from. Removing it first would strand a half-uninstalled product with no
+visible way to finish.
+
+`register_all(startup=False)` is the mirror, and the default is the contract: the
+login entry is created **only** when a caller passes `startup=True`. There is no
+opting in by omission, because "PolyShield wrote a Run value because I ran an
+installer that mentioned integration" is the behaviour this feature is not
+allowed to have. The packaged installer keeps the same promise with
+`Flags: unchecked` on its `startupicon` task.
+
 ### Why Speakeasy does not ship
 
 `speakeasy-emulator` pins `unicorn==1.0.2`, which imports `distutils.sysconfig`

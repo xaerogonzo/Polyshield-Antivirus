@@ -93,6 +93,54 @@ Needs [Inno Setup](https://jrsoftware.org/isinfo.php) (`winget install JRSoftwar
 
 Full step-by-step install guide, daily workflow, and troubleshooting → **[docs/USAGE.md](docs/USAGE.md)**
 
+## Installing from source
+
+`scripts\install.bat` builds the virtual environments. To make the checkout
+behave like an installed product:
+
+```bat
+scripts\install_dev.bat
+```
+
+It self-elevates and registers, against **this checkout**:
+
+- `PolyShieldService`, set to start automatically at boot, with restart-on-failure
+- *Scan with PolyShield* in the Explorer right-click menu
+- optionally a startup entry — it asks, and the default is **no**
+- an entry in Settings > Apps, named *PolyShield Security Suite (development install)*
+
+Nothing is copied. Every registered command points at the folder you are editing,
+so changes take effect on the next launch (or `sc stop` + `sc start` for the
+service). **Moving or renaming the folder invalidates all of them** — the
+Dashboard notices and offers a Repair button, or just re-run the script.
+
+To undo everything:
+
+```bat
+scripts\uninstall_dev.bat
+```
+
+Or use Uninstall in Settings > Apps, which runs the same script. Either way your
+quarantine, logs, settings and threat database are kept — the uninstall removes
+registrations, not data, and not the checkout.
+
+### Starting with Windows
+
+Off by default, in every path: the Settings switch, the `[y/N]` prompt in
+`install_dev.bat`, and the (unticked) task in the packaged installer. When it is
+on, PolyShield starts minimised to the notification area and appears in Task
+Manager > Startup, where you can turn it off — and Settings will say so rather
+than claiming it is still enabled.
+
+### PolyShield and Microsoft Defender
+
+PolyShield is **not** a Windows Security Center-registered antivirus and does not
+replace Defender as the antivirus Windows knows about. It runs alongside it,
+adding real-time file, process and network monitoring, and it drives Defender's
+own scanner as one of its detection engines. The Defender page says which of the
+two is actually protecting the machine at any moment, including when the answer
+is "neither".
+
 ## Detection engines
 
 | Engine | What it does | Author |

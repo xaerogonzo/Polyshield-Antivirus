@@ -115,7 +115,8 @@ def _acquire_instance_lock() -> bool:
 
 
 class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
-    def __init__(self, initial_scan_path: str | None = None):
+    def __init__(self, initial_scan_path: str | None = None,
+                 start_minimized: bool = False):
         super().__init__()
         # ── Theme + appearance (must be after super().__init__() — Tk root required) ──
         theme.init(cfg)
@@ -131,6 +132,10 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
         self._views: dict[str, ctk.CTkFrame] = {}          # built on first show
         self._view_factories: dict = {}                    # filled by _build()
         self._tray_icon: "pystray.Icon | None" = None
+        # Whether the tray icon actually STARTED, which is not the same question
+        # as whether pystray imported. See the --minimized handling at the end
+        # of this constructor.
+        self._tray_started = False
         self._bg_label = None   # CTkLabel for background image (created on first use)
         self._bg_ctk_img = None
         self._build()
@@ -185,11 +190,22 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
 
         # Set up system tray
         if _USE_TRAY:
-            self._tray_icon = self._build_tray_icon()
-            self._tray_icon.run_detached()
-            # Wire threat notifications from watcher to tray
-            from ui.views.watcher_view import set_notify_callback
-            set_notify_callback(self._notify_threat)
+            try:
+                self._tray_icon = self._build_tray_icon()
+                self._tray_icon.run_detached()
+                self._tray_started = True
+            except Exception:
+                # A tray icon can fail to start for reasons the import cannot
+                # predict -- no shell, an explorer.exe that is not up yet at
+                # login, a session with no notification area. The app still
+                # works; what must not happen is the branch below trusting a
+                # tray that is not there.
+                self._tray_icon = None
+                self._tray_started = False
+            if self._tray_started:
+                # Wire threat notifications from watcher to tray
+                from ui.views.watcher_view import set_notify_callback
+                set_notify_callback(self._notify_threat)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -197,6 +213,21 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
         # when minimize_to_tray is enabled.
         self._quitting = False
         self.bind("<Unmap>", self._on_unmap)
+
+        # ── Started by the login entry: go straight to the notification area ──
+        #
+        # Keyed on _tray_started, NOT on _USE_TRAY. The latter only says pystray
+        # imported. withdraw() with no tray icon produces a running process with
+        # no window, no taskbar button and no icon -- reachable only from Task
+        # Manager. That is the one failure in this feature a user cannot undo,
+        # so the fallback is a visible window rather than a hidden one.
+        self._login_scan_job = None
+        if start_minimized:
+            if self._tray_started:
+                self.withdraw()
+            else:
+                self.iconify()
+            self._schedule_login_scan()
 
     def _build(self):
         self.grid_columnconfigure(1, weight=1)
@@ -508,6 +539,71 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
 
         _th.Thread(target=_work, daemon=True, name="IntelLaunchUpdate").start()
 
+    # ── Scan after login ──────────────────────────────────────────────────────
+
+    #: Two minutes. Long enough that the scan is not competing with the rest of
+    #: the login storm -- Defender's own startup work, OneDrive, everything else
+    #: in the Run key -- and short enough that it still happens in the session
+    #: the user just started.
+    _LOGIN_SCAN_DELAY_MS = 120_000
+
+    def _schedule_login_scan(self) -> None:
+        """Arm the post-login scan. Called once, from a --minimized launch only.
+
+        Not from an ordinary launch: a scan starting two minutes after somebody
+        double-clicks the icon, with no explanation, is a product doing
+        something surprising with their disk.
+        """
+        if self._login_scan_job is not None:
+            return                       # armed already; never twice
+        if not cfg.get("scan_on_login"):
+            return
+        self._login_scan_job = self.after(
+            self._LOGIN_SCAN_DELAY_MS, self._run_login_scan)
+
+    def _cancel_login_scan(self) -> None:
+        if self._login_scan_job is None:
+            return
+        try:
+            self.after_cancel(self._login_scan_job)
+        except Exception:
+            pass                         # already fired, or the root is going away
+        self._login_scan_job = None
+
+    def _run_login_scan(self) -> None:
+        """Start the Quick Scan, unless anything has changed in two minutes.
+
+        Every one of these guards is a way to end up running two scans at once
+        or one nobody asked for, and two minutes is long enough for all of them.
+        """
+        self._login_scan_job = None
+        if not self.winfo_exists():
+            return
+        if not cfg.get("scan_on_login"):
+            return                       # switched off during the delay
+
+        try:
+            from ui.core import service_client as _svc
+
+            if _svc.is_service_running() and cfg.get("watcher_enabled"):
+                # The service is already watching. A second full scan on top of
+                # that is duplicated disk work, not extra protection.
+                return
+        except Exception:
+            pass
+
+        view = self.get_view("scan")
+        if getattr(view, "_scanning", False):
+            return                       # a scan is already running
+
+        self._navigate("scan")
+        try:
+            view._on_preset_change("Quick")
+            view._start_scan()
+            self._set_status("Quick Scan started (scheduled after sign-in)")
+        except Exception:
+            self._set_status("Could not start the scheduled scan after sign-in")
+
     def _set_status(self, text: str):
         self.after(0, lambda t=text: self._status_lbl.configure(text=t))
 
@@ -568,6 +664,7 @@ class App(ctk.CTk if not _USE_DND else TkinterDnD.Tk):  # type: ignore[misc]
         """Fully exit the app — called from tray Quit or when minimize_to_tray is off."""
         def _do():
             self._quitting = True   # stop <Unmap> from re-entering withdraw logic
+            self._cancel_login_scan()
             if self._tray_icon:
                 self._tray_icon.stop()
             wtch.stop()
@@ -705,12 +802,56 @@ def main():
         print(msg)
         sys.exit(0 if ok else 1)
 
+    if "--register-autostart" in sys.argv[1:]:
+        # The login entry, written by the app itself for the same reason the
+        # Explorer verb is: the command string has ONE implementation, in
+        # paths.app_launch_argv(), and a second one in an .iss file or a .bat is
+        # a second thing to keep correct when the launch target changes.
+        # Per-user (HKCU), so no elevation and it lands in the profile of
+        # whoever asked for it.
+        from ui.core import autostart as _autostart
+
+        ok, msg = _autostart.register()
+        print(msg)
+        sys.exit(0 if ok else 1)
+
+    if "--register-uninstall-entry" in sys.argv[1:]:
+        # Listed in Settings > Apps, so a source install can be removed the way
+        # any other program is. Per-user (HKCU); no elevation. A no-op in a
+        # packaged build, where Inno owns that entry.
+        from ui.core import dev_install as _dev_install
+
+        ok, msg = _dev_install.register()
+        print(msg)
+        sys.exit(0 if ok else 1)
+
+    if "--register" in sys.argv[1:]:
+        # Everything a source install registers per-user, in one call.
+        #
+        # `--with-startup` is REQUIRED for the login entry. register_all()
+        # defaults it off and there is no way to opt in by omission: a script
+        # that mentions "integration" must not be how a Run value appears in
+        # somebody's registry.
+        import json
+
+        from ui.core import integration as _integration
+
+        report = _integration.register_all(
+            startup="--with-startup" in sys.argv[1:],
+            log=lambda line: print(line))
+        print(json.dumps(report, indent=2))
+        sys.exit(0 if report["ok"] else 1)
+
     if "--unregister" in sys.argv[1:]:
         import json
 
         from ui.core import integration as _integration
 
-        report = _integration.unregister_all(log=lambda line: print(line))
+        # --keep-service is the installer's rollback path: it has not touched
+        # the service, so it must not remove one that was already there.
+        report = _integration.unregister_all(
+            log=lambda line: print(line),
+            skip_service="--keep-service" in sys.argv[1:])
         print(json.dumps(report, indent=2))
         # Also written down. An uninstaller runs this hidden, and "the service
         # is still registered afterwards" cannot otherwise be told apart from
@@ -736,7 +877,9 @@ def main():
         idx = args.index("--scan")
         if idx + 1 < len(args):
             scan_path = args[idx + 1]
-    app = App(initial_scan_path=scan_path)
+    # --tray is accepted as a synonym because it is what people type.
+    start_minimized = "--minimized" in args or "--tray" in args
+    app = App(initial_scan_path=scan_path, start_minimized=start_minimized)
     app.mainloop()
 
 

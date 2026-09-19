@@ -93,7 +93,7 @@ echo.
 if exist "kicomav_env\Scripts\k2.exe" (
     echo   Status: INSTALLED
     echo.
-    echo   [1] Update packages  (pip install --upgrade)
+    echo   [1] Update packages  ^(pip install --upgrade^)
     echo   [2] Update k2 signatures  (k2 --update^)
     echo   [3] Reinstall from scratch
     echo   [0] Back

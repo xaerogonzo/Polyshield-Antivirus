@@ -555,6 +555,43 @@ def test_bootstrap_adds_the_checkout_in_source_mode(source, monkeypatch):
     assert str(ROOT) in sys.path and str(SRC) in sys.path
 
 
+# ══ service_install_argv: administering the service, not registering it ══════
+#
+# Two questions that look like one.  service_registration() answers "what image
+# path does the SCM launch later"; this answers "what do I run, right now, to
+# perform the registration".  service_view.py used sys.executable for the second
+# one, which is right from the GUI in a checkout and names a file that does not
+# exist in a frozen build -- in the single code path that installs a Windows
+# service.
+
+
+def test_the_checkout_administers_the_service_with_the_venv_interpreter(source):
+    argv = paths.service_install_argv("install")
+    assert argv[0].endswith("python.exe")
+    assert "kicomav_env" in argv[0]
+    assert argv[1].endswith("polyshield_service.py")
+    assert argv[2:] == ["install"]
+
+
+def test_a_distribution_administers_it_with_the_staged_runtime(installed):
+    (installed / "service" / "polyshield_service.py").write_text("#", encoding="utf-8")
+    argv = paths.service_install_argv("remove")
+    assert argv[0] == str(installed / "runtime" / "python.exe")
+    assert argv[1] == str(installed / "service" / "polyshield_service.py")
+    assert argv[2:] == ["remove"]
+
+
+def test_a_distribution_with_no_staged_runtime_says_so(installed):
+    """Reported, not papered over.
+
+    The alternative is an elevated shell handed a path to nothing, which fails
+    with a message about an image path rather than about anything real.
+    """
+    (installed / "runtime" / "python.exe").unlink()
+    with pytest.raises(paths.StagedRuntimeMissing):
+        paths.service_install_argv("install")
+
+
 # ══ The source scan, and why it is not enough on its own ══════════════════════
 
 # Deriving a root from __file__ is legitimate in exactly these places.
@@ -572,8 +609,6 @@ _ALLOWED = {
     # why these two are not routed through paths.
     "ui/core/emulate_engine.py":
         "_speakeasy_worker.py sits beside the module",
-    "ui/views/service_view.py":
-        "_svc_helper.bat sits beside the module",
 }
 
 _ROOT_DERIVATION = ("Path(__file__).resolve().parents",

@@ -71,24 +71,24 @@ class SettingsView(ctk.CTkScrollableFrame):
 
         # Every section below takes three consecutive rows -- divider, header,
         # card -- so each base is the previous one plus three.  Launch is the
-        # exception: it has a second card and takes four.
+        # exception: it has three cards and takes five.
         self._build_virustotal_section(n + 2)
         self._build_guardian_section(n + 5)
         self._build_yara_section(n + 8)
         self._build_clamav_section(n + 11)
         self._build_behavioral_section(n + 14)
-        self._build_launch_section(n + 17)          # four rows: n+17 .. n+20
+        self._build_launch_section(n + 17)          # five rows: n+17 .. n+21
 
         # ── Threat Intelligence Updates ──
-        self._divider(row=n + 21)
-        self._section("Threat Intelligence Updates", row=n + 22)
-        self._build_intel_update_section(row=n + 23)
+        self._divider(row=n + 22)
+        self._section("Threat Intelligence Updates", row=n + 23)
+        self._build_intel_update_section(row=n + 24)
 
         # ── About ──
-        self._divider(row=n + 24)
-        self._section("About", row=n + 25)
+        self._divider(row=n + 25)
+        self._section("About", row=n + 26)
         about = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
-        about.grid(row=n + 26, column=0, sticky="ew", padx=24, pady=(4, 20))
+        about.grid(row=n + 27, column=0, sticky="ew", padx=24, pady=(4, 20))
         about.grid_columnconfigure(0, weight=1)
         for i, text in enumerate([
             "PolyShield Security Suite",
@@ -616,9 +616,10 @@ class SettingsView(ctk.CTkScrollableFrame):
         self._sb_feedback.grid(row=6, column=0, sticky="w", padx=16, pady=(0, 10))
 
     def _build_launch_section(self, row: int):
-        """Launch — admin elevation, Explorer context menu.
+        """Launch — admin elevation, Explorer context menu, start with Windows.
 
-        Takes four rows rather than three: the context menu has its own card.
+        Takes five rows rather than three: the context menu and the startup
+        entry each have their own card.
         """
         self._divider(row=row)
         self._section("Launch", row=row + 1)
@@ -682,6 +683,78 @@ class SettingsView(ctk.CTkScrollableFrame):
             font=ctk.CTkFont(size=11),
             text_color="#50fa7b" if _sx.is_registered() else "#888888")
         self._ctx_status_lbl.grid(row=2, column=0, sticky="w", padx=16, pady=(0, 10))
+
+        # ── Start with Windows ──
+        #
+        # No settings key backs the switch. The registry IS the state, the same
+        # way the context-menu switch above reads shell_ext.is_registered(): a
+        # cfg key here would be a second truth that can disagree with the hive,
+        # and the one that is wrong would be the one the user is looking at.
+        start_card = ctk.CTkFrame(self, corner_radius=10, fg_color=theme.color("card"))
+        start_card.grid(row=row + 4, column=0, sticky="ew", padx=24, pady=(4, 4))
+        start_card.grid_columnconfigure(0, weight=1)
+
+        from ui.core import autostart as _as
+
+        self._start_switch = ctk.CTkSwitch(start_card, text="", width=46,
+                                           command=self._toggle_start_with_windows)
+        self._start_switch.grid(row=0, column=1, rowspan=2, padx=(8, 16),
+                                pady=14, sticky="e")
+        if _as.is_registered():
+            self._start_switch.select()
+        else:
+            self._start_switch.deselect()
+
+        ctk.CTkLabel(start_card, text="Start PolyShield with Windows",
+                     font=ctk.CTkFont(size=13, weight="bold"), anchor="w").grid(
+            row=0, column=0, sticky="w", padx=16, pady=(12, 2))
+        ctk.CTkLabel(start_card,
+                     text="Adds a per-user startup entry. PolyShield starts minimised to "
+                          "the notification area.\nVisible in Task Manager \u2192 Startup. "
+                          "No administrator rights required.",
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
+                     anchor="w", justify="left", wraplength=560).grid(
+            row=1, column=0, sticky="w", padx=16, pady=(0, 4))
+
+        status_row = ctk.CTkFrame(start_card, fg_color="transparent")
+        status_row.grid(row=2, column=0, columnspan=2, sticky="ew", padx=16, pady=(0, 6))
+        status_row.grid_columnconfigure(0, weight=1)
+        self._start_status_lbl = ctk.CTkLabel(
+            status_row, text="", font=ctk.CTkFont(size=11), anchor="w")
+        self._start_status_lbl.grid(row=0, column=0, sticky="w")
+        self._start_repair_btn = ctk.CTkButton(
+            status_row, text="Repair", width=90, height=26,
+            fg_color="#7a3800", hover_color="#5a2800",
+            font=ctk.CTkFont(size=11), command=self._repair_start_entry)
+        self._start_repair_btn.grid(row=0, column=1, padx=(12, 0))
+        self._start_repair_btn.grid_remove()
+
+        # Scan-on-login lives inside this card rather than in one of its own,
+        # because it is meaningless without the entry above: the scan is run by
+        # the tray process the Run value launches. Greyed out when that is off,
+        # rather than offered as a setting that would quietly do nothing.
+        self._login_scan_switch = ctk.CTkSwitch(
+            start_card, text="", width=46, command=self._toggle_scan_on_login)
+        self._login_scan_switch.grid(row=3, column=1, rowspan=2, padx=(8, 16),
+                                     pady=(4, 14), sticky="e")
+        if cfg.get("scan_on_login"):
+            self._login_scan_switch.select()
+        else:
+            self._login_scan_switch.deselect()
+
+        self._login_scan_lbl = ctk.CTkLabel(
+            start_card, text="Scan for threats after Windows starts",
+            font=ctk.CTkFont(size=12), anchor="w")
+        self._login_scan_lbl.grid(row=3, column=0, sticky="w", padx=(32, 16), pady=(4, 2))
+        ctk.CTkLabel(start_card,
+                     text="Runs a Quick Scan two minutes after you sign in, so it does not "
+                          "compete with the rest of startup.\nResults appear in the "
+                          "notification area.",
+                     font=ctk.CTkFont(size=11), text_color=theme.color("subtext"),
+                     anchor="w", justify="left", wraplength=540).grid(
+            row=4, column=0, sticky="w", padx=(32, 16), pady=(0, 12))
+
+        self._refresh_start_status()
 
     # ── Threat Intelligence Updates ───────────────────────────────────────────
 
@@ -1658,6 +1731,61 @@ class SettingsView(ctk.CTkScrollableFrame):
             self._admin_feedback.configure(
                 text=f"Could not write launch_ui.vbs: {exc}",
                 text_color="#ff5555")
+
+    #: What each autostart.status() means on screen, and in which colour.
+    _START_STATUS_TEXT = {
+        "not_registered": ("Not registered", "#888888", False),
+        "user_disabled":  ("Disabled in Task Manager \u2192 Startup", "#ffb86c", False),
+        "stale":          ("Registered, but the path is out of date", "#ffb86c", True),
+        "ok":             ("Registered", "#50fa7b", False),
+    }
+
+    def _refresh_start_status(self):
+        """Redraw the status line and the dependent switch.
+
+        The precedence is autostart.status()'s, and it is deliberate: a user who
+        switched the entry off in Task Manager outranks a stale path, because
+        repairing the path would fix something they did not ask about and the
+        entry still would not fire.
+        """
+        from ui.core import autostart as _as
+
+        state = _as.status()
+        text, colour, offer_repair = self._START_STATUS_TEXT.get(
+            state, ("Registered", "#50fa7b", False))
+        self._start_status_lbl.configure(text=text, text_color=colour)
+        if offer_repair:
+            self._start_repair_btn.grid()
+        else:
+            self._start_repair_btn.grid_remove()
+
+        registered = state != "not_registered"
+        self._login_scan_switch.configure(
+            state="normal" if registered else "disabled")
+        self._login_scan_lbl.configure(
+            text_color=theme.color("text") if registered else theme.color("dim"))
+
+    def _toggle_start_with_windows(self):
+        from ui.core import autostart as _as
+
+        enabled = bool(self._start_switch.get())
+        ok, msg = _as.register() if enabled else _as.unregister()
+        cfg.set_value("start_with_windows", enabled)
+        self._refresh_start_status()
+        if not ok:
+            self._start_status_lbl.configure(text=msg[:90], text_color="#ff5555")
+
+    def _repair_start_entry(self):
+        """Rewrite the login entry against wherever PolyShield lives now."""
+        from ui.core import autostart as _as
+
+        ok, msg = _as.register()
+        self._refresh_start_status()
+        if not ok:
+            self._start_status_lbl.configure(text=msg[:90], text_color="#ff5555")
+
+    def _toggle_scan_on_login(self):
+        cfg.set_value("scan_on_login", bool(self._login_scan_switch.get()))
 
     def _toggle_context_menu(self):
         from ui.core import shell_ext as sx

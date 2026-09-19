@@ -23,6 +23,11 @@ import urllib.error
 
 import pytest
 
+from ui.core import paths
+
+#: The repository itself. Several assertions below deliberately read the real
+#: tree rather than a fixture -- a mocked path cannot notice a file that moved.
+_ROOT_DIR = pathlib.Path(__file__).resolve().parents[1]
 from ui.core import scheduler as sch
 from ui.core import shell_ext
 from ui.core import startup_scanner as ss
@@ -54,7 +59,10 @@ class _FakeWinreg:
     HKEY_CURRENT_USER = "HKCU"
     HKEY_LOCAL_MACHINE = "HKLM"
     REG_SZ = 1
+    REG_BINARY = 3
+    REG_DWORD = 4
     KEY_READ = 0x20019
+    KEY_SET_VALUE = 0x0002
     KEY_WOW64_64KEY = 0x0100
 
     def __init__(self):
@@ -102,12 +110,41 @@ class _FakeWinreg:
             raise FileNotFoundError(2, "The system cannot find the file specified")
         del self.tree[(hive, subkey)]
 
+    # -- single values --
+    # autostart writes a VALUE under a key Windows owns, so it needs these three
+    # where shell_ext only ever needed whole keys.
+    def QueryValueEx(self, key, name):
+        values = self.tree[(self._hive_of(key.path), key.path)]
+        if name not in values:
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+        data = values[name]
+        return data, (self.REG_BINARY if isinstance(data, (bytes, bytearray))
+                      else self.REG_SZ)
+
+    def DeleteValue(self, key, name):
+        values = self.tree[(self._hive_of(key.path), key.path)]
+        if name not in values:
+            raise FileNotFoundError(2, "The system cannot find the file specified")
+        del values[name]
+
 
 @pytest.fixture
 def registry(monkeypatch):
+    """One fake hive, shared by every module that writes to the real one.
+
+    shell_ext and autostart both live in HKCU and a teardown removes both, so
+    giving them separate fakes would let a test tear down against a tree nothing
+    was written to and call that a pass.
+    """
+    from ui.core import autostart, dev_install
+
     fake = _FakeWinreg()
-    monkeypatch.setattr(shell_ext, "winreg", fake)
-    monkeypatch.setattr(shell_ext, "_HKCU", fake.HKEY_CURRENT_USER)
+    # dev_install too. Leaving it out is how three register_all() tests below
+    # wrote and then deleted the developer's real Settings > Apps entry on every
+    # run of the suite. conftest's autouse floor now catches that as well.
+    for mod in (shell_ext, autostart, dev_install):
+        monkeypatch.setattr(mod, "winreg", fake)
+        monkeypatch.setattr(mod, "_HKCU", fake.HKEY_CURRENT_USER)
     return fake
 
 
@@ -885,3 +922,746 @@ def test_the_setup_script_is_launched_when_present(tmp_path, monkeypatch):
 
     assert launched == [["cmd", "/c", str(bat)]]
     assert view.said and "launched" in view.said[0].lower()
+
+
+# ══ autostart ════════════════════════════════════════════════════════════════
+#
+# The login entry, modelled on the Explorer verb above and tested against the
+# same failures, because they are the same two registry writes with different
+# consequences: a bad verb produces a menu item that does nothing, a bad Run
+# value produces a product that quietly does not start.
+
+
+def _as():
+    from ui.core import autostart
+
+    return autostart
+
+
+def test_the_startup_command_carries_the_minimized_flag(registry):
+    """Without it the login launch opens a 1200x760 window over whatever the
+    user was about to do, at every single sign-in."""
+    ok, _msg = _as().register()
+    assert ok
+    assert "--minimized" in _as().current_command()
+
+
+def test_the_startup_command_is_never_taken_from_sys_executable(registry, monkeypatch):
+    r"""The sibling of test_the_menu_icon_is_never_taken_from_sys_executable.
+
+    In a Nuitka build sys.executable names a python.exe beside the real binary
+    that DOES NOT EXIST, and this value has to still be valid months from now.
+    """
+    monkeypatch.setattr(sys, "executable", r"C:\nowhere\python.exe")
+    monkeypatch.setattr(paths, "is_frozen", lambda: True)
+    monkeypatch.setattr(paths, "running_executable",
+                        lambda: pathlib.Path(r"C:\Program Files\PolyShield\PolyShield.exe"))
+    _as().register()
+    cmd = _as().current_command()
+    assert r"C:\nowhere" not in cmd
+    assert "PolyShield.exe" in cmd
+
+
+@pytest.mark.parametrize("exe_dir", [
+    r"C:\Program Files\PolyShield",
+    r"C:\Users\a b\Poly Shield (x64)",
+    r"C:\tools\Poly&Shield",
+])
+def test_the_startup_command_survives_an_awkward_directory(
+        registry, monkeypatch, exe_dir):
+    monkeypatch.setattr(paths, "is_frozen", lambda: True)
+    monkeypatch.setattr(paths, "running_executable",
+                        lambda: pathlib.Path(exe_dir) / "PolyShield.exe")
+    _as().register()
+    cmd = _as().current_command()
+    # One parseable command line: the exe quoted as a unit, the flag outside it.
+    assert cmd == f'"{exe_dir}\\PolyShield.exe" "--minimized"'
+
+
+def test_registering_twice_leaves_one_value(registry):
+    a = _as()
+    a.register()
+    a.register()
+    key = (registry.HKEY_CURRENT_USER, a._RUN_KEY)
+    assert list(registry.tree[key]) == ["PolyShield"]
+
+
+def test_unregister_is_quiet_when_nothing_is_registered(registry):
+    ok, msg = _as().unregister()
+    assert ok is True
+    assert "no startup entry" in msg
+
+
+def test_unregister_removes_the_value_and_not_the_key(registry):
+    r"""...\CurrentVersion\Run belongs to Windows and holds every other
+    application's entry. Deleting the key would take all of them."""
+    a = _as()
+    a.register()
+    key = (registry.HKEY_CURRENT_USER, a._RUN_KEY)
+    registry.tree[key]["SomebodyElse"] = "other.exe"
+
+    assert a.unregister()[0] is True
+    assert key in registry.tree
+    assert list(registry.tree[key]) == ["SomebodyElse"]
+
+
+def test_is_registered_treats_an_unreadable_key_as_absent(registry):
+    """shell_ext.is_registered's lesson, applied before it can be relearned: a
+    PermissionError here propagates out of SettingsView._build()."""
+    a = _as()
+    a.register()
+    registry.open_errors[a._RUN_KEY] = PermissionError(5, "Access is denied")
+    assert a.is_registered() is False
+
+
+def test_is_current_is_false_after_the_checkout_moves(registry, monkeypatch):
+    """The failure mode a source install has and a packaged one does not.
+
+    The value embeds an absolute path. Rename the folder and Windows says
+    nothing at every subsequent login; the switch in Settings would otherwise
+    sit there reading ON over a command that cannot run.
+    """
+    a = _as()
+    monkeypatch.setattr(paths, "is_frozen", lambda: True)
+    monkeypatch.setattr(paths, "running_executable",
+                        lambda: pathlib.Path(r"D:\Projects\PolyShield\PolyShield.exe"))
+    a.register()
+    assert a.is_current() is True
+
+    monkeypatch.setattr(paths, "running_executable",
+                        lambda: pathlib.Path(r"D:\Archive\PolyShield\PolyShield.exe"))
+    assert a.is_registered() is True
+    assert a.is_current() is False
+
+
+# ── StartupApproved: what Task Manager writes ────────────────────────────────
+#
+# The byte layout below is not folklore. It was dumped from a live machine on
+# which two entries had been switched off in Task Manager and the rest had not:
+#
+#     OneDrive        02 00 00 00 00 00 00 00 00 00 00 00   enabled
+#     SecurityHealth  06 00 00 00 00 00 00 00 00 00 00 00   enabled
+#     Discord         03 00 00 00 d4 37 9b 21 e2 9e dc 01   DISABLED
+#     VoicemodV3      03 00 00 00 b4 9b 0a d0 ab e4 dc 01   DISABLED
+#
+# Bit 0 of the first byte is set for exactly the disabled pair, and the trailing
+# eight bytes are a FILETIME of when that happened. An earlier draft had it as
+# bit 1, which is the value most often repeated online and would have reported
+# every enabled entry as switched off.
+
+_OBSERVED_ENABLED = bytes.fromhex("02 00 00 00 00 00 00 00 00 00 00 00".replace(" ", ""))
+_OBSERVED_ENABLED_HKLM = bytes.fromhex("060000000000000000000000")
+_OBSERVED_DISABLED = bytes.fromhex("03000000d4379b21e29edc01")
+
+
+def _approve(registry, value):
+    a = _as()
+    key = (registry.HKEY_CURRENT_USER, a._APPROVED_KEY)
+    registry.tree.setdefault(key, {})["PolyShield"] = value
+
+
+@pytest.mark.parametrize(("blob", "expected"), [
+    (_OBSERVED_ENABLED, "enabled"),
+    (_OBSERVED_ENABLED_HKLM, "enabled"),
+    (_OBSERVED_DISABLED, "disabled"),
+])
+def test_startup_approval_matches_the_observed_bytes(registry, blob, expected):
+    _approve(registry, blob)
+    assert _as().startup_approval() == expected
+
+
+def test_no_approval_record_means_enabled(registry):
+    """The normal case: nobody has ever touched the Startup tab for this entry."""
+    assert _as().startup_approval() == "enabled"
+
+
+@pytest.mark.parametrize("blob", [b"", b"\x03", b"\x03\x00"])
+def test_a_short_value_is_unknown_not_disabled(registry, blob):
+    """If Windows changes the representation, saying "we cannot tell" beats
+    telling somebody their startup entry is off when it is not."""
+    _approve(registry, blob)
+    assert _as().startup_approval() == "unknown"
+
+
+def test_a_wrong_type_is_unknown_not_disabled(registry):
+    _approve(registry, "not binary at all")
+    assert _as().startup_approval() == "unknown"
+
+
+def test_startup_approval_never_raises(registry):
+    a = _as()
+    registry.open_errors[a._APPROVED_KEY] = PermissionError(5, "denied")
+    assert a.startup_approval() == "unknown"
+
+
+# ── status precedence ────────────────────────────────────────────────────────
+
+
+def test_a_user_disabled_entry_outranks_a_stale_path(registry, monkeypatch):
+    """Both are true at once and only one is worth saying.
+
+    Offering Repair here would fix a path the user did not ask about and leave
+    the entry still not firing, because they are the one who switched it off.
+    """
+    a = _as()
+    monkeypatch.setattr(paths, "is_frozen", lambda: True)
+    monkeypatch.setattr(paths, "running_executable",
+                        lambda: pathlib.Path(r"D:\Old\PolyShield.exe"))
+    a.register()
+    monkeypatch.setattr(paths, "running_executable",
+                        lambda: pathlib.Path(r"D:\New\PolyShield.exe"))
+    _approve(registry, _OBSERVED_DISABLED)
+
+    assert a.is_current() is False
+    assert a.status() == a.STATUS_USER_DISABLED
+
+
+def test_status_walks_the_whole_ladder(registry, monkeypatch):
+    a = _as()
+    assert a.status() == a.STATUS_NOT_REGISTERED
+    monkeypatch.setattr(paths, "is_frozen", lambda: True)
+    monkeypatch.setattr(paths, "running_executable",
+                        lambda: pathlib.Path(r"D:\Old\PolyShield.exe"))
+    a.register()
+    assert a.status() == a.STATUS_OK
+    monkeypatch.setattr(paths, "running_executable",
+                        lambda: pathlib.Path(r"D:\New\PolyShield.exe"))
+    assert a.status() == a.STATUS_STALE
+
+
+def test_an_unknown_approval_does_not_raise_a_false_alarm(registry):
+    a = _as()
+    a.register()
+    _approve(registry, b"\x03")            # unrecognised layout
+    assert a.startup_approval() == "unknown"
+    assert a.status() == a.STATUS_OK
+
+
+# ══ register_all: opt-in, structurally ═══════════════════════════════════════
+
+
+def test_register_all_does_not_create_the_run_value_by_default(registry):
+    """The invariant the whole feature rests on.
+
+    PolyShield writing a Run value because somebody ran an installer that
+    mentioned "integration" is the behaviour this is not allowed to have, and
+    the way that rule gets broken is a future caller reading `register_all` as
+    "register everything".
+    """
+    from ui.core import integration
+
+    report = integration.register_all()
+    assert report["ok"] is True
+    assert _as().is_registered() is False
+    assert report["steps"]["startup entry"]["detail"] == "not requested"
+
+
+def test_register_all_creates_it_when_asked(registry):
+    from ui.core import integration
+
+    report = integration.register_all(startup=True)
+    assert report["ok"] is True
+    assert _as().is_registered() is True
+
+
+def test_unregister_all_removes_the_run_value(registry, monkeypatch):
+    from ui.core import integration
+
+    monkeypatch.setattr(integration, "unregister_service",
+                        lambda: (True, "stubbed"))
+    monkeypatch.setattr(integration, "unregister_scheduled_task",
+                        lambda: (True, "stubbed"))
+    integration.register_all(startup=True)
+    assert _as().is_registered() is True
+
+    report = integration.unregister_all()
+    assert report["steps"]["startup entry"]["ok"] is True
+    assert _as().is_registered() is False
+
+
+# ══ dev_install: the Add/Remove Programs entry ═══════════════════════════════
+
+
+def _di():
+    from ui.core import dev_install
+
+    return dev_install
+
+
+@pytest.fixture
+def dev_registry(monkeypatch, registry, tmp_path):
+    """`registry`, plus a checkout that actually contains the uninstaller.
+
+    register() refuses to write an entry whose Uninstall button would run a file
+    that is not there, so the fixture has to lay one down.
+    """
+    from ui.core import dev_install
+
+    monkeypatch.setattr(dev_install, "winreg", registry)
+    monkeypatch.setattr(dev_install, "_HKCU", registry.HKEY_CURRENT_USER)
+    checkout = tmp_path / "PolyShield"
+    (checkout / "scripts").mkdir(parents=True)
+    (checkout / "scripts" / "uninstall_dev.bat").write_text("@echo off", encoding="utf-8")
+    monkeypatch.setattr(paths, "install_root", lambda: checkout)
+    monkeypatch.setattr(paths, "is_distribution", lambda: False)
+    return checkout
+
+
+def _values(registry):
+    return registry.tree[(registry.HKEY_CURRENT_USER, _di()._UNINSTALL_KEY)]
+
+
+def test_the_arp_uninstall_string_points_at_the_elevating_wrapper(
+        dev_registry, registry):
+    """The finding this whole module is shaped around.
+
+    Windows launches an uninstall string UNELEVATED, and the first teardown step
+    is the Windows service, which needs elevation. Pointing this at
+    `app.py --unregister` would clear the HKCU entries, fail on the service, and
+    still show success in Settings > Apps.
+    """
+    ok, _msg = _di().register()
+    assert ok
+    value = _values(registry)["UninstallString"]
+    assert value.lower().endswith('uninstall_dev.bat"')
+    assert "app.py" not in value.lower()
+    assert "--unregister" not in value
+
+
+def test_the_quiet_uninstall_string_is_the_same_script(dev_registry, registry):
+    values = _values(registry) if _di().register()[0] else {}
+    assert values["QuietUninstallString"] == values["UninstallString"] + " /quiet"
+
+
+def test_the_display_name_says_this_is_a_development_install(dev_registry, registry):
+    """It removes registrations, not the checkout.
+
+    Somebody who finds "PolyShield Security Suite" in Settings > Apps and
+    expects the folder to disappear has been misled by us.
+    """
+    _di().register()
+    assert "development install" in _values(registry)["DisplayName"]
+
+
+def test_the_entry_carries_no_display_icon(dev_registry, registry):
+    """There is no .ico in the checkout outside the virtualenvs, and pointing
+    this at pythonw.exe puts a Python logo beside PolyShield in the app list --
+    worse than the generic icon Windows supplies."""
+    _di().register()
+    assert "DisplayIcon" not in _values(registry)
+
+
+def test_the_version_comes_from_one_place(dev_registry, registry):
+    from ui.version import __version__
+
+    _di().register()
+    assert _values(registry)["DisplayVersion"] == __version__
+
+
+def test_a_distribution_writes_no_entry_of_its_own(dev_registry, registry, monkeypatch):
+    """Inno registers the real one under its AppId. Two entries for one product
+    is worse than none."""
+    monkeypatch.setattr(paths, "is_distribution", lambda: True)
+    ok, msg = _di().register()
+    assert ok is True
+    assert "packaged" in msg
+    assert _di().is_registered() is False
+
+
+def test_an_entry_is_refused_rather_than_written_without_its_uninstaller(
+        dev_registry):
+    """An Uninstall button that runs a missing file is worse than no entry: the
+    user cannot clear the listing either."""
+    (dev_registry / "scripts" / "uninstall_dev.bat").unlink()
+    ok, msg = _di().register()
+    assert ok is False
+    assert "no uninstaller" in msg
+    assert _di().is_registered() is False
+
+
+def test_unregister_is_quiet_when_nothing_is_registered(dev_registry):
+    ok, msg = _di().unregister()
+    assert ok is True
+    assert "no uninstall entry" in msg
+
+
+def test_is_current_is_false_after_the_checkout_moves(dev_registry, monkeypatch, tmp_path):
+    di = _di()
+    di.register()
+    assert di.is_current() is True
+
+    moved = tmp_path / "Archive" / "PolyShield"
+    (moved / "scripts").mkdir(parents=True)
+    (moved / "scripts" / "uninstall_dev.bat").write_text("@echo off", encoding="utf-8")
+    monkeypatch.setattr(paths, "install_root", lambda: moved)
+    assert di.is_registered() is True
+    assert di.is_current() is False
+
+
+def test_is_current_is_false_when_the_uninstaller_is_gone(dev_registry):
+    di = _di()
+    di.register()
+    (dev_registry / "scripts" / "uninstall_dev.bat").unlink()
+    assert di.is_registered() is True
+    assert di.is_current() is False
+
+
+# ══ The two scripts are where the code says they are ═════════════════════════
+
+
+@pytest.mark.parametrize("name", ["install_dev.bat", "uninstall_dev.bat"])
+def test_the_dev_installer_scripts_exist(name):
+    """The `if bat.exists(): ...` lesson, applied to the pair that a registry
+    value and a button both point at."""
+    assert (_ROOT_DIR / "scripts" / name).is_file(), f"scripts/{name} is missing"
+
+
+def test_the_uninstaller_is_where_dev_install_points_it():
+    from ui.core import dev_install
+
+    assert dev_install.uninstaller_path().is_file()
+
+
+def test_the_uninstaller_self_elevates():
+    """It is what Windows runs from Settings > Apps, and Windows runs an
+    uninstall string as the ordinary user -- while the first teardown step is
+    the service, which needs rights."""
+    text = (_ROOT_DIR / "scripts" / "uninstall_dev.bat").read_text(encoding="utf-8")
+    assert "NET SESSION" in text
+    assert "-Verb RunAs" in text
+
+
+def test_the_installer_does_not_self_elevate():
+    r"""Deliberately the opposite of its sibling, and it cost two failed runs to
+    learn why.
+
+    Elevating the whole script puts the prompt and every message into a spawned
+    console that closes the moment the script ends, so a failure is unreadable
+    and a step that silently does nothing is indistinguishable from one that
+    worked. It is also the wrong hive: the three per-user registrations write to
+    HKCU, and an elevated process writes to the administrator's HKCU when that
+    is a different account.
+
+    Only the service step elevates, and setup_service.bat raises that prompt
+    itself.
+    """
+    text = (_ROOT_DIR / "scripts" / "install_dev.bat").read_text(encoding="utf-8")
+    body = chr(10).join(ln for ln in text.splitlines()
+                     if not ln.strip().upper().startswith("REM"))
+    assert "-Verb RunAs" not in body, (
+        "install_dev.bat elevates itself again; its prompt and its errors go "
+        "into a console that vanishes")
+    assert "NET SESSION" not in body
+    assert "setup_service.bat" in body, "something still has to register the service"
+
+
+def test_the_installer_verifies_the_outcome_not_the_existence():
+    r"""`sc query` passes for a service that was already registered, so it could
+    not tell "this step configured the service" from "this step did nothing".
+    That is how a DEMAND_START registration survived a run and was reported as a
+    success. Twice."""
+    text = (_ROOT_DIR / "scripts" / "install_dev.bat").read_text(encoding="utf-8")
+    body = chr(10).join(ln for ln in text.splitlines()
+                     if not ln.strip().upper().startswith("REM"))
+    assert "service_state()" in body
+    assert "sc query" not in body.lower()
+
+
+def test_the_dev_installer_never_creates_a_distribution_marker():
+    r"""The most tempting "make it feel installed" move, and the one that
+    destroys the data root.
+
+    paths.is_distribution() reads that marker and flips app_root() from the
+    checkout to %ProgramData%\PolyShield, orphaning the existing config,
+    quarantine, logs and threat database -- silently, with the app reporting a
+    clean first-run state.
+    """
+    text = (_ROOT_DIR / "scripts" / "install_dev.bat").read_text(encoding="utf-8")
+    body = "\n".join(ln for ln in text.splitlines()
+                     if not ln.strip().upper().startswith("REM"))
+    assert paths.DISTRIBUTION_MARKER not in body
+    assert paths.DATA_DIR_ENV not in body
+
+
+# ══ The packaged installer keeps the same promise ════════════════════════════
+
+
+def _iss_lines():
+    """The .iss with its line continuations joined.
+
+    Inno continues a directive with a trailing backslash, so a raw splitlines()
+    puts `Filename:` and the `Tasks:` flag that gates it on different lines --
+    and a test reading them separately would pass over an entry that runs
+    unconditionally.
+    """
+    text = (_ROOT_DIR / "installer" / "polyshield.iss").read_text(encoding="utf-8")
+    joined, buf = [], ""
+    for raw in text.splitlines():
+        if raw.rstrip().endswith(chr(92)):
+            buf += raw.rstrip()[:-1].rstrip() + " "
+            continue
+        joined.append(buf + raw.strip())
+        buf = ""
+    if buf:
+        joined.append(buf)
+    return joined
+
+
+def test_the_installer_startup_task_is_unchecked():
+    """"Off by default" has to be true of the installer, not just the Settings
+    switch. The installer is the one place where a checked-by-default box would
+    put a Run value into the registry of everybody who clicked Next."""
+    line = next((ln for ln in _iss_lines()
+                 if ln.strip().startswith('Name: "startupicon"')), None)
+    assert line is not None, "the .iss no longer declares a startupicon task"
+    assert "unchecked" in line.lower(), (
+        "the packaged installer would enable autostart by default:\n  " + line)
+
+
+def test_the_installer_registers_autostart_only_under_that_task():
+    run_lines = [ln for ln in _iss_lines() if "--register-autostart" in ln]
+    assert run_lines, "the .iss never registers the startup entry"
+    assert all("Tasks: startupicon" in ln for ln in run_lines)
+
+
+def test_the_installer_version_matches_the_python_one():
+    from ui.version import __version__
+
+    define = next(ln for ln in _iss_lines() if ln.startswith("#define AppVersion"))
+    assert f'"{__version__}"' in define, (
+        f"installer/polyshield.iss says {define.strip()} and "
+        f"ui/version.py says {__version__}")
+
+
+# ══ Self-elevation ═══════════════════════════════════════════════════════════
+#
+# `-ArgumentList '%*'` expands to `-ArgumentList ''` when a script is run with
+# no arguments, and Windows PowerShell 5.1 validates that parameter as
+# NotNullOrEmpty. Every self-elevating script in this repo had it, and every one
+# of them normally runs with no arguments -- so none of them could elevate. The
+# failure is quiet in exactly the wrong way: PowerShell prints a binding error,
+# the batch file exits 0, and the caller sees a step that "succeeded".
+#
+# It cost two failed installs to find, because the console it printed into
+# belonged to a script that self-elevated and vanished. And a check of the
+# construct under PowerShell 7, which accepts an empty ArgumentList, cleared it
+# wrongly -- the scripts invoke `powershell`, not `pwsh`.
+
+_ELEVATING_SCRIPTS = ["scripts/service/setup_service.bat",
+                      "scripts/uninstall_dev.bat",
+                      "scripts/vm_setup/build_tiny11_vm.bat"]
+
+
+@pytest.mark.parametrize("rel", _ELEVATING_SCRIPTS)
+def test_self_elevation_omits_an_empty_argument_list(rel):
+    text = (_ROOT_DIR / rel).read_text(encoding="utf-8", errors="replace")
+    body = chr(10).join(ln for ln in text.splitlines()
+                        if not ln.strip().upper().startswith("REM"))
+    if "-ArgumentList" not in body:
+        return                      # nothing to get wrong
+    assert 'if "%*"==""' in body, (
+        f"{rel} passes -ArgumentList unconditionally; an argument-less run "
+        "expands it to '' and Windows PowerShell 5.1 refuses to bind it")
+    # And the no-argument branch must be the one without -ArgumentList.
+    guard = body.index('if "%*"==""')
+    branch = body[guard:body.index("else", guard)]
+    assert "-ArgumentList" not in branch, (
+        f"{rel} still passes -ArgumentList on the no-argument branch")
+
+
+@pytest.mark.parametrize("rel", _ELEVATING_SCRIPTS)
+def test_every_elevating_script_actually_tries_to_elevate(rel):
+    """The guard above would also pass for a script that stopped elevating."""
+    body = (_ROOT_DIR / rel).read_text(encoding="utf-8", errors="replace")
+    assert "-Verb RunAs" in body, rel
+
+
+def test_the_rollback_leaves_a_service_it_did_not_create(monkeypatch):
+    r"""install_dev.bat does not elevate, so it never registers a service.
+
+    Its rollback used to call plain --unregister, which asks to delete
+    PolyShieldService regardless. That only ever failed harmlessly because the
+    script is unelevated -- run the same thing from an elevated shell and a
+    failure in an earlier step would take out a working, pre-existing service
+    registration as its idea of undoing an install that never touched it.
+    """
+    from ui.core import integration
+
+    called = []
+    for _label, attr in integration._STEPS:
+        monkeypatch.setattr(integration, attr,
+                            lambda a=attr: (called.append(a), (True, "stub"))[1])
+
+    report = integration.unregister_all(skip_service=True)
+    assert "unregister_service" not in called
+    assert "service" not in report["steps"]
+    assert report["ok"] is True
+    # Everything else still runs.
+    assert "context menu" in report["steps"]
+    assert "uninstall entry" in report["steps"]
+
+    called.clear()
+    integration.unregister_all()
+    assert "unregister_service" in called, "the default must still remove it"
+
+
+def test_the_installer_rollback_keeps_the_service():
+    body = (_ROOT_DIR / "scripts" / "install_dev.bat").read_text(encoding="utf-8")
+    body = chr(10).join(ln for ln in body.splitlines()
+                        if not ln.strip().upper().startswith("REM"))
+    assert "--unregister --keep-service" in body, (
+        "install_dev.bat's rollback would delete a service it never created")
+
+
+# ══ Batch blocks ═════════════════════════════════════════════════════════════
+#
+# An unescaped `)` inside a parenthesised block CLOSES that block, and whatever
+# followed it on the line is then run as a command. setup_service.bat had
+#
+#     if errorlevel 1 (
+#         echo   Installing pywin32 (not found in venv)...
+#
+# so cmd closed the `if` at "venv)" and tried to execute "...", producing
+#
+#     ... was unexpected at this time.
+#
+# and exiting at step 2 of 8 -- on every run this script has ever had. That is
+# why the service was never configured, and why the elevated console it was
+# launched in closed instantly: `cmd /C` closes when the batch dies, and the
+# `pause` at the end was never reached.
+#
+# Only the CLOSING paren matters. `(` is harmless, which is why half of
+# manage.bat escapes `^)` and leaves `(` bare.
+
+def _echo_lines_inside_blocks(path):
+    """(line number, text) for every echo that cmd parses inside a block."""
+    import re
+
+    caret = chr(94)
+    depth, found = 0, []
+    for n, raw in enumerate(path.read_text(encoding="utf-8", errors="replace")
+                            .splitlines(), 1):
+        line = raw.strip()
+        if line.upper().startswith("REM") or line.startswith("::"):
+            continue
+        is_echo = bool(re.match(r"(?i)^echo\b", line))
+        if depth > 0 and is_echo:
+            found.append((n, line))
+        code = re.sub(r'"[^"]*"', "", line)
+        code = re.sub(re.escape(caret) + r"[()]", "", code)
+        if is_echo:
+            # Echo text is not structure -- that is the bug, not the ruler.
+            code = ""
+        depth = max(0, depth + code.count("(") - code.count(")"))
+    return found
+
+
+@pytest.mark.parametrize(
+    "rel", sorted(p.relative_to(_ROOT_DIR).as_posix()
+                  for p in (_ROOT_DIR / "scripts").rglob("*.bat")))
+def test_no_batch_echo_closes_its_own_block(rel):
+    import re
+
+    caret = chr(94)
+    offenders = [
+        f"{n}: {text}"
+        for n, text in _echo_lines_inside_blocks(_ROOT_DIR / rel)
+        if re.search(r"(?<!" + re.escape(caret) + r")\)", text)
+    ]
+    assert offenders == [], (
+        f"{rel} has an echo inside a block whose unescaped ')' ends that block; "
+        "escape it as ^): " + "; ".join(offenders))
+
+
+def test_the_guard_recognises_the_bug_it_was_written_for(tmp_path):
+    """A guard that cannot fail is not a guard."""
+    import re
+
+    bad = tmp_path / "bad.bat"
+    bad.write_text(
+        "if errorlevel 1 (\n"
+        "    echo   Installing pywin32 (not found in venv)...\n"
+        ")\n", encoding="utf-8")
+    found = _echo_lines_inside_blocks(bad)
+    assert found, "the scanner did not see an echo inside the block"
+    assert any(re.search(r"(?<!\^)\)", t) for _n, t in found)
+
+
+# ══ setup_service.bat /remove deletes two files, not a folder ═════════════════
+#
+# Its data-cleanup prompt said "Remove C:\ProgramData\PolyShield (log + token
+# files)?" and then ran `rmdir /s /q` on the whole folder. On a machine that had
+# run an older build that folder held intelligence\, k2\, logs\ and quarantine\ --
+# and quarantine can hold the only copy of a file somebody wants back.
+#
+# These run the real block from the real script against a throwaway tree.
+
+def _cleanup_harness(tmp_path):
+    src = (_ROOT_DIR / "scripts" / "service" / "setup_service.bat").read_text(
+        encoding="utf-8").splitlines(keepends=True)
+    start = next(i for i, ln in enumerate(src)
+                 if ln.startswith("REM -- Step 3: the service's log and token"))
+    end = next(i for i in range(start, len(src))
+               if src[i].startswith("echo  Service removed."))
+    # The block derives ROOT from %~dp0..\.., so the harness sits two levels
+    # down inside the fake checkout, exactly where the real script does.
+    harness = tmp_path / "checkout" / "scripts" / "service" / "cleanup.bat"
+    harness.parent.mkdir(parents=True)
+    harness.write_text("@echo off\nsetlocal enabledelayedexpansion\n"
+                       + "".join(src[start:end]) + "exit /b 0\n", encoding="utf-8")
+
+    checkout, legacy = tmp_path / "checkout", tmp_path / "ProgramData" / "PolyShield"
+    keep = [checkout / "state" / "service_events.json",
+            legacy / "quarantine" / "held.bin",
+            legacy / "intelligence" / "threat_db.sqlite",
+            legacy / "logs" / "scan_1.json",
+            legacy / "k2" / "rule.yar"]
+    doomed = [checkout / "state" / "service.log",
+              checkout / "state" / "service_token.txt",
+              legacy / "service.log",
+              legacy / "service_token.txt"]
+    for f in keep + doomed:
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text("x", encoding="utf-8")
+    return harness, legacy, keep, doomed
+
+
+def _run_cleanup(harness, legacy, answer):
+    import os
+
+    env = dict(os.environ, LEGACY=str(legacy))
+    return subprocess.run(["cmd.exe", "/c", str(harness)], input=answer + "\n",
+                          capture_output=True, text=True, env=env, timeout=60,
+                          cwd=str(harness.parent))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="runs cmd.exe")
+def test_remove_deletes_the_two_files_and_nothing_else(tmp_path):
+    harness, legacy, keep, doomed = _cleanup_harness(tmp_path)
+    proc = _run_cleanup(harness, legacy, "y")
+
+    still_there = [str(f) for f in doomed if f.exists()]
+    assert not still_there, f"not removed: {still_there}\n{proc.stdout}{proc.stderr}"
+    lost = [str(f) for f in keep if not f.exists()]
+    assert not lost, (
+        "the log/token cleanup deleted something that is not the log or token -- "
+        f"{lost}\n{proc.stdout}{proc.stderr}")
+    assert legacy.is_dir(), "the legacy folder itself was removed"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="runs cmd.exe")
+def test_remove_deletes_nothing_when_the_answer_is_no(tmp_path):
+    harness, legacy, keep, doomed = _cleanup_harness(tmp_path)
+    proc = _run_cleanup(harness, legacy, "n")
+    assert all(f.exists() for f in keep + doomed), proc.stdout + proc.stderr
+
+
+def test_the_service_script_never_removes_a_directory():
+    """Static half, for the machines that cannot run cmd.exe."""
+    text = (_ROOT_DIR / "scripts" / "service" / "setup_service.bat").read_text(
+        encoding="utf-8")
+    body = [ln.strip().lower() for ln in text.splitlines()
+            if not ln.strip().upper().startswith("REM")]
+    offenders = [ln for ln in body
+                 if ln.startswith(("rmdir", "rd ")) or " rmdir " in f" {ln} "]
+    assert not offenders, f"setup_service.bat removes a directory: {offenders}"

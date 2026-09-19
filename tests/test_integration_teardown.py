@@ -23,20 +23,33 @@ import pytest
 from ui.core import integration
 
 
+#: Every module `unregister_all` reaches HKCU through.  A step added to
+#: `_STEPS` without its module added here would run against the developer's
+#: live hive in every test in this file -- see _never_touch_the_real_hive.
+_HKCU_MODULES = ("ui.core.shell_ext", "ui.core.autostart", "ui.core.dev_install")
+
+
 @pytest.fixture(autouse=True)
 def _never_touch_the_real_hive(monkeypatch):
-    """shell_ext talks to winreg directly, not through subprocess.
+    """The HKCU-touching modules talk to winreg directly, not through subprocess.
 
     Learned the hard way: a test here stubbed subprocess, assumed that covered
     every step, and unregister_context_menu went straight to the live HKCU and
     deleted the user real Explorer verb. Autouse so a future test cannot
     reintroduce that by forgetting.
+
+    Every module in _HKCU_MODULES shares ONE fake hive, because they share one
+    real one: a test that registers through one and tears down through another
+    has to see the same tree, and giving each its own would let a teardown
+    "succeed" against a hive nothing was ever written to.
     """
-    from ui.core import shell_ext
+    import importlib
 
     class _FakeWinreg:
         HKEY_CURRENT_USER = "HKCU"
         REG_SZ = 1
+        REG_DWORD = 4
+        REG_BINARY = 3
 
         def __init__(self):
             self.tree = {}
@@ -50,8 +63,20 @@ def _never_touch_the_real_hive(monkeypatch):
                 raise FileNotFoundError(2, "not found")
             return _Key(self, hive, sub)
 
-        def SetValueEx(self, key, name, _r, _t, data):
-            self.tree[(key.hive, key.sub)][name] = data
+        def SetValueEx(self, key, name, _r, typ, data):
+            self.tree[(key.hive, key.sub)][name] = (data, typ)
+
+        def QueryValueEx(self, key, name):
+            try:
+                return self.tree[(key.hive, key.sub)][name]
+            except KeyError:
+                raise FileNotFoundError(2, "not found") from None
+
+        def DeleteValue(self, key, name):
+            try:
+                del self.tree[(key.hive, key.sub)][name]
+            except KeyError:
+                raise FileNotFoundError(2, "not found") from None
 
         def DeleteKey(self, hive, sub):
             if (hive, sub) not in self.tree:
@@ -69,8 +94,40 @@ def _never_touch_the_real_hive(monkeypatch):
             return False
 
     fake = _FakeWinreg()
-    monkeypatch.setattr(shell_ext, "winreg", fake)
+    for name in _HKCU_MODULES:
+        try:
+            mod = importlib.import_module(name)
+        except ImportError:
+            continue        # not written yet; the guard below is what enforces it
+        monkeypatch.setattr(mod, "winreg", fake, raising=False)
     return fake
+
+
+def test_every_hkcu_teardown_step_is_covered_by_the_fake_hive():
+    """The guard on the guard.
+
+    _STEPS growing an HKCU step whose module is not in _HKCU_MODULES would not
+    fail loudly -- it would quietly run against the developer's live registry in
+    every test in this file. So the list is asserted, not trusted.
+    """
+    import importlib
+    import inspect
+
+    for _label, attr in integration._STEPS:
+        src = inspect.getsource(getattr(integration, attr))
+        for line in src.splitlines():
+            line = line.strip()
+            if not line.startswith("from ui.core import "):
+                continue
+            mod_name = "ui.core." + line.split("import ", 1)[1].split()[0]
+            try:
+                mod = importlib.import_module(mod_name)
+            except ImportError:
+                continue
+            if hasattr(mod, "winreg"):
+                assert mod_name in _HKCU_MODULES, (
+                    f"{attr} reaches HKCU through {mod_name}, which "
+                    "_never_touch_the_real_hive does not stub")
 
 
 @pytest.fixture
@@ -103,11 +160,17 @@ def sc_calls(monkeypatch):
 
 @pytest.fixture
 def no_side_effects(monkeypatch):
-    """The two non-service steps, stubbed to succeed."""
-    monkeypatch.setattr(integration, "unregister_context_menu",
-                        lambda: (True, "menu removed"))
-    monkeypatch.setattr(integration, "unregister_scheduled_task",
-                        lambda: (True, "task removed"))
+    """Every non-service step, stubbed to succeed.
+
+    Derived from _STEPS rather than listed, so a new step is stubbed the moment
+    it is added instead of quietly executing for real in tests that only meant
+    to exercise the service branch.
+    """
+    for _label, attr in integration._STEPS:
+        if attr == "unregister_service":
+            continue
+        monkeypatch.setattr(integration, attr,
+                            lambda a=attr: (True, f"{a} stubbed"))
 
 
 # == Absent is success ========================================================
@@ -217,7 +280,13 @@ def test_a_clean_machine_reports_success(sc_calls, no_side_effects):
     report = integration.unregister_all()
 
     assert report["ok"] is True
-    assert set(report["steps"]) == {"service", "context menu", "scheduled task"}
+    # A literal set, not `set(integration._STEPS)`. Deriving it would make this
+    # assertion agree with whatever the code says, including a step silently
+    # dropped -- and the report shape is what an uninstaller and a rollback both
+    # read to decide whether they are finished.
+    assert set(report["steps"]) == {
+        "service", "context menu", "startup entry", "scheduled task",
+        "uninstall entry"}
 
 
 def test_unregister_all_is_idempotent(sc_calls, no_side_effects):
@@ -364,3 +433,161 @@ def test_schtasks_is_never_given_an_inherited_stdin(monkeypatch):
     scheduler.get_task_info()
 
     assert seen.get("stdin") is subprocess.DEVNULL
+
+
+# ══ Rollback and retry ═══════════════════════════════════════════════════════
+#
+# Idempotence alone is not the property that matters. The one that does is:
+#
+#     a failed installation never leaves a half-installed machine.
+#
+# So these inject a failure at each step of a registration in turn, run the same
+# unregister_all() the installer's rollback runs, and assert the machine ends up
+# where it started -- then that a retry converges on the same result as a clean
+# first run.
+
+_REGISTER_ATTRS = [attr for _label, attr, _default in integration._REGISTER_STEPS]
+
+
+@pytest.fixture
+def fake_machine(monkeypatch):
+    """A machine whose five integrations are just a set of names.
+
+    Real enough for what is being asserted -- which is ordering, convergence and
+    the absence of leftovers, not registry mechanics. Those are pinned against
+    the fake hive in test_integration_edges.py.
+    """
+    state: set[str] = set()
+
+    def register(name):
+        def _do():
+            state.add(name)
+            return True, f"{name} registered"
+        return _do
+
+    def unregister(name):
+        def _do():
+            if name not in state:
+                return True, f"no {name} was registered"
+            state.discard(name)
+            return True, f"{name} removed"
+        return _do
+
+    pairs = {
+        "register_context_menu":   ("context menu", "unregister_context_menu"),
+        "register_startup_entry":  ("startup entry", "unregister_startup_entry"),
+        "register_arp_entry":      ("uninstall entry", "unregister_arp_entry"),
+    }
+    for reg_attr, (name, unreg_attr) in pairs.items():
+        monkeypatch.setattr(integration, reg_attr, register(name))
+        monkeypatch.setattr(integration, unreg_attr, unregister(name))
+
+    # The two steps with no registration counterpart in register_all().
+    monkeypatch.setattr(integration, "unregister_service",
+                        lambda: (True, "service removed"))
+    monkeypatch.setattr(integration, "unregister_scheduled_task",
+                        unregister("scheduled task"))
+    return state
+
+
+def test_a_clean_registration_leaves_exactly_what_was_asked_for(fake_machine):
+    report = integration.register_all(startup=True)
+    assert report["ok"] is True
+    assert fake_machine == {"context menu", "startup entry", "uninstall entry"}
+
+
+@pytest.mark.parametrize("failing", _REGISTER_ATTRS)
+def test_a_failed_registration_rolls_back_to_a_clean_machine(
+        fake_machine, monkeypatch, failing):
+    """Whichever step breaks, the rollback converges on the same empty machine.
+
+    Parametrised over the step rather than written once, because the interesting
+    cases are the LATER failures: those are the ones with earlier registrations
+    already on disk to leave behind.
+    """
+    monkeypatch.setattr(integration, failing,
+                        lambda: (False, "injected failure"))
+
+    report = integration.register_all(startup=True)
+    assert report["ok"] is False
+
+    integration.unregister_all()
+    assert fake_machine == set(), (
+        f"a failure at {failing} left {sorted(fake_machine)} behind")
+
+
+@pytest.mark.parametrize("failing", _REGISTER_ATTRS)
+def test_a_retry_after_a_rollback_matches_a_first_time_success(
+        fake_machine, monkeypatch, failing):
+    # A transient failure -- a locked hive, a denied write -- rather than
+    # monkeypatch.undo(), which would also unwind the fake machine this test is
+    # measuring and leave the retry writing to the real one.
+    working = getattr(integration, failing)
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        return (False, "injected failure") if calls["n"] == 1 else working()
+
+    monkeypatch.setattr(integration, failing, flaky)
+    integration.register_all(startup=True)
+    integration.unregister_all()
+
+    report = integration.register_all(startup=True)      # the fault has cleared
+    assert report["ok"] is True
+    assert fake_machine == {"context menu", "startup entry", "uninstall entry"}
+
+
+def test_a_step_that_raises_during_registration_is_contained(fake_machine, monkeypatch):
+    def boom():
+        raise OSError(5, "Access is denied")
+
+    monkeypatch.setattr(integration, "register_context_menu", boom)
+    report = integration.register_all(startup=True)
+    assert report["ok"] is False
+    assert "raised" in report["steps"]["context menu"]["detail"]
+    # The later steps still ran: they are independent, and stopping at the first
+    # problem leaves more behind than carrying on does.
+    assert "uninstall entry" in fake_machine
+
+
+# ── The idempotence matrix ───────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("preexisting", [
+    set(),
+    {"context menu"},
+    {"startup entry"},
+    {"uninstall entry"},
+    {"scheduled task"},
+    {"context menu", "uninstall entry"},
+    {"context menu", "startup entry", "uninstall entry", "scheduled task"},
+])
+def test_uninstall_converges_from_any_partial_state(fake_machine, preexisting):
+    """Whatever a previous partial run left, one uninstall finishes the job and
+    a second one is still a success.
+
+    A failed uninstall the user cannot simply re-run is a failed uninstall they
+    have to fix with regedit.
+    """
+    fake_machine.update(preexisting)
+
+    first = integration.unregister_all()
+    assert first["ok"] is True
+    assert fake_machine == set()
+
+    second = integration.unregister_all()
+    assert second["ok"] is True
+    assert set(second["steps"]) == set(first["steps"])
+
+
+def test_the_uninstall_entry_is_removed_last(fake_machine):
+    """It advertises this uninstall.
+
+    If an earlier step fails, the entry has to still be in Settings > Apps for
+    the user to retry from -- so removing it first would strand a
+    half-uninstalled product with no visible way to finish.
+    """
+    order = [name for name, _attr in integration._STEPS]
+    assert order[-1] == "uninstall entry"
+    assert order[0] == "service", "the elevation-needing step still goes first"
