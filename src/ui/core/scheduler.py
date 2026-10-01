@@ -1,22 +1,19 @@
 import subprocess
-from ui.core import paths
 
-_NO_WINDOW = subprocess.CREATE_NO_WINDOW
+from polybedrock.schtasks_run import run_schtasks
+
+from ui.core import paths
 
 _TASK_NAME = "PolyShield_ScheduledScan"
 
 
 def _run(args: list[str]) -> tuple[bool, str]:
     try:
-        r = subprocess.run(
-            args, capture_output=True, text=True,
-            timeout=15, creationflags=_NO_WINDOW,
-            # See integration._sc: with no console, an inherited stdin handle
-            # makes schtasks fail with WinError 6 before it runs. That made
-            # get_task_info() report "no task" for a task that existed, and the
-            # uninstaller then skipped deleting it.
-            stdin=subprocess.DEVNULL,
-        )
+        # text=True + stdin=DEVNULL: see integration._sc. With no console, an
+        # inherited stdin handle makes schtasks fail with WinError 6 before it
+        # runs. That made get_task_info() report "no task" for a task that
+        # existed, and the uninstaller then skipped deleting it.
+        r = run_schtasks(args, timeout=15, text=True, stdin=subprocess.DEVNULL)
         return r.returncode == 0, (r.stdout + r.stderr).strip()
     except Exception as exc:
         return False, str(exc)
@@ -45,7 +42,7 @@ def create_task(scan_path: str, frequency: str, start_time: str) -> tuple[bool, 
     run_cmd = " ".join(f'"{a}"' for a in argv)
 
     args = [
-        "schtasks", "/create",
+        "/create",
         "/tn", _TASK_NAME,
         "/tr", run_cmd,
         "/sc", frequency,
@@ -57,13 +54,13 @@ def create_task(scan_path: str, frequency: str, start_time: str) -> tuple[bool, 
 
 
 def delete_task() -> tuple[bool, str]:
-    return _run(["schtasks", "/delete", "/tn", _TASK_NAME, "/f"])
+    return _run(["/delete", "/tn", _TASK_NAME, "/f"])
 
 
 def get_task_info() -> dict:
     """Return task details or {'exists': False} if not found."""
     ok, output = _run([
-        "schtasks", "/query", "/tn", _TASK_NAME, "/fo", "CSV", "/nh"
+        "/query", "/tn", _TASK_NAME, "/fo", "CSV", "/nh"
     ])
     if not ok:
         return {"exists": False}
@@ -85,4 +82,4 @@ def get_task_info() -> dict:
 
 def run_now() -> tuple[bool, str]:
     """Trigger the scheduled task immediately."""
-    return _run(["schtasks", "/run", "/tn", _TASK_NAME])
+    return _run(["/run", "/tn", _TASK_NAME])
