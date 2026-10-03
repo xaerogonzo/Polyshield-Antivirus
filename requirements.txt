@@ -82,5 +82,5 @@ pybloom-live>=3.0.0
 # written here -- PEP 508 forbids a version specifier on a direct reference
 # -- so tests/test_substrate_pin.py asserts it against what is installed,
 # and also fails if the three declaration sites drift onto different revs.
-polybedrock-core @ git+https://github.com/xaerogonzo/PolyBedrock.git@3a5028854bc1f2d4288ba2115fb26d1fbb946c91#subdirectory=core
-polybedrock-ui   @ git+https://github.com/xaerogonzo/PolyBedrock.git@3a5028854bc1f2d4288ba2115fb26d1fbb946c91#subdirectory=ui
+polybedrock-core @ git+https://github.com/xaerogonzo/PolyBedrock.git@2801424344efc33017d3febd7a87c63f015c7507#subdirectory=core
+polybedrock-ui   @ git+https://github.com/xaerogonzo/PolyBedrock.git@2801424344efc33017d3febd7a87c63f015c7507#subdirectory=ui

@@ -163,7 +163,7 @@ $RUNTIME_SHA256  = "0D57BB6CB078B74D23DBFE91F77D6780D45BED328911609F1F7EE2BA1606
 # because PolyBedrock carries no tags yet; it becomes a tag when it has one.
 # Must match requirements{,-ci}.txt -- tests/test_substrate_pin.py fails if
 # the three drift apart.
-$POLYBEDROCK     = "polybedrock-core @ git+https://github.com/xaerogonzo/PolyBedrock.git@3a5028854bc1f2d4288ba2115fb26d1fbb946c91#subdirectory=core"
+$POLYBEDROCK     = "polybedrock-core @ git+https://github.com/xaerogonzo/PolyBedrock.git@2801424344efc33017d3febd7a87c63f015c7507#subdirectory=core"
 $RUNTIME_PKGS    = @("pywin32", "psutil", "watchdog", "kicomav", $POLYBEDROCK)
 
 function Get-Sha256 {
@@ -329,6 +329,7 @@ $guiArgs = $commonArgs + @(
     "--include-module=polybedrock.settings",
     "--include-module=polybedrock.proc_control",
     "--include-module=polybedrock.startup",
+    "--include-module=polybedrock.schtasks_run",
     "--include-module=polybedrock.ui.theme",
     "--output-filename=PolyShield.exe",
     # attach, not disable. `disable` would take stdout with it, and this binary
@@ -367,6 +368,7 @@ $serviceArgs = $commonArgs + @(
     "--include-module=polybedrock.settings",
     "--include-module=polybedrock.proc_control",
     "--include-module=polybedrock.startup",
+    "--include-module=polybedrock.schtasks_run",
     "--output-filename=PolyShieldService.exe"
 )
 
