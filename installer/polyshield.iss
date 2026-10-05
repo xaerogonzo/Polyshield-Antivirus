@@ -53,6 +53,15 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ArchitecturesAllowed=x64compatible
 UninstallDisplayIcon={app}\{#AppExeName}
 LicenseFile=..\LICENSE
+#ifdef SignInstaller
+; Only when build.ps1 passes /DSignInstaller together with /Spolyshield=<cmd>.
+; Declaring SignTool without the matching /S is a compile error, so an unsigned
+; build must not mention it at all. SignedUninstaller signs the uninstall.exe
+; Inno writes at install time -- the file Windows runs elevated from
+; Settings > Apps, and the one an unsigned build would leave behind.
+SignTool=polyshield
+SignedUninstaller=yes
+#endif
 ; The app must not be running while its files are replaced -- but Restart
 ; Manager is NOT how we achieve that, and turning it on cost two verification
 ; runs. It applies to uninstall as well as install, and a /VERYSILENT uninstall

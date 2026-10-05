@@ -69,7 +69,14 @@ param(
     # resource_root() therefore has to come from the module tree rather than
     # from the executable's location, and app_root() must not live under it.
     # Verified on a clean machine, both layouts: see docs/ARCHITECTURE.md.
-    [switch]$Onefile
+    [switch]$Onefile,
+
+    # Refuse to produce an unsigned artifact. Signing is otherwise opt-in and an
+    # unconfigured build says UNSIGNED in its last lines -- which is easy to miss
+    # in a long log. A release build passes this so the absence of a certificate
+    # is a failure at pre-flight, before a multi-minute compile, rather than a
+    # setup program that SmartScreen flags on someone else's machine.
+    [switch]$RequireSigning
 )
 
 Set-StrictMode -Version Latest
@@ -78,6 +85,33 @@ $ErrorActionPreference = "Stop"
 $ROOT   = $PSScriptRoot
 $DIST   = Join-Path $ROOT "dist"
 $PYTHON = Join-Path $ROOT "kicomav_env\Scripts\python.exe"
+
+# ---------- Signing configuration ---------------------------------------------
+# Environment variables only. A certificate path, a thumbprint or a token PIN is
+# not something that belongs in a tracked file, and none of these are passwords:
+# the key itself stays in the Windows certificate store or on the hardware token,
+# and signtool is pointed at it. Deliberately no PFX-plus-password mode -- a
+# password on a command line shows up in the process list and in ISCC's log.
+# Import the PFX first (Import-PfxCertificate) and use the thumbprint.
+#
+#   POLYSHIELD_SIGN_THUMBPRINT   SHA-1 of a code-signing cert in the CurrentUser
+#                                or LocalMachine store (an installed OV cert, an
+#                                EV USB token that has surfaced in the store, or
+#                                a self-signed dev cert).
+#   POLYSHIELD_SIGN_EXTRA_ARGS   Extra signtool arguments, for providers that are
+#                                not store-based (Azure Trusted Signing's /dlib
+#                                and /dmdf). Quote paths that contain spaces.
+#   POLYSHIELD_SIGN_TIMESTAMP    RFC 3161 server. Default: DigiCert.
+#   POLYSHIELD_SIGNTOOL          Full path to signtool.exe, if not auto-found.
+#   POLYSHIELD_SIGN_ALLOW_UNTRUSTED=1
+#                                Accept a signature whose chain does not reach a
+#                                trusted root. For a self-signed DEV certificate
+#                                only; a release build must not set it.
+$SIGN_THUMBPRINT = $env:POLYSHIELD_SIGN_THUMBPRINT
+$SIGN_EXTRA      = $env:POLYSHIELD_SIGN_EXTRA_ARGS
+$SIGN_TIMESTAMP  = if ($env:POLYSHIELD_SIGN_TIMESTAMP) { $env:POLYSHIELD_SIGN_TIMESTAMP }
+                   else { "http://timestamp.digicert.com" }
+$SIGN_ENABLED    = [bool]($SIGN_THUMBPRINT -or $SIGN_EXTRA)
 
 # ---------- Pre-flight --------------------------------------------------------
 
@@ -88,6 +122,12 @@ if (-not (Test-Path $PYTHON)) {
 & $PYTHON -m nuitka --version *> $null
 if ($LASTEXITCODE -ne 0) {
     throw "Nuitka not installed. Run: kicomav_env\Scripts\pip.exe install -r requirements-build.txt"
+}
+
+if ($RequireSigning -and -not $SIGN_ENABLED) {
+    throw ("-RequireSigning was passed but no signing certificate is configured. " +
+           "Set POLYSHIELD_SIGN_THUMBPRINT (or POLYSHIELD_SIGN_EXTRA_ARGS); see the " +
+           "'Signing configuration' block at the top of build.ps1.")
 }
 
 # ---------- Reversibility -----------------------------------------------------
@@ -294,6 +334,96 @@ print(json.dumps({
     Write-Host "  [runtime] k2: $sigs signatures across the loaded plugins" -ForegroundColor DarkGray
 }
 
+# ---------- Signing -----------------------------------------------------------
+
+function Get-SignTool {
+    # Newest x64 signtool under the Windows SDK, else PATH. Absence is reported
+    # with the fix rather than surfacing later as "'signtool' is not recognised".
+    if ($env:POLYSHIELD_SIGNTOOL -and (Test-Path $env:POLYSHIELD_SIGNTOOL)) {
+        return $env:POLYSHIELD_SIGNTOOL
+    }
+    $kits = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\bin"
+    if (Test-Path $kits) {
+        $hit = Get-ChildItem $kits -Directory |
+               Where-Object { $_.Name -match '^\d+(\.\d+)+$' } |
+               Sort-Object { [version]$_.Name } -Descending |
+               ForEach-Object { Join-Path $_.FullName "x64\signtool.exe" } |
+               Where-Object { Test-Path $_ } | Select-Object -First 1
+        if ($hit) { return $hit }
+    }
+    $found = Get-Command signtool.exe -ErrorAction SilentlyContinue
+    if ($found) { return $found.Source }
+    throw ("signtool.exe not found. Install the Windows SDK signing tools:" +
+           [Environment]::NewLine +
+           "    winget install Microsoft.WindowsSDK.10.0.26100" + [Environment]::NewLine +
+           "or set POLYSHIELD_SIGNTOOL to its full path.")
+}
+
+function Split-SignExtra {
+    # Whitespace-separated, double quotes group (a dlib path under Program Files).
+    # Quotes are stripped: PowerShell re-quotes an argument that needs it, and a
+    # hand-added quote becomes part of the value (powershell-silent-failures #11).
+    if (-not $SIGN_EXTRA) { return @() }
+    return @([regex]::Matches($SIGN_EXTRA, '"[^"]*"|\S+') |
+            ForEach-Object { $_.Value.Trim('"') })
+}
+
+function Test-SignedFile {
+    # "signtool exited 0" is not the claim worth making. Read the signature back
+    # off the file: it must be present, and Valid -- a chain that reaches a trusted
+    # root -- unless POLYSHIELD_SIGN_ALLOW_UNTRUSTED says this is a dev cert.
+    param([string]$Path)
+    $sig = Get-AuthenticodeSignature -FilePath $Path
+    if (-not $sig.SignerCertificate) {
+        throw "$Path carries no signature after signing."
+    }
+    if ($SIGN_THUMBPRINT -and $sig.SignerCertificate.Thumbprint -ne ($SIGN_THUMBPRINT -replace '\s', '').ToUpper()) {
+        throw ("$Path was signed by " + $sig.SignerCertificate.Thumbprint +
+               ", not the configured " + $SIGN_THUMBPRINT + ".")
+    }
+    $trusted = $sig.Status -eq "Valid"
+    if (-not $trusted -and $env:POLYSHIELD_SIGN_ALLOW_UNTRUSTED -ne "1") {
+        throw ("$Path signature status is '$($sig.Status)': $($sig.StatusMessage) " +
+               "Set POLYSHIELD_SIGN_ALLOW_UNTRUSTED=1 only for a self-signed dev certificate.")
+    }
+    return $sig
+}
+
+function Invoke-Sign {
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not $SIGN_ENABLED) { return }
+
+    $signtool = Get-SignTool
+    # Not named $args or $input: automatic variables swallow a parameter of the
+    # same name without an error (powershell-silent-failures #3).
+    $signArgs = @("sign", "/fd", "SHA256", "/tr", $SIGN_TIMESTAMP, "/td", "SHA256")
+    if ($SIGN_THUMBPRINT) { $signArgs += @("/sha1", ($SIGN_THUMBPRINT -replace '\s', '')) }
+    $signArgs += (Split-SignExtra)
+    $signArgs += $Path
+
+    Write-Host ("  Signing " + (Split-Path $Path -Leaf) + " ...") -ForegroundColor Cyan
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        # Piped through Out-String for the same reason the engine probe is: the
+        # pipe is what makes PowerShell wait and populate $LASTEXITCODE.
+        $out = & $signtool @signArgs 2>&1 | Out-String
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    if ($code -ne 0) {
+        throw "signtool failed on $Path (exit $code):" + [Environment]::NewLine + $out
+    }
+
+    $sig = Test-SignedFile -Path $Path
+    $ts  = if ($sig.TimeStamperCertificate) { "timestamped" } else { "NO TIMESTAMP" }
+    Write-Host ("    signed by " + $sig.SignerCertificate.Subject + " [" + $sig.Status + ", " + $ts + "]") -ForegroundColor Green
+    if (-not $sig.TimeStamperCertificate) {
+        throw "$Path has no countersignature timestamp; it would stop validating the day the certificate expires."
+    }
+}
+
 # ---------- Targets -----------------------------------------------------------
 
 # Shared: --standalone rather than --onefile for now. Standalone has no
@@ -388,6 +518,14 @@ New-Item -ItemType Directory -Force -Path $DIST | Out-Null
 if ($Target -in @("gui", "all")) {
     Invoke-Nuitka -Script (Join-Path $ROOT "src\ui\app.py") `
                   -ExtraArgs $guiArgs -Label "PolyShield.exe (GUI)"
+
+    # Signed BEFORE anything else touches it: the installer packages this file,
+    # and the engine gate at the bottom of this script launches it -- so a
+    # signature that breaks a onefile executable fails that gate here, not on a
+    # user's machine.
+    $builtGui = if ($Onefile) { Join-Path $DIST "PolyShield.exe" }
+                else { Join-Path $DIST "app.dist\PolyShield.exe" }
+    if (Test-Path $builtGui) { Invoke-Sign -Path $builtGui }
 }
 
 if ($Target -in @("service", "all")) {
@@ -511,10 +649,27 @@ if ($Target -eq "installer") {
     Write-Host "  Compiling the installer ..." -ForegroundColor Cyan
     $iss = Join-Path $ROOT "installer\polyshield.iss"
 
+    # Signing goes through Inno's own SignTool hook rather than a post-step, so
+    # the UNINSTALLER is signed too (SignedUninstaller in the .iss): Inno
+    # generates it at install time from the setup program, and it is the file
+    # Windows runs elevated from Settings > Apps. $f is the file, $q a literal
+    # double quote; both are substituted by Inno, not by PowerShell.
+    $isccArgs = @()
+    if ($SIGN_ENABLED) {
+        $cmd = '$q' + (Get-SignTool) + '$q sign /fd SHA256 /tr ' + $SIGN_TIMESTAMP + ' /td SHA256'
+        if ($SIGN_THUMBPRINT) { $cmd += ' /sha1 ' + ($SIGN_THUMBPRINT -replace '\s', '') }
+        foreach ($tok in (Split-SignExtra)) {
+            $cmd += ' ' + $(if ($tok -match '\s') { '$q' + $tok + '$q' } else { $tok })
+        }
+        $cmd += ' $f'
+        $isccArgs += "/DSignInstaller"
+        $isccArgs += "/Spolyshield=$cmd"
+    }
+
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     try {
-        & $ISCC $iss 2>&1 | ForEach-Object { Write-Host $_ }
+        & $ISCC @isccArgs $iss 2>&1 | ForEach-Object { Write-Host $_ }
         $code = $LASTEXITCODE
     } finally {
         $ErrorActionPreference = $prevEAP
@@ -523,6 +678,11 @@ if ($Target -eq "installer") {
 
     $setup = Get-ChildItem $DIST -Filter "PolyShield-Setup-*.exe" |
              Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($setup -and $SIGN_ENABLED) {
+        # ISCC exiting zero does not prove the SignTool hook ran. Read it back.
+        $null = Test-SignedFile -Path $setup.FullName
+        Write-Host "  Setup program signature verified." -ForegroundColor Green
+    }
     if ($setup) {
         $mb = [math]::Round($setup.Length / 1MB, 1)
         Write-Host ""
@@ -596,5 +756,13 @@ if (Test-Path $guiExe) {
 
 Write-Host ""
 Write-Host "Build complete -> $DIST" -ForegroundColor Green
+if ($SIGN_ENABLED) {
+    Write-Host "Signing: SIGNED (executables signed this run are listed above)." -ForegroundColor Green
+} else {
+    # Said every time, in colour: an unsigned build is a legitimate dev artifact
+    # and a defect in a release, and nothing else in this log distinguishes them.
+    Write-Host "Signing: UNSIGNED - SmartScreen and Defender will flag this on other machines." -ForegroundColor Yellow
+    Write-Host "         Set POLYSHIELD_SIGN_THUMBPRINT to sign, or pass -RequireSigning to forbid this." -ForegroundColor Yellow
+}
 Write-Host ""
 exit 0
