@@ -206,6 +206,11 @@ def test_an_editable_substrate_is_reported_and_never_silent(dist, request):
         return                      # an ordinary pinned install; the tests above apply
 
     in_ci = bool(os.environ.get("CI") or os.environ.get("GITHUB_ACTIONS"))
+    # PolyBedrock's consumer job installs its own checkout editable over this
+    # repo's pin ON PURPOSE (module docstring) and sets this to say so. It is
+    # named rather than inferred: PolyShield's own CI must still fail on an
+    # editable substrate, and nothing else here can tell the two apart.
+    overlay = bool(os.environ.get("POLYBEDROCK_SUBSTRATE_OVERLAY"))
     detail = f"{dist} is installed EDITABLE from {source}"
 
     declared = _declared_revisions().get("requirements.txt")
@@ -213,9 +218,11 @@ def test_an_editable_substrate_is_reported_and_never_silent(dist, request):
     if drift is not None:
         detail += f", {drift} commit(s) past the pinned {declared[:7]}"
 
-    assert not in_ci, (
+    assert not (in_ci and not overlay), (
         detail + ". CI must test the declared revision: an editable install "
-        "makes the pin inert and the range unable to object.")
+        "makes the pin inert and the range unable to object. (PolyBedrock's "
+        "own consumer job sets POLYBEDROCK_SUBSTRATE_OVERLAY=1 to say the "
+        "overlay is deliberate.)")
 
     warnings.warn(UserWarning(
         detail + ". Edits there take effect immediately in PolyShield, and "
