@@ -713,6 +713,70 @@ asks the staged service to resolve its own paths, and got an `AttributeError`
 for a function added days earlier. The staging now clears each destination
 first, and the pre-flight is the standing check.
 
+### Code signing (v1.17)
+
+`build.ps1` signs `PolyShield.exe`, the setup program **and the uninstaller**, and
+does nothing at all unless told to. A build with no certificate configured is a
+legitimate development artifact and says `UNSIGNED` in its last lines; passing
+`-RequireSigning` turns that into a pre-flight failure, before the compile.
+
+**Configuration is environment variables, and none of them is a secret.**
+`POLYSHIELD_SIGN_THUMBPRINT` names a code-signing certificate in the CurrentUser
+or LocalMachine store (an installed OV certificate, an EV token that has surfaced
+in the store, a self-signed dev certificate). `POLYSHIELD_SIGN_EXTRA_ARGS` carries
+extra `signtool` arguments for providers that are not store-based (Azure Trusted
+Signing's `/dlib` and `/dmdf`). The key stays in the store or on the token. There
+is deliberately no PFX-plus-password mode: a password on a command line is
+visible in the process list and in ISCC's log. `Import-PfxCertificate` first.
+
+**Three decisions that are easy to undo by tidying:**
+
+* **The GUI is signed straight after the compile**, not after packaging. The
+  engine probe at the end of the script launches the built binary, so it launches
+  the *signed* one. Signing a onefile executable is the step most likely to break
+  it without a word, and this is where that would fail the build.
+* **The installer is signed through Inno's `SignTool` hook**, switched on by
+  `/DSignInstaller` and `/Spolyshield=<cmd>`, rather than by a post-step. Only the
+  hook reaches `SignedUninstaller`: Inno writes `unins000.exe` at install time,
+  and it is the file Windows runs elevated from Settings > Apps. A post-step would
+  sign the setup program and leave that one unsigned. The directive is inside
+  `#ifdef SignInstaller` because declaring `SignTool` without a matching `/S` is a
+  compile error, so an unsigned build must not mention it.
+* **The signature is read back off the file**, not inferred from `signtool`'s exit
+  code. It must exist, must come from the configured thumbprint, must carry an RFC
+  3161 timestamp (without one the signature stops validating the day the
+  certificate expires) and must be `Valid`, i.e. chain to a trusted root.
+  `POLYSHIELD_SIGN_ALLOW_UNTRUSTED=1` relaxes only the last of those, for a
+  self-signed development certificate.
+
+**What was measured, with a throwaway self-signed certificate:** a signed onefile
+`PolyShield.exe` (25.9 MB) starts and passes the engine probe; ISCC's SignTool
+hook signed the setup program, and a real silent install wrote a signed,
+timestamped uninstaller; a thumbprint absent from every store fails loudly in
+`signtool`; an untrusted chain is refused unless the dev flag is set.
+
+**What was not:** a certificate that chains to a trusted root (so `Valid` has not
+been observed), and the full `polyshield.iss` with its real payload — the hook was
+exercised with a minimal script carrying the same directives and the same command
+construction. Neither blocks a release, but the first real signed release should
+be checked with `Get-AuthenticodeSignature` on all three files.
+
+**Signing is necessary, not sufficient.** SmartScreen also weighs reputation: an
+OV certificate removes the "unknown publisher" warning but a new publisher can
+still be warned until downloads accumulate, while an EV certificate (or Azure
+Trusted Signing) is trusted immediately. Which to buy is a cost decision, not a
+build one — the hook above works with any of them.
+
+For a development certificate:
+
+```powershell
+$c = New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=PolyShield DEV" `
+       -CertStoreLocation Cert:\CurrentUser\My
+$env:POLYSHIELD_SIGN_THUMBPRINT = $c.Thumbprint
+$env:POLYSHIELD_SIGN_ALLOW_UNTRUSTED = "1"
+.\build.ps1 -Onefile -Target gui
+```
+
 ### Undoing an install (v1.16, 4c.3)
 
 `src/ui/core/integration.py` removes the three things that outlive the process:
