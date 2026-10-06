@@ -467,16 +467,36 @@ can skip `pywin32_postinstall` entirely and the uninstaller never has to reason
 about who else on the machine shares a copy.
 
 **K2 ships, and its capability is measured rather than claimed.** K2 has no
-signature data file: its ~1263 virus names live inside the 51 modules under
-`kicomav/plugins/`, which pip installs with the package. `k2 --update` does
-**not** add signatures — it fetches `whitelist.txt` and two YARA archives.
-K2 loads those plugins with `SourceFileLoader` and swallows every per-plugin
+signature data file. About 23 of its signatures live inside the 51 modules under
+`kicomav/plugins/`, which pip installs with the package; the other ~1240 come
+from the YARA archives `k2 --update` downloads into its rules directory (the
+split was measured later, in 4c.5 — see *Verification that can fail*). K2 loads
+those plugins with `SourceFileLoader` and swallows every per-plugin
 failure, so a build that lost them still starts, still exits zero and still
 reports every scan clean. `k2 --vlist` prints what actually loaded, and both
-the build gate and `tools/engine_probe.py` require a non-trivial count.
-Deliberately not detection-by-sample: EICAR is the obvious sample and Defender
-deletes it between the write and the scan — measured, the file was gone before
-k2 opened it.
+the build gate and `tools/engine_probe.py` require a non-trivial count. The
+probe then scans a planted sample and a clean control (K2's own Dummy test
+signature, not EICAR — Defender deletes EICAR between the write and the scan,
+measured: the file was gone before k2 opened it).
+
+**A git-URL dependency cannot be installed by the runtime's own pip.**
+`build.bat -BuildRuntime` failed with `Cannot import 'setuptools.build_meta'`
+from the day PolyBedrock joined the runtime's packages, and nothing said so
+until a full build was attempted for the first time since. pip builds a source
+tree inside an isolated overlay it places on `PYTHONPATH`; the embeddable
+distribution's `python*._pth` makes the interpreter ignore `PYTHONPATH`, so the
+build backend is downloaded and then cannot be imported. Measured: it fails the
+same way at the previous pin, so the commit was never the problem, and the
+runtime has no setuptools to fall back on.
+
+`New-StagedRuntime` therefore builds a wheel for every `name @ git+...` package
+with the **build machine's** pip (an ordinary interpreter, where isolation works)
+and installs the wheel by **explicit file path**. A path rather than
+`--find-links`, so a higher version of the same name on an index can never
+outbid the commit the pin names. The wheel is pure Python and the runtime still
+carries no setuptools. Verified: the staged runtime imports `polybedrock` 0.1.0
+from its own `site-packages`, and no `polyshield-wheels-*` scratch directory is
+left behind.
 
 **The build must not depend on which shell launched it.** `Get-FileHash` and
 `Expand-Archive` live in auto-loaded modules, and a Windows PowerShell 5.1
@@ -1113,7 +1133,7 @@ change.
 
 | Engine | Ships? | Mandatory | Detected in a frozen build by | Lives where | UI when unavailable |
 |---|---|---|---|---|---|
-| **K2 (kicomav)** | **No — deferred to 4b.4, see below** | No (optional since v1.6.1) | `scanner.is_available()` — `paths.k2_exe().exists()` | dev virtualenv only | Engine row reports unavailable; pipeline runs without it |
+| **K2 (kicomav)** | **Yes — as source in the staged runtime, not compiled in (4c.2)** | No (optional since v1.6.1) | `scanner.is_available()`, then a scan of a planted sample (`tools/engine_probe.py`) | `<install>\runtime`, run as `python -m kicomav.k2` (`paths.k2_argv`) | Engine row reports unavailable; pipeline runs without it |
 | **Guardian AI** | No — separately cloned repo | No | `guardian_engine.is_available()` | `guardianai/`, cloned by `scripts/components/setup_guardian.bat` | Guardian view offers the setup script |
 | **YARA** | Yes — `yara-python` is a wheel | No | `yara_engine.is_available()` (runtime present *and* rule files exist) | compiled in; rules under `rules/` (DATA) | Engine reports no rules rather than clean |
 | **ClamAV** | No — external install | No | `clamav_engine.is_available()` — `clamscan.exe` on disk | user-installed, `C:\Program Files\ClamAV` | Engine row reports unavailable |
@@ -1137,14 +1157,16 @@ Results from `dist/app.dist/PolyShield.exe`:
 |---|---|---|---|
 | YARA | yes | **yes** | 1 rule file; a compiled rule matched a planted marker |
 | Guardian | no | — | no `guardianai` tree; it is a separately cloned repo |
-| K2 | no | — | not bundled, by decision (below) |
+| K2 | yes, **with the staged runtime** (added later; see *Why K2 is not compiled in*) | **yes** | 23 plugin signatures (1263 once the rule archives are downloaded at install); the Dummy test signature detected and a clean control passed, **through the frozen binary** |
 | ClamAV | no | — | `clamscan.exe` not found |
 
-**YARA is the only detection engine inside the binary**, and it is verified by
-detection: the probe compiles a rule at runtime and matches it against a file
+**YARA is the only detection engine compiled into the binary** (K2 ships beside
+it, in the runtime), and it is verified by detection: the probe compiles a rule at runtime and matches it against a file
 planted with the marker. `--include-package=yara` is what puts it there.
 
-The other three report **honestly unavailable**, which is the half of the
+The other two report **honestly unavailable** (the table above is the first
+build, taken before K2 had a runtime to live in; the K2 row is the current
+result), which is the half of the
 contract that matters for engines that do not ship. The gate fails only on the
 combination that must never ship — available, and then detecting nothing.
 
@@ -1161,7 +1183,27 @@ fail the gate for a reason with nothing to do with the build. The planted
 samples are assembled from fragments at runtime, the same convention the test
 suite uses, so the probe is not itself a pattern match.
 
-### Why K2 does not ship in the first build
+### Why K2 is not compiled in (and how it ships anyway)
+
+**Outcome, v1.17: K2 ships, and the gate this section set has been met.** The
+analysis below is why it is *not compiled into* `PolyShield.exe`; the decision it
+ends with ("ships without K2") was superseded in 4c.2, when K2 went into the
+staged source runtime that already had to exist for the service. The condition
+attached to bundling it -- *a detection through the packaged build* -- is now
+checked on every build: `PolyShield.exe --engines` asks the frozen binary to run
+K2 over a planted sample and over a clean control, and fails the build if K2
+claims to be available and either misses the sample or flags the control.
+
+The sample is K2's own **Dummy** test signature
+(`Dummy-Test-File (not a virus)`), not EICAR. EICAR was the obvious choice and is
+why the gate went unmet for so long: Defender deletes it between the write and
+the scan, which fails the check for a reason unrelated to the build. The Dummy
+pattern is harmless and Defender ignores it. Measured through the frozen binary
+with `distribution=True frozen=True`: sample detected, control clean, 23
+signatures from the plugins alone (1263 once the installer has downloaded the
+rule archives -- an install-time property, so the build cannot be held to it).
+Mutation-checked: a K2 that prints no report, one that misses the sample, and one
+that flags the control each fail the check.
 
 `k2.exe` is **not a standalone binary.** It is a 108 KB setuptools console-script
 stub whose entire payload is:
@@ -1204,12 +1246,14 @@ zero, reports no threats, and is indistinguishable from a clean scan. **"The
 exe launches" proves nothing here**; only an EICAR detection through the
 packaged binary does.
 
-The decision, therefore: the first distribution **ships without K2**.
-`scanner.is_available()` has returned False for a missing K2 since v1.6.1 and
-the pipeline already runs without it, so the app degrades honestly rather than
-silently. Bundling it is a 4b.4 experiment gated on an EICAR detection test
-through the packaged build — and if the plugin loader cannot be made reliable,
-K2 stays out and the UI says so.
+The decision at the time, therefore, was that the first distribution **ships
+without K2**: `scanner.is_available()` has returned False for a missing K2 since
+v1.6.1 and the pipeline already runs without it, so the app degrades honestly
+rather than silently. Compiling the plugins into the binary was never attempted
+and is not needed -- the runtime carries `kicomav` as ordinary installed source,
+where `SourceFileLoader` finds the plugins on disk exactly as it does in a
+checkout, and `paths.k2_argv()` runs it as a module so the console-script stub's
+embedded interpreter path stops mattering.
 
 ### PolyShield is not a Windows Security Center antivirus, and says so
 

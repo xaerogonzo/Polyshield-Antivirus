@@ -280,10 +280,47 @@ function New-StagedRuntime {
         --target $sitePackages pip
     if ($LASTEXITCODE -ne 0) { throw "Could not seed pip into the runtime." }
 
-    $rtPython = Join-Path $Dest "python.exe"
-    & $rtPython -m pip install --quiet --disable-pip-version-check `
-        --no-warn-script-location @RUNTIME_PKGS
-    if ($LASTEXITCODE -ne 0) { throw "Could not install $($RUNTIME_PKGS -join ', ')." }
+    # Packages that arrive as a git URL are built into wheels HERE, with the
+    # build environment's pip, and installed into the runtime from those files.
+    #
+    # Not by handing the URL to the runtime's pip, which is what this did and
+    # which has never worked since PolyBedrock joined $RUNTIME_PKGS: pip builds a
+    # source tree inside an isolated overlay it puts on PYTHONPATH, and the
+    # embeddable distribution's python*._pth makes the interpreter ignore
+    # PYTHONPATH. The backend is downloaded and then cannot be imported --
+    # "Cannot import 'setuptools.build_meta'" -- and it fails identically at the
+    # previous pin, so it is not a bad commit. A normal pip has no such file.
+    #
+    # Installed by explicit wheel PATH rather than --find-links: a path cannot be
+    # outbid by a higher version of the same name on an index, so the commit the
+    # pin names is the commit that ships. The wheel is pure Python, and a runtime
+    # that never needed setuptools still does not carry it.
+    $indexPkgs = @($RUNTIME_PKGS | Where-Object { $_ -notmatch '\s@\s' })
+    $gitPkgs   = @($RUNTIME_PKGS | Where-Object { $_ -match '\s@\s' })
+    $wheelDir  = Join-Path ([System.IO.Path]::GetTempPath()) ("polyshield-wheels-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $wheelDir | Out-Null
+    try {
+        $wheelFiles = @()
+        foreach ($ref in $gitPkgs) {
+            & $PYTHON -m pip wheel --quiet --disable-pip-version-check --no-deps `
+                --wheel-dir $wheelDir $ref
+            if ($LASTEXITCODE -ne 0) { throw "Could not build a wheel for '$ref'." }
+        }
+        if ($gitPkgs.Count -gt 0) {
+            $wheelFiles = @(Get-ChildItem $wheelDir -Filter "*.whl" | ForEach-Object { $_.FullName })
+            if ($wheelFiles.Count -ne $gitPkgs.Count) {
+                throw ("Built $($wheelFiles.Count) wheel(s) for $($gitPkgs.Count) git " +
+                       "package(s): " + ($wheelFiles -join "; "))
+            }
+        }
+
+        $rtPython = Join-Path $Dest "python.exe"
+        & $rtPython -m pip install --quiet --disable-pip-version-check `
+            --no-warn-script-location @indexPkgs @wheelFiles
+        if ($LASTEXITCODE -ne 0) { throw "Could not install $($RUNTIME_PKGS -join ', ')." }
+    } finally {
+        Remove-Item -LiteralPath $wheelDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
 
     Write-Host "  [runtime] installed: $($RUNTIME_PKGS -join ', ')" -ForegroundColor DarkGray
     return $Dest
