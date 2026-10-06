@@ -347,7 +347,22 @@ def test_the_env_template_does_not_point_k2_at_polyshield_rules():
 
 # == The build gate can tell a loaded K2 from a gutted one ====================
 
-def _k2_probe(monkeypatch, stdout: str, available: bool = True):
+def _k2_report(*infected_names: str) -> str:
+    """What k2 prints for one scanned file: a summary, then a JSON block."""
+    import json as _json
+    results = [{"filepath": "x", "status": "infected", "malware_name": n}
+               for n in infected_names]
+    return "Results:\nFiles :1\n\n" + _json.dumps({"results": results}, indent=2)
+
+
+def _k2_probe(monkeypatch, stdout: str, available: bool = True, scan=None):
+    """Drive ``check_k2`` with a stubbed k2.
+
+    ``stdout`` answers ``--vlist``. ``scan`` answers a scan of the planted
+    sample or the clean control: ``scan(is_sample) -> stdout``. The default is a
+    healthy k2 -- it names the Dummy signature for the sample and nothing for
+    the control -- so a test only states what is wrong with it.
+    """
     import sys as _sys
     root = pathlib.Path(__file__).resolve().parents[1]
     if str(root) not in _sys.path:
@@ -358,27 +373,66 @@ def _k2_probe(monkeypatch, stdout: str, available: bool = True):
     monkeypatch.setattr(scanner, "is_available", lambda: available)
     monkeypatch.setattr(scanner, "_k2_env", lambda: {})
 
+    if scan is None:
+        scan = lambda is_sample: _k2_report(          # noqa: E731
+            *(["Dummy-Test-File (not a virus)"] if is_sample else []))
+
     class _R:
         pass
 
-    r = _R()
-    r.stdout = stdout
-    # The probe reports what k2 actually printed when the count falls short: a
-    # bare number cannot distinguish "ran and listed nothing" from "did not run".
-    r.stderr = ""
-    r.returncode = 0
-    monkeypatch.setattr(engine_probe.subprocess, "run", lambda *a, **k: r)
+    def fake_run(argv, *a, **k):
+        r = _R()
+        # The probe reports what k2 actually printed when the count falls short: a
+        # bare number cannot distinguish "ran and listed nothing" from "did not run".
+        r.stderr = ""
+        r.returncode = 0
+        if "--vlist" in argv:
+            r.stdout = stdout
+        else:
+            r.stdout = scan(any("k2_probe_sample" in str(x) for x in argv))
+        return r
+
+    monkeypatch.setattr(engine_probe.subprocess, "run", fake_run)
     return engine_probe.check_k2()
 
 
-def test_a_k2_whose_plugins_loaded_reports_detected(monkeypatch):
-    listing = "\n".join(
-        f"Trojan.Test.{i}   [kicomav.plugins.pdf]" for i in range(500))
+def _listing(n: int = 500) -> str:
+    return "\n".join(f"Trojan.Test.{i}   [kicomav.plugins.pdf]" for i in range(n))
 
-    out = _k2_probe(monkeypatch, listing)
+
+def test_a_k2_whose_plugins_loaded_reports_detected(monkeypatch):
+    out = _k2_probe(monkeypatch, _listing())
 
     assert out["available"] is True
     assert out["detected"] is True
+    assert out["sample_infected"] == ["Dummy-Test-File (not a virus)"]
+    assert out["control_infected"] == []
+
+
+def test_a_k2_that_lists_signatures_but_prints_no_scan_report_is_a_liar(monkeypatch):
+    """The plugins loaded, so --vlist is healthy -- and the scan path still
+    printed nothing. From outside that is a clean scan, which is exactly the
+    shape the original EICAR gate existed to catch."""
+    out = _k2_probe(monkeypatch, _listing(), scan=lambda is_sample: "no report\n")
+
+    assert out["detected"] is False
+    assert "no JSON report" in out["detail"]
+
+
+def test_a_k2_that_misses_the_planted_sample_is_a_liar(monkeypatch):
+    out = _k2_probe(monkeypatch, _listing(), scan=lambda is_sample: _k2_report())
+
+    assert out["detected"] is False
+    assert "NOT detected" in out["detail"]
+
+
+def test_a_k2_that_flags_the_clean_control_is_a_liar(monkeypatch):
+    """Without the control, a scanner that flags everything would pass."""
+    out = _k2_probe(monkeypatch, _listing(),
+                    scan=lambda is_sample: _k2_report("Everything.Is.Bad"))
+
+    assert out["detected"] is False
+    assert "clean control was flagged" in out["detail"]
 
 
 def test_a_k2_whose_plugins_silently_failed_reports_undetected(monkeypatch):

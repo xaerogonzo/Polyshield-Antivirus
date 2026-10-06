@@ -129,6 +129,36 @@ def check_guardian() -> dict:
     return out
 
 
+def _k2_scan(path: Path, eng) -> dict:
+    """Scan one file the way the app does and return what k2 reported.
+
+    Same argv and environment as ``scanner.run_scan`` (report-only: no --move,
+    no -l, so the sample survives). ``infected`` is the list of malware names
+    from the JSON block k2 prints after its human-readable summary.
+    """
+    proc = subprocess.run(
+        paths.k2_argv(str(path), "--no-color", "-I", "--report=json"),
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        timeout=120, env=eng._k2_env(),
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    lines = (proc.stdout or "").splitlines()
+    start = next((i for i, ln in enumerate(lines) if ln.strip().startswith("{")), None)
+    infected: list[str] = []
+    parsed = False
+    if start is not None:
+        try:
+            data = json.loads("\n".join(lines[start:]))
+            parsed = True
+            for entry in data.get("results", []):
+                if "infected" in str(entry.get("status", "")).lower():
+                    infected.append(str(entry.get("malware_name", "")))
+        except ValueError:
+            pass
+    return {"returncode": proc.returncode, "parsed": parsed, "infected": infected,
+            "stdout_head": lines[:6], "stderr_head": (proc.stderr or "").splitlines()[:4]}
+
+
 def check_k2() -> dict:
     r"""K2 carries its signatures inside its plugins, and is asked to list them.
 
@@ -145,11 +175,19 @@ def check_k2() -> dict:
     the outside, to a machine with nothing wrong. A near-empty vlist is that
     failure made visible.
 
-    Deliberately not detection-by-sample. EICAR is the obvious sample and
-    Defender deletes it from disk between the write and the scan (measured --
-    the file was gone by the time k2 opened it), which would fail this probe
-    for a reason that has nothing to do with the build. See this module's
-    header on why no sample here is ever a literal.
+    The listing proves the plugins LOADED. It does not prove the scan path
+    works, so K2 is then asked to scan two planted files: one carrying the
+    Dummy engine's own test pattern, which must be reported infected, and a
+    clean control, which must not be. Both are needed -- a scanner that flags
+    everything would pass the first alone.
+
+    The sample is the Dummy plugin's pattern, not EICAR. EICAR is the obvious
+    choice and Defender deletes it from disk between the write and the scan
+    (measured -- the file was gone by the time k2 opened it), which would fail
+    this probe for a reason that has nothing to do with the build. The Dummy
+    pattern is k2's own harmless test signature ("Dummy-Test-File (not a
+    virus)"), and Defender ignores it. See this module's header on why no sample
+    here is ever a literal.
 
     ``k2 --update`` does NOT add signatures: it fetches ``whitelist.txt`` and
     two YARA archives, and prunes anything else out of %SYSTEM_RULES_BASE%.
@@ -204,6 +242,43 @@ def check_k2() -> dict:
         out["returncode"] = proc.returncode
         out["k2_argv"] = paths.k2_argv()
         out["k2_exists"] = paths.k2_exe().exists()
+        return out
+
+    # The plugins loaded; now prove the scan path itself works. The pattern is
+    # assembled from fragments (this file must not itself be a match) and sits at
+    # offset 0, which is where the Dummy plugin looks.
+    needle = _fragments("Dummy Engine test ", "file - KICOM ", "Anti-Virus Project")
+    with tempfile.TemporaryDirectory() as td:
+        hit = Path(td) / "k2_probe_sample.bin"
+        hit.write_bytes(needle.encode("ascii") + b"\nrest of the file\n")
+        control = Path(td) / "k2_probe_control.txt"
+        control.write_text("an ordinary file that no signature should match\n",
+                           encoding="utf-8")
+        try:
+            hit_r = _k2_scan(hit, eng)
+            ctl_r = _k2_scan(control, eng)
+        except Exception as exc:
+            out["detected"] = False
+            out["detail"] += f"; the sample scan would not run: {exc!r}"
+            return out
+
+    out["sample_infected"] = hit_r["infected"]
+    out["control_infected"] = ctl_r["infected"]
+    if not (hit_r["parsed"] and ctl_r["parsed"]):
+        # k2 started, exited, and printed no report: the shape of a clean scan.
+        out["detected"] = False
+        out["detail"] += "; a scan printed no JSON report (k2 ran but said nothing)"
+        out["scan_head"] = hit_r["stdout_head"]
+        out["scan_stderr"] = hit_r["stderr_head"]
+        out["returncode"] = hit_r["returncode"]
+    elif not hit_r["infected"]:
+        out["detected"] = False
+        out["detail"] += "; the Dummy test pattern was NOT detected"
+    elif ctl_r["infected"]:
+        out["detected"] = False
+        out["detail"] += f"; the clean control was flagged: {ctl_r['infected']}"
+    else:
+        out["detail"] += f"; detected {hit_r['infected'][0]!r}, clean control passed"
     return out
 
 
