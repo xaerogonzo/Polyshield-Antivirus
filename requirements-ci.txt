@@ -37,3 +37,5 @@ customtkinter>=5.2.2
 # tests/test_substrate_pin.py fails if it does not.
 polybedrock-core @ git+https://github.com/xaerogonzo/PolyBedrock.git@2801424344efc33017d3febd7a87c63f015c7507#subdirectory=core
 polybedrock-ui   @ git+https://github.com/xaerogonzo/PolyBedrock.git@2801424344efc33017d3febd7a87c63f015c7507#subdirectory=ui
+# pyyaml  - tests/test_ci_workflows.py parses the workflow files
+pyyaml>=6.0
