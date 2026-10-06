@@ -71,6 +71,61 @@ def _is_hex_hash(value: str) -> bool:
     return len(value) in (32, 64) and all(c in "0123456789abcdef" for c in value)
 
 
+#: Windows' own limit for an extended-length path.  A longer request is not a
+#: path, and bounding it keeps one reader (the token is world-readable) from
+#: making the service normalise megabytes.
+_MAX_QUERY_PATH = 32767
+
+
+def _norm_path(value: str) -> str:
+    """Case-folded, separator-normalised, no trailing slash.  Pure string work."""
+    p = os.path.normcase(os.path.normpath(value))
+    return p.rstrip("\\/") if len(p) > 3 else p
+
+
+def _is_at_or_under(child: str, parent: str) -> bool:
+    """True when ``child`` is ``parent`` or lies beneath it (both pre-normalised)."""
+    if child == parent:
+        return True
+    return child.startswith(parent.rstrip("\\/") + os.sep)
+
+
+def _path_status(path, watched_folders, events) -> dict:
+    """Answer "is this path one PolyShield watches or has flagged?".
+
+    READ-ONLY and string-only: no filesystem access, so a query can neither
+    follow a reparse point nor touch a network share, and nothing here changes
+    service state.  The caller sends the canonical path it intends to act on;
+    this does not resolve symlinks or junctions for it.
+
+    Fails closed by REFUSING rather than answering: an empty, relative,
+    NUL-bearing or oversized path returns ``ok: False``.  A client must treat
+    that, like any unexpected reply, as "unknown", never as "not flagged".
+
+    ``flagged`` means a recorded detection sits at ``path`` or beneath it.  It
+    reads the service's event log, which is capped, so ``False`` means "no
+    recorded detection", not "this is safe".  Event contents are never
+    returned, only the two booleans.
+    """
+    if (not isinstance(path, str) or not path or "\0" in path
+            or len(path) > _MAX_QUERY_PATH):
+        return {"ok": False, "error": "invalid path"}
+    if not os.path.isabs(path):
+        return {"ok": False, "error": "path must be absolute"}
+
+    target = _norm_path(path)
+    watched = any(
+        isinstance(f, str) and f and _is_at_or_under(target, _norm_path(f))
+        for f in (watched_folders or ())
+    )
+    flagged = any(
+        isinstance(e.get("path"), str) and e["path"]
+        and _is_at_or_under(_norm_path(e["path"]), target)
+        for e in events
+    )
+    return {"ok": True, "watched": watched, "flagged": flagged}
+
+
 # ── Logging ────────────────────────────────────────────────────────────────────
 log = logging.getLogger("PolyShieldService")
 log.setLevel(logging.INFO)
@@ -408,6 +463,15 @@ class PolyShieldService(win32serviceutil.ServiceFramework):
 
             elif cmd == "GET_INTEL_STATUS":
                 self._send(conn, self._build_intel_status())
+
+            elif cmd == "PATH_STATUS":
+                # Read-only: lets a sidecar (PolyScour) ask whether a path is
+                # watched or has a recorded detection before it acts on it.
+                from ui.core import settings as cfg
+                with self._events_lock:
+                    events = list(self._events)
+                self._send(conn, _path_status(
+                    msg.get("path"), cfg.get("watcher_folders") or [], events))
 
             elif cmd == "RUN_INTEL_UPDATE":
                 feeds = msg.get("feeds") or None
