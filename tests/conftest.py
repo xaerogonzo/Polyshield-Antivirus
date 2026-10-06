@@ -54,6 +54,14 @@ def intel_db(tmp_path, monkeypatch) -> Path:
     intel_db_mod = importlib.import_module("ui.core.intel_db")
     monkeypatch.setattr(intel_db_mod, "_thread_local", threading.local())
 
+    # intel_updater.run_updates takes a lock file next to the DB.  _LOCK_PATH is
+    # fixed at import, so which directory it names depends on whichever test
+    # imported the module first (a distribution fixture resolves it to the
+    # service-owned %ProgramData% directory, read-only to a normal user).
+    # Pointing it at the temp dir makes the result independent of both.
+    iu = importlib.import_module("ui.core.intel_updater")
+    monkeypatch.setattr(iu, "_LOCK_PATH", tmp_path / ".update.lock")
+
     return db
 
 
