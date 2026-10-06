@@ -406,3 +406,76 @@ def test_launch_fallback_runs_when_due_and_no_service(monkeypatch, settings_sand
     fake._maybe_auto_update_intel()
     assert ran.wait(timeout=5)
 
+
+
+# ── PATH_STATUS: the read-only "is this path watched or flagged?" query ───────
+
+def _ask_path(svc, path, token="test-token"):
+    conn = _FakeConn({"cmd": "PATH_STATUS", "token": token, "path": path})
+    svc._handle_client(conn)
+    return conn.response
+
+
+@pytest.fixture
+def path_svc(svc, monkeypatch):
+    from ui.core import settings as cfg
+    svc._events_lock = threading.Lock()
+    svc._events = [
+        {"id": 1, "path": r"C:\Users\a\Downloads\evil.exe", "status": "infected"},
+        {"id": 2, "path": "", "status": "pending"},
+    ]
+    monkeypatch.setattr(cfg, "get",
+                        lambda k, d=None: [r"C:\Users\a\Downloads"]
+                        if k == "watcher_folders" else d)
+    return svc
+
+
+def test_path_status_requires_the_token(path_svc):
+    assert _ask_path(path_svc, r"C:\Users\a", token="wrong") == {
+        "ok": False, "error": "unauthorized"}
+
+
+def test_path_status_reports_a_flagged_file_and_its_parent(path_svc):
+    exact = _ask_path(path_svc, r"C:\Users\a\Downloads\evil.exe")
+    parent = _ask_path(path_svc, r"C:\Users\a\Downloads")
+
+    assert exact == {"ok": True, "watched": True, "flagged": True}
+    assert parent["flagged"] is True, "a directory is flagged by a detection inside it"
+
+
+def test_path_status_is_case_and_separator_insensitive(path_svc):
+    out = _ask_path(path_svc, "c:/users/A/downloads/EVIL.EXE")
+
+    assert out["flagged"] is True and out["watched"] is True
+
+
+def test_path_status_does_not_match_a_sibling_with_a_shared_prefix(path_svc):
+    """Downloads2 starts with the text of Downloads and must not match it."""
+    out = _ask_path(path_svc, r"C:\Users\a\Downloads2\evil.exe")
+
+    assert out == {"ok": True, "watched": False, "flagged": False}
+
+
+def test_path_status_unflagged_unwatched_path(path_svc):
+    assert _ask_path(path_svc, r"C:\Windows\Temp\x.tmp") == {
+        "ok": True, "watched": False, "flagged": False}
+
+
+@pytest.mark.parametrize("bad", [None, "", r"relative\x", "C:\\a\0b", 5,
+                                 "C:\\" + "a" * 33000],
+                         ids=["none", "empty", "relative", "nul", "int", "oversized"])
+def test_path_status_refuses_rather_than_answering_no(path_svc, bad):
+    """An unanswerable question must read as unknown, never as 'not flagged'."""
+    out = _ask_path(path_svc, bad)
+
+    assert out["ok"] is False and out["error"]
+    assert "flagged" not in out
+
+
+def test_path_status_changes_nothing(path_svc):
+    before = list(path_svc._events)
+
+    _ask_path(path_svc, r"C:\Users\a\Downloads\evil.exe")
+
+    assert path_svc._events == before
+    assert path_svc._pushed == []
