@@ -52,12 +52,10 @@ desktop.ini
 # and fill in their own paths.
 PolyShield_Sandbox.wsb
 
-# ── AI assistant / workflow tooling (personal — not part of the project) ──
-# Each contributor has their own preferences for how Claude Code / CodeGraph
-# behave when working on this codebase. These files belong in personal local
-# state, NOT in the shared repo.
-CLAUDE.md
-BASIC_INSTRUCTIONS.md
+# ── AI assistant tooling ──
+# CLAUDE.md and BASIC_INSTRUCTIONS.md are shared project instructions and ARE
+# tracked. Per-contributor preferences belong in CLAUDE.local.md (ignored).
+CLAUDE.local.md
 .codegraph/
 
 # Added by TokenSave Manager
