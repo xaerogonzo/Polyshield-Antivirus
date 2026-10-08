@@ -1,12 +1,4 @@
-# [PROJECT NAME] — Basic Instructions
-
-<!-- CLAUDE: On your FIRST message in this project:
-     1. Replace every [PLACEHOLDER] section with accurate project-specific content.
-     2. Check the project structure and fill in the doc/changelog locations that
-        actually exist — don't assume or create anything unless it's missing.
-     3. Keep all standard-rules sections (@include, Tokensave, Documentation
-        Discipline, Code Quality, Git) exactly as-is.
-     4. Remove this comment block when done. -->
+# PolyShield — Basic Instructions
 
 @project-baseline.md
 
@@ -14,54 +6,30 @@
 
 ## Project Overview
 
-**Name:** [PROJECT NAME]
-**Stack:** [Main languages, frameworks, key dependencies]
-**Entry point:** [File or command where execution starts]
-**Purpose:** [One sentence — what does this project do and for whom?]
+**Name:** PolyShield Security Suite
+**Stack:** Python 3.11+, CustomTkinter (dark theme), Windows-only (uses `schtasks`, `MpCmdRun.exe`, `NtSuspendProcess`)
+**Entry point:** `launch_ui.vbs` -> `src/ui/app.py` -> `App.mainloop()`
+**Purpose:** A Windows antivirus and security suite: scanning (k2, ClamAV, YARA), real-time watching, and a Windows service, with a desktop UI.
 
----
-
-## Project Structure
-
-<!-- CLAUDE: On first use, look at what actually exists in this project and fill
-     in the real layout below. Don't create folders or files that are missing yet —
-     just note them as "not yet created" if relevant. Examples of what to check:
-     - Is there a docs/, documentation/, or wiki/ folder?
-     - Is there a src/, lib/, or similar source folder?
-     - Is there a tests/ or test/ folder?
-     Then describe what you found concisely. -->
-
-[Replace: describe the actual folder layout and what lives where.]
+The detailed file map, conventions and common edit locations live in `CLAUDE.md`, which is the single place to keep them current. Do not duplicate them here.
 
 ---
 
 ## Documentation Files
 
-<!-- CLAUDE: Find the actual doc files in this project and list them here.
-     Common names to check: README.md, CHANGELOG.md, CHANGELOG, ARCHITECTURE.md,
-     docs/ARCHITECTURE.md, ROADMAP.md, docs/ROADMAP.md, etc.
-     If a file doesn't exist yet and should, note it and offer to create it.
-     Don't hardcode a location — use whatever this project already uses. -->
-
 | File | Location | Purpose |
 |---|---|---|
-| [Replace with actual files found] | [actual path] | [what it covers] |
-
----
-
-## Architecture
-
-[Replace: high-level module/layer structure and data flow. A few bullets is enough.]
-
----
-
-## Key Files
-
-[Replace: the most important files and their roles.]
+| README | `README.md` | User-facing: features, install, usage, troubleshooting |
+| Changelog | `CHANGELOG.md` | Per-release changes; `[Unreleased]` is the candidate next version |
+| Architecture | `docs/ARCHITECTURE.md` | Detection layers, scan pipelines, DB schema, threading |
+| Windows service | `docs/WINDOWS_SERVICE.md` | Service implementation, IPC protocol, crash recovery |
+| Testing | `docs/TESTING.md` | Test procedures, sandbox workflow, VM field-test checklist |
+| VM setup | `docs/VM_SETUP.md` | Windows 11 VM and snapshot setup |
+| Releasing | `docs/RELEASING.md` | Release checklist: pin check, version bump, signing, build, tag |
+| Lessons | `docs/LESSONS.md` | Lessons moved out of `CLAUDE.md`, plus `docs/gotchas/` |
 
 ---
 
 ## Project-Specific Rules
 
-[Replace with any special conventions, constraints, or domain knowledge.
-Delete this section entirely if there are no project-specific rules.]
+See `CLAUDE.md` ("Key Patterns & Conventions" and "Common Edit Locations").
