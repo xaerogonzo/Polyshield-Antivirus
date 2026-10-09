@@ -482,6 +482,42 @@ function Save-ServiceDiagnostics {
         } else {
             $lines += "== no service.log at $svcLog =="
         }
+        # The installer runs register_service.ps1 HIDDEN and ignores its exit code,
+        # so a registration that threw leaves nothing behind. Its pre-flight is
+        # documented read-only (it stops before touching the SCM), so re-run it
+        # here, visibly, and keep what it says.
+        $reg = Join-Path $appDir "installer\register_service.ps1"
+        # Its own try: a broken install may lack the very runtime these re-runs
+        # need, Start-Process then throws, and the evidence gathered above must
+        # still be written.
+        try {
+        if ($appDir -and (Test-Path $reg)) {
+            $lines += "== register_service.ps1 -PreflightOnly (read-only) =="
+            $lines += (& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $reg `
+                          -InstallDir $appDir -PreflightOnly 2>&1 | Out-String)
+            $lines += "exit code: $LASTEXITCODE"
+
+            # What the pre-flight's `& python service.py --paths 2>&1` is fed, with
+            # the two streams apart. Under $ErrorActionPreference = Stop, a single
+            # stderr line from that command is a terminating error in 5.1.
+            $rtPy = Join-Path $appDir "runtime\python.exe"
+            $svcPy = Join-Path $appDir "service\polyshield_service.py"
+            $so = Join-Path $env:TEMP "svc_paths_stdout.txt"
+            $se = Join-Path $env:TEMP "svc_paths_stderr.txt"
+            $pp = Start-Process -FilePath $rtPy -ArgumentList "`"$svcPy`"", "--paths" `
+                      -RedirectStandardOutput $so -RedirectStandardError $se `
+                      -Wait -PassThru -WindowStyle Hidden
+            $lines += "== service --paths: exit $($pp.ExitCode) =="
+            $lines += "-- stderr --"
+            $lines += @(Get-Content $se -ErrorAction SilentlyContinue)
+            $lines += "-- stdout (first 12 lines) --"
+            $lines += @(Get-Content $so -TotalCount 12 -ErrorAction SilentlyContinue)
+        } else {
+            $lines += "== no register_service.ps1 under '$appDir' to re-run =="
+        }
+        } catch {
+            $lines += "== re-running the pre-flight failed: $($_.Exception.Message) =="
+        }
         Set-Content -Path (Join-Path $ResultsDir "service_diag_$Tag.txt") -Value $lines -Encoding UTF8
     } catch {
         # Diagnostics must never take the verification down with them.
@@ -515,8 +551,12 @@ if (-not $SkipInstall) {
 
         # -- Install ----------------------------------------------------------
         Write-Progress-Note "run the silent install"
+        # /LOG: Inno records each [Run] step and its exit code. The installer
+        # ignores a failing step's exit code (docs/ARCHITECTURE.md), so without this
+        # a service registration that threw leaves "exit 0" and nothing else.
         $p = Start-Process -FilePath $setup.FullName `
-            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCANCEL" `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCANCEL", `
+                          "/LOG=`"$(Join-Path $ResultsDir 'inno_install.log')`"" `
             -Wait -PassThru
         Add-Check "silent install over a dirty machine succeeded" ($p.ExitCode -eq 0) `
             "exit $($p.ExitCode)"
@@ -732,7 +772,8 @@ print('OK' if ok else 'FAIL', msg)
         # -- Idempotency -------------------------------------------------------
         Write-Progress-Note "reinstall over the existing install"
         $p2 = Start-Process -FilePath $setup.FullName `
-            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCANCEL" `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCANCEL", `
+                          "/LOG=`"$(Join-Path $ResultsDir 'inno_reinstall.log')`"" `
             -Wait -PassThru
         Add-Check "installing over an existing install succeeds" ($p2.ExitCode -eq 0) `
             "exit $($p2.ExitCode)"
