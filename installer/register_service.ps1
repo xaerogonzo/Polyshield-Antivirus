@@ -51,6 +51,24 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# The installer runs this script HIDDEN and does not read its exit code, so a
+# registration that throws leaves no trace anywhere: setup still exits 0 and the
+# only symptom is a service that is not there. Keep what the script said.
+#
+# Not created here if absent: setup_data_root.ps1 runs first and gives logs\ its
+# ACLs, and making the directory from this script would bypass them. Appended,
+# and skipped for the read-only pre-flight, so re-checking a failed install
+# cannot overwrite the record of the run that failed.
+if (-not $PreflightOnly) {
+    $transcriptDir = Join-Path $env:ProgramData "PolyShield\logs"
+    if (Test-Path $transcriptDir) {
+        try {
+            Start-Transcript -Path (Join-Path $transcriptDir "install_register_service.log") `
+                -Append | Out-Null
+        } catch { }
+    }
+}
+
 $SERVICE = "PolyShieldService"
 $rtPython = Join-Path $InstallDir "runtime\python.exe"
 $svcDir = Join-Path $InstallDir "service"

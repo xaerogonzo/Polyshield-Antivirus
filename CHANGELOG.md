@@ -34,6 +34,13 @@ release decides the number and bumps both files (a test keeps them equal).
   the build if K2 reports itself available and misses the first or flags the
   second. Previously it only counted loaded plugins.
 
+- **The installer's service registration now leaves a record.**
+  `register_service.ps1` appends a transcript to
+  `%ProgramData%\PolyShield\logs\install_register_service.log`. The installer runs
+  it hidden and ignores its exit code, so a registration that threw used to leave
+  no trace at all. (The installer still exits 0 in that case; see
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#a-failed-run-step-does-not-fail-the-install-known-gap).)
+
 ### Fixed
 - **The Windows service never started at boot.** pywin32 ignores
   `_svc_start_type_`, so every install registered a demand-start service. The

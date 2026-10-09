@@ -748,6 +748,28 @@ asks the staged service to resolve its own paths, and got an `AttributeError`
 for a function added days earlier. The staging now clears each destination
 first, and the pre-flight is the standing check.
 
+### A failed `[Run]` step does not fail the install (known gap)
+
+Inno ignores the exit code of a `[Run]` entry, and `polyshield.iss` has no
+`Check`/`AfterInstall` that reads one. The `[Code]` rollback fires only when Setup
+itself does not reach `ssDone`. So `register_service.ps1` -- which `throw`s on
+purpose, because "registered but dead is the failure worth catching" -- can fail
+and **Setup still exits 0 with no service**.
+
+Observed on the first CI run that completed an install cycle: Inno's own log
+(`/LOG`) records `register_service.ps1 ... Process exit code: 1` followed by
+`Installation process succeeded`, the SCM still held the stale registration the
+verifier had planted (`C:\does\not\exist.exe`), and `Setup` exited 0.
+
+What exists now is **evidence, not a fix**: `register_service.ps1` appends a
+transcript to `%ProgramData%\PolyShield\logs\install_register_service.log`
+(skipped for `-PreflightOnly`, and not creating `logs\` itself because
+`setup_data_root.ps1` gives that directory its ACLs), and `sandbox_verify.ps1`
+installs with `/LOG` and collects both. Whether a failed registration should fail
+the whole install is a product decision that has not been made; the pre-flight of
+the same script passes when re-run after the failure, so the cause is later in the
+script and is not yet identified.
+
 ### Code signing (v1.17)
 
 `build.ps1` signs `PolyShield.exe`, the setup program **and the uninstaller**, and

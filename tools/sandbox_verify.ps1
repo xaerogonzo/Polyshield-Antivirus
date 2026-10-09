@@ -486,6 +486,16 @@ function Save-ServiceDiagnostics {
         # so a registration that threw leaves nothing behind. Its pre-flight is
         # documented read-only (it stops before touching the SCM), so re-run it
         # here, visibly, and keep what it says.
+        # What the installer's own run of register_service.ps1 said (its transcript).
+        # This is the record of the run that actually failed; the pre-flight below
+        # is only a re-check afterwards.
+        $tx = Join-Path $env:ProgramData "PolyShield\logs\install_register_service.log"
+        if (Test-Path $tx) {
+            $lines += "== install_register_service.log (the installer's own run; last 80 lines) =="
+            $lines += @(Get-Content $tx -Tail 80 -ErrorAction SilentlyContinue)
+        } else {
+            $lines += "== no install_register_service.log at $tx =="
+        }
         $reg = Join-Path $appDir "installer\register_service.ps1"
         # Its own try: a broken install may lack the very runtime these re-runs
         # need, Start-Process then throws, and the evidence gathered above must
