@@ -107,11 +107,22 @@ jobs:
         # tools/sandbox_verify.ps1 installs the product, registers the service,
         # checks the data root and privilege boundary, uninstalls, and writes
         # verify.json. It sets no exit code, so the next step reads the file.
+        #
+        # Bounded on its own: the first run finished all its checks and then never
+        # returned, and the only limit was the 90-minute job timeout. A step that
+        # times out is a failed step, and the steps after it still run.
+        #
+        # -SkipSandboxPreconditions: a hosted runner has Python and has just run
+        # the build's gate, so two checks that describe the Windows Sandbox cannot
+        # hold. They are reported as SKIPPED, not passed. -SkipFullReport: the deep
+        # JSON serialisation is what never returned.
+        timeout-minutes: 30
         run: |
           New-Item -ItemType Directory -Force artifacts\ci | Out-Null
           powershell -ExecutionPolicy Bypass -File .\tools\sandbox_verify.ps1 `
             -DistDir "$env:GITHUB_WORKSPACE\dist" `
-            -ResultsDir "$env:GITHUB_WORKSPACE\artifacts\ci" 2>&1 |
+            -ResultsDir "$env:GITHUB_WORKSPACE\artifacts\ci" `
+            -SkipSandboxPreconditions -SkipFullReport 2>&1 |
             Tee-Object -FilePath verify.log
 
       - name: Fail on any failed check, or if the cycle did not finish
@@ -126,9 +137,15 @@ jobs:
           "{0} passed, {1} failed" -f $r.passed, $r.failed
           $r.checks | Where-Object { -not $_.pass } |
             ForEach-Object { "FAILED: {0} - {1}" -f $_.name, $_.detail }
+          # Said out loud, so a green run can never hide what was not checked.
+          @($r.skipped) | Where-Object { $_ } |
+            ForEach-Object { "SKIPPED: {0} - {1}" -f $_.name, $_.reason }
           if ($r.failed -ne 0) { throw "$($r.failed) install-cycle check(s) failed" }
           # A floor against a cycle that "passed" because most of it was skipped.
-          if ($r.passed -lt 30) { throw "only $($r.passed) checks ran; the cycle normally runs about 50" }
+          # Measured: the first complete run recorded 49 checks, 45 passing. 40
+          # sits below that with room for the two skipped, and far above a cycle
+          # that stopped early.
+          if ($r.passed -lt 40) { throw "only $($r.passed) checks passed; the cycle normally records about 47" }
 
       - name: Upload logs and results
         if: always()

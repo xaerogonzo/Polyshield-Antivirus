@@ -102,6 +102,33 @@ def test_build_smoke_verdict_treats_a_missing_report_as_a_failure():
     assert "verify.json" in script
 
 
+def test_build_smoke_bounds_the_install_cycle_on_its_own():
+    """The first complete run finished every check and then never returned; the
+    only limit was the 90-minute job timeout. The cycle needs its own, so a hang
+    costs minutes and the steps behind it (verdict, upload) still run."""
+    step = _step(_load("build-smoke.yml"), "build", "Run the install cycle")
+    assert step.get("timeout-minutes"), "the install cycle has no timeout of its own"
+    assert step["timeout-minutes"] <= 45
+
+
+def test_build_smoke_tells_the_verifier_it_is_not_in_a_sandbox_and_says_what_it_skipped():
+    """Two verifier checks describe the Windows Sandbox itself and cannot hold on a
+    hosted runner. Skipping them is only honest if the skip is visible: the
+    verdict step must print what was skipped."""
+    doc = _load("build-smoke.yml")
+    cycle = _step(doc, "build", "Run the install cycle")["run"]
+    assert "-SkipSandboxPreconditions" in cycle
+    assert "-SkipFullReport" in cycle
+    verdict = _step(doc, "build", "Fail on any failed check")["run"]
+    assert "SKIPPED" in verdict and "skipped" in verdict
+
+
+def test_build_smoke_uploads_the_verifier_results_so_a_red_run_can_be_diagnosed():
+    """The machine is thrown away; the artifact is all that is left."""
+    paths = _step(_load("build-smoke.yml"), "build", "Upload logs")["with"]["path"]
+    assert "artifacts/ci/" in paths and "verify.log" in paths
+
+
 def test_build_smoke_builds_unsigned_because_it_runs_on_pull_requests():
     """A signing certificate is a secret. It must never be wired into a workflow
     that pull requests can trigger."""
