@@ -326,6 +326,35 @@ function New-StagedRuntime {
     return $Dest
 }
 
+#: The number of K2 signatures that live in its PLUGINS, which is all a build
+#: machine can be held to. Measured: 23. The other ~1240 come from rule archives
+#: that `k2 --update` downloads at install time, so a floor of 100 -- which this
+#: used to be -- only ever passed on a machine that had already run k2 and had
+#: those archives in its profile, and failed on any clean one (CI, a new
+#: contributor). Matches tools/engine_probe.py, which learned the same thing;
+#: 20 sits below 23 and far above the 0 that a lost plugin tree yields.
+$K2_MIN_PLUGIN_SIGNATURES = 20
+
+function Invoke-NativeMerged {
+    # Runs a native command and returns stdout AND stderr as one stream, without
+    # letting PowerShell turn a stderr line into a terminating error.
+    #
+    # Under $ErrorActionPreference = "Stop", `& cmd 2>&1` raises NativeCommandError
+    # on the first line cmd writes to stderr -- in Windows PowerShell 5.1, which is
+    # what build.bat launches. kicomav writes "[KicomAV Warning] .env file not
+    # found" to stderr on import whenever ~\.kicomav\.env is absent, which is every
+    # clean machine, so a build that passed here failed on the first CI runner.
+    # The caller decides what to do with the exit code, as it always did.
+    param([Parameter(Mandatory)][scriptblock]$Command)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        return @(& $Command 2>&1)
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
 function Test-StagedRuntime {
     param([string]$Dir)
 
@@ -335,7 +364,7 @@ function Test-StagedRuntime {
     # Asserted, not assumed: a runtime missing the service's dependencies
     # stages silently and then fails when the SCM starts the service, which is
     # the worst possible place to find out.
-    $probe = & $rtPython -c @"
+    $probeCode = @"
 import json, os, sys
 import win32serviceutil, psutil, watchdog, kicomav
 import pythoncom
@@ -343,11 +372,14 @@ print(json.dumps({
     'pythoncom': pythoncom.__file__,
     'site_packages_on_path': any('site-packages' in p for p in sys.path),
 }))
-"@ 2>&1
+"@
+    $probe = Invoke-NativeMerged { & $rtPython -c $probeCode }
     if ($LASTEXITCODE -ne 0) {
-        throw "Staged runtime cannot import the service dependencies: $probe"
+        throw "Staged runtime cannot import the service dependencies: $($probe -join [Environment]::NewLine)"
     }
-    $info = $probe | Select-Object -Last 1 | ConvertFrom-Json
+    # The JSON line, not "the last thing printed": a warning on stderr is part of
+    # the merged stream and is an ErrorRecord, never a string.
+    $info = $probe | Where-Object { $_ -is [string] } | Select-Object -Last 1 | ConvertFrom-Json
 
     # pywin32 must load its DLLs from the runtime's own pywin32_system32, NOT
     # from System32. That is what lets the installer skip pywin32_postinstall
@@ -364,9 +396,11 @@ print(json.dumps({
     # every scan clean. See tools/engine_probe.py.
     $k2 = Join-Path $Dir "Scripts\k2.exe"
     if (-not (Test-Path $k2)) { throw "No k2.exe in the staged runtime." }
-    $sigs = (& $k2 --vlist --no-color 2>&1 | Select-String -Pattern "\[kicomav\.plugins\." ).Count
-    if ($sigs -lt 100) {
-        throw "Staged k2 lists only $sigs signature(s); its plugin tree did not survive."
+    $sigs = (Invoke-NativeMerged { & $k2 --vlist --no-color } |
+             Select-String -Pattern "\[kicomav\.plugins\.").Count
+    if ($sigs -lt $K2_MIN_PLUGIN_SIGNATURES) {
+        throw ("Staged k2 lists only $sigs signature(s), fewer than " +
+               "$K2_MIN_PLUGIN_SIGNATURES; its plugin tree did not survive.")
     }
     Write-Host "  [runtime] k2: $sigs signatures across the loaded plugins" -ForegroundColor DarkGray
 }

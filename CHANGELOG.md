@@ -43,6 +43,11 @@ release decides the number and bumps both files (a test keeps them equal).
   ignores `PYTHONPATH`, which hides pip's isolated build environment. Git-URL
   packages are now built into wheels on the build machine and installed by path.
   No distribution could be built from a clean tree until this.
+- **The runtime build failed on any machine that had never run k2.** kicomav's
+  `.env` warning on stderr aborted `Test-StagedRuntime` under
+  `$ErrorActionPreference = "Stop"`, and its K2 signature floor of 100 needed
+  rule archives only a used profile has (a clean machine sees 23). Found by the
+  first CI run of the build-smoke workflow.
 - **A fresh install of the pinned PolyBedrock raised `ModuleNotFoundError`.**
   `scheduler.py` imports `polybedrock.schtasks_run`, which the pinned revision
   predated. The local editable install hid it; CI and `build.ps1` would not have.

@@ -90,6 +90,7 @@ lock, not this answer. Two rules keep it honest:
 | `STOP_PROCESS_MONITOR` | UI → Service | Stop the WMI process creation monitor |
 | `GET_INTEL_STATUS` | UI → Service | Per-feed intelligence freshness, updater state, last run result (v1.12) |
 | `RUN_INTEL_UPDATE` | UI → Service | Refresh intelligence now; answers immediately with `started` or `already_running` (v1.12) |
+| `PATH_STATUS` | Sidecar → Service | Read-only: is `path` under a watched folder, and does a recorded detection sit at or beneath it? Reply `{ok, watched, flagged}` (see below) |
 
 **Push events (server → all SUBSCRIBE clients):**
 
@@ -101,6 +102,29 @@ lock, not this answer. Two rules keep it honest:
 | `heartbeat` | Every 30 s (keepalive) | — |
 | `process_threat` | WMI process creation monitor found a threat | `pid, name, path, reason, level, time, killed, quarantined` |
 | `intel_update` | An intelligence refresh finished (scheduled or on-demand) | `status, summary, feeds, error, time` |
+
+### `PATH_STATUS` contract
+
+Request `{"cmd": "PATH_STATUS", "token": ..., "path": "<absolute path>"}`; reply
+`{"ok": true, "watched": bool, "flagged": bool}`. Added for PolyScour, which asks
+before it cleans or labels a path and must never be able to make PolyShield *do*
+anything.
+
+- **Read-only and string-only.** No filesystem access, so a query cannot follow a
+  junction or touch a share, and it changes no service state. The caller sends
+  the canonical path it intends to act on; the service does not resolve links.
+- **Refuses instead of answering "no".** An empty, non-string, relative,
+  NUL-bearing or over-32767-character path returns `{"ok": false, "error": ...}`.
+  A client must treat that, any transport failure, and any unexpected reply
+  shape as *unknown*, never as *not flagged*.
+- **`flagged: false` is not "safe".** It reads the service's event log, which is
+  capped and only records what was detected while the service ran. A directory is
+  flagged by a detection anywhere inside it. Event contents are never returned.
+- **Visible to any local process.** The token is readable by every local user by
+  design, so any of them can learn whether a given path has a recorded detection.
+  Only the two booleans are exposed.
+- **Old services** answer `Unknown command: PATH_STATUS`; that is `ok: false`, so a
+  client that fails closed already treats an older PolyShield as "no answer".
 
 ### Token Authentication
 

@@ -443,6 +443,21 @@ embeddable distribution, and asserts every property the service depends on:
 [runtime] k2: 1263 signatures across the loaded plugins
 ```
 
+(1263 is what a machine that has already downloaded k2's rule archives sees; a
+clean machine sees **23**, the ones in the plugins themselves, and the gate's
+floor is 20 for that reason. Both numbers appear in this document because
+both were measured.)
+
+**The checks must run on a machine that has never run k2.** `Test-StagedRuntime`
+failed the first CI run for two reasons that cannot occur on the machine the
+build was written on: kicomav writes `[KicomAV Warning] .env file not found` to
+stderr on import whenever `~\.kicomav\.env` is absent, and under
+`$ErrorActionPreference = "Stop"` a captured stderr line is a terminating
+`NativeCommandError` in Windows PowerShell 5.1; and the signature floor was 100,
+which only a profile holding the downloaded archives can reach. Native captures
+now go through `Invoke-NativeMerged`, and the floor is the plugin count.
+Reproduced locally by pointing `USERPROFILE` at an empty directory.
+
 **`import site` is one commented-out line away from a runtime that imports
 nothing.** The official `python-3.12.7-embed-amd64.zip` ships
 `python312._pth` containing `#import site`. A `._pth` file replaces `sys.path`
