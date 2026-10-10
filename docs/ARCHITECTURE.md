@@ -748,6 +748,54 @@ asks the staged service to resolve its own paths, and got an `AttributeError`
 for a function added days earlier. The staging now clears each destination
 first, and the pre-flight is the standing check.
 
+### A failed `[Run]` step does not fail the install (known gap)
+
+Inno ignores the exit code of a `[Run]` entry, and `polyshield.iss` has no
+`Check`/`AfterInstall` that reads one. The `[Code]` rollback fires only when Setup
+itself does not reach `ssDone`. So `register_service.ps1` -- which `throw`s on
+purpose, because "registered but dead is the failure worth catching" -- can fail
+and **Setup still exits 0 with no service**.
+
+Observed on the first CI run that completed an install cycle: Inno's own log
+(`/LOG`) records `register_service.ps1 ... Process exit code: 1` followed by
+`Installation process succeeded`, the SCM still held the stale registration the
+verifier had planted (`C:\does\not\exist.exe`), and `Setup` exited 0.
+
+`register_service.ps1` therefore appends a transcript to
+`%ProgramData%\PolyShield\logs\install_register_service.log` (skipped for
+`-PreflightOnly`, and not creating `logs\` itself because `setup_data_root.ps1`
+gives that directory its ACLs), and `sandbox_verify.ps1` installs with `/LOG` and
+collects both. The transcript named the cause in one run:
+
+```
+register_service.ps1:122   & $rtPython $svcScript remove *> $null
+python.exe : settings: ui_settings.json was unreadable; preserved as ... NativeCommandError
+```
+
+**The chain, four links, only one of which is the installer's:**
+
+1. The verifier wrote `ui_settings.json` with `Set-Content -Encoding UTF8`, which in
+   Windows PowerShell 5.1 prepends a byte-order mark (`EF BB BF`). *Fixed in the
+   verifier; the product writes the file without one.*
+2. The settings reader decodes strict UTF-8 (`raw.decode("utf-8")`), so it rejects a
+   BOM, sets the file aside as `.corrupt`, and logs to **stderr**. *Open: whether
+   PolyBedrock should tolerate a BOM (`utf-8-sig`) -- a hand-edit in an older Notepad
+   would do the same to a real user.*
+3. `register_service.ps1` runs its native commands under
+   `$ErrorActionPreference = "Stop"`, where Windows PowerShell 5.1 turns **any** stderr
+   line into a terminating `NativeCommandError` -- `2>&1` and `*> $null` do not
+   prevent it -- so a harmless log line aborted the registration, exit 1, *after* the
+   pre-flight had passed. *Fixed: the three calls of the service's Python go through
+   `Invoke-Native`, which judges by exit code and keeps stdout and stderr apart.*
+4. Inno ignores the exit code, so Setup exited 0. ***Still open.*** Whether a failed
+   registration should fail the whole install is a product decision that has not been
+   made, and until it is, any other way for this script to throw still ends in an
+   installer that reports success with no service.
+
+Link 3 matters beyond this test: a deprecation warning or a log line from the
+service's Python would have broken registration for a real user in exactly this
+way.
+
 ### Code signing (v1.17)
 
 `build.ps1` signs `PolyShield.exe`, the setup program **and the uninstaller**, and

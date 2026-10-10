@@ -51,6 +51,24 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# The installer runs this script HIDDEN and does not read its exit code, so a
+# registration that throws leaves no trace anywhere: setup still exits 0 and the
+# only symptom is a service that is not there. Keep what the script said.
+#
+# Not created here if absent: setup_data_root.ps1 runs first and gives logs\ its
+# ACLs, and making the directory from this script would bypass them. Appended,
+# and skipped for the read-only pre-flight, so re-checking a failed install
+# cannot overwrite the record of the run that failed.
+if (-not $PreflightOnly) {
+    $transcriptDir = Join-Path $env:ProgramData "PolyShield\logs"
+    if (Test-Path $transcriptDir) {
+        try {
+            Start-Transcript -Path (Join-Path $transcriptDir "install_register_service.log") `
+                -Append | Out-Null
+        } catch { }
+    }
+}
+
 $SERVICE = "PolyShieldService"
 $rtPython = Join-Path $InstallDir "runtime\python.exe"
 $svcDir = Join-Path $InstallDir "service"
@@ -58,6 +76,35 @@ $svcScript = Join-Path $svcDir "polyshield_service.py"
 $marker = Join-Path $svcDir ".polyshield-distribution"
 
 function Write-Step { param([string]$m) Write-Host "  $m" -ForegroundColor DarkGray }
+
+function Invoke-Native {
+    # Runs a native command and returns its exit code with stdout and stderr kept
+    # APART. Success is the exit code; stderr is information.
+    #
+    # $ErrorActionPreference = "Stop" (above, deliberately, for this script's own
+    # errors) turns a single stderr line from a native command into a terminating
+    # NativeCommandError in Windows PowerShell 5.1 -- and neither `2>&1` nor
+    # `*> $null` prevents it. The service's Python writes ordinary log lines to
+    # stderr (a settings file it had to set aside, a deprecation warning), and one
+    # of them aborted this script with exit 1 AFTER its pre-flight had passed.
+    # Setup ignores a [Run] step's exit code, so the visible result was a
+    # successful install with no service. Found by the first CI run to complete an
+    # install over a stale registration; the transcript named line 122.
+    param([Parameter(Mandatory = $true)][scriptblock]$Command)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        $all = @(& $Command 2>&1)
+        $code = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+    [pscustomobject]@{
+        ExitCode = $code
+        Out      = @($all | Where-Object { $_ -is [string] })
+        Err      = @($all | Where-Object { $_ -isnot [string] } | ForEach-Object { "$_" })
+    }
+}
 
 # ---------- Pre-flight --------------------------------------------------------
 # Each of these is a way the service registers and then cannot start, which is
@@ -80,13 +127,14 @@ if (-not (Test-Path $marker)) {
 
 # What the service itself thinks, before the SCM is involved. Once it is
 # installed there is no other way to ask.
-$paths = & $rtPython $svcScript --paths 2>&1
-if ($LASTEXITCODE -ne 0) {
-    throw "The staged service cannot start under its own runtime:`n$paths"
+$r = Invoke-Native { & $rtPython $svcScript --paths }
+if ($r.ExitCode -ne 0) {
+    throw "The staged service cannot start under its own runtime:`n$(($r.Out + $r.Err) -join "`n")"
 }
-# The whole stream, not the last line: --paths prints indented JSON, so
-# Select-Object -Last 1 hands ConvertFrom-Json a lone closing brace.
-$resolved = ($paths | Out-String) | ConvertFrom-Json
+# All of stdout, not the last line: --paths prints indented JSON, so
+# Select-Object -Last 1 hands ConvertFrom-Json a lone closing brace. Stdout only,
+# so a stderr log line can never end up inside the JSON.
+$resolved = ($r.Out | Out-String) | ConvertFrom-Json
 Write-Step "service resolves app_root -> $($resolved.app_root)"
 if (-not $resolved.app_root) { throw "The service did not report a data root." }
 
@@ -101,13 +149,16 @@ $existing = & sc.exe query $SERVICE 2>&1
 if ($LASTEXITCODE -eq 0) {
     Write-Step "$SERVICE already registered; removing it first"
     & sc.exe stop $SERVICE *> $null
-    & $rtPython $svcScript remove *> $null
+    $r = Invoke-Native { & $rtPython $svcScript remove }
+    # Not fatal on its own -- the install below is what proves the slot is free --
+    # but no longer silent.
+    if ($r.ExitCode -ne 0) { Write-Step "remove reported exit $($r.ExitCode); continuing" }
 }
 
 Write-Step "registering $SERVICE"
-$out = & $rtPython $svcScript install 2>&1
-if ($LASTEXITCODE -ne 0) {
-    throw "Service registration failed:`n$out"
+$r = Invoke-Native { & $rtPython $svcScript install }
+if ($r.ExitCode -ne 0) {
+    throw "Service registration failed:`n$(($r.Out + $r.Err) -join "`n")"
 }
 
 # _svc_start_type_ sets this too; repeated because an upgrade over an older
