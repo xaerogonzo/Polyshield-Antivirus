@@ -321,12 +321,20 @@ foreach ($d in @("config", "intelligence")) {
 $cfgDir = Join-Path $appData "config"
 if (-not (Test-Path $cfgDir)) { New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null }
 $cfg = Join-Path $cfgDir "ui_settings.json"
-if (-not (Test-Path $cfg)) { Set-Content -Path $cfg -Value "{}" -Encoding UTF8 }
+# Written WITHOUT a byte-order mark. `Set-Content -Encoding UTF8` in Windows
+# PowerShell 5.1 prepends one, and the settings reader decodes strict UTF-8, so it
+# rejected the file as unreadable, set it aside as .corrupt and logged to stderr --
+# which in turn aborted register_service.ps1 (docs/ARCHITECTURE.md). The product
+# writes this file without a BOM; the verifier should hand it what the product
+# would have written. (Whether the reader should also tolerate a BOM is a separate
+# question for PolyBedrock.)
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+if (-not (Test-Path $cfg)) { [IO.File]::WriteAllText($cfg, "{}", $utf8NoBom) }
 if (Test-Path $cfg) {
     $json = Get-Content $cfg -Raw | ConvertFrom-Json
     $json | Add-Member -NotePropertyName "sandbox_sentinel" `
                        -NotePropertyValue "survived" -Force
-    $json | ConvertTo-Json -Depth 8 | Set-Content $cfg -Encoding UTF8
+    [IO.File]::WriteAllText($cfg, ($json | ConvertTo-Json -Depth 8), $utf8NoBom)
 
     $p2 = Start-Process -FilePath $gui -PassThru -WindowStyle Minimized
     Start-Sleep -Seconds 25

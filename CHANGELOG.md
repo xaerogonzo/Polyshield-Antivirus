@@ -42,6 +42,14 @@ release decides the number and bumps both files (a test keeps them equal).
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#a-failed-run-step-does-not-fail-the-install-known-gap).)
 
 ### Fixed
+- **Service registration aborted on any line the service's Python wrote to
+  stderr.** `register_service.ps1` ran its native commands under
+  `$ErrorActionPreference = "Stop"`, where Windows PowerShell 5.1 turns a stderr
+  line into a terminating error even through `*> $null`. It exited 1 after its
+  pre-flight passed, and because the installer ignores a `[Run]` step's exit code
+  the install still reported success with no service. The three calls now go
+  through `Invoke-Native`, which judges by exit code. Found by the build-smoke
+  CI job's install cycle.
 - **The Windows service never started at boot.** pywin32 ignores
   `_svc_start_type_`, so every install registered a demand-start service. The
   start type is now injected where all three install paths converge.
