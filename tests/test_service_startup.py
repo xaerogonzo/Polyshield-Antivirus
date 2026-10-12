@@ -497,3 +497,73 @@ def test_the_install_button_no_longer_names_sys_executable():
     src = (_ROOT / "src" / "ui" / "views" / "service_view.py").read_text(
         encoding="utf-8")
     assert "sys.executable" not in src
+
+
+# == Setup refuses rather than half-installing =================================
+#
+# Inno ignores a [Run] entry's exit code. Measured in CI: register_service.ps1
+# exited 1, Inno logged "Installation process succeeded", and Setup exited 0 with
+# no service. For an antivirus a half-installed product is worse than none, so the
+# two steps that make it work -- the data root with its ACLs, and the service --
+# run from [Code] and raise on failure. These pin that shape; the behaviour itself
+# is proved on a real runner by tools/ci/refusal_test.ps1.
+
+def _iss() -> str:
+    return (_ROOT / "installer" / "polyshield.iss").read_text(encoding="utf-8")
+
+
+def _iss_section(name: str) -> str:
+    """A section, found by its header ON A LINE OF ITS OWN. A plain substring
+    search for "[Code]" matches the comment in [Run] that mentions it."""
+    import re
+    text = _iss()
+    header = re.search(rf"^\[{name}\]\s*$", text, re.MULTILINE)
+    assert header, f"no [{name}] section in polyshield.iss"
+    nxt = re.search(r"^\[[A-Za-z]+\]\s*$", text[header.end():], re.MULTILINE)
+    end = header.end() + nxt.start() if nxt else len(text)
+    return text[header.start():end]
+
+
+def _strip_iss_comments(text: str) -> str:
+    return "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith(";"))
+
+
+@pytest.mark.parametrize("script", ["setup_data_root.ps1", "register_service.ps1"])
+def test_the_required_steps_are_not_run_entries_whose_failure_is_ignored(script):
+    run = _strip_iss_comments(_iss_section("Run"))
+    assert script not in run, (
+        f"{script} is back in [Run]. Inno ignores a [Run] entry's exit code, so a "
+        "failure here would again leave a successful install with no protection.")
+
+
+def test_the_required_steps_run_in_code_and_in_the_right_order():
+    code = _iss_section("Code")
+    data = code.index("'setup_data_root.ps1'")
+    service = code.index("'register_service.ps1'")
+    assert data < service, (
+        "the data root must exist, with its ACLs, before the service registers: a "
+        "directory the app creates for itself inherits the root ACL")
+    assert "CurStep = ssPostInstall" in code
+    assert code.index("CurStep = ssPostInstall") < data
+
+
+def test_a_required_step_failure_stops_setup():
+    code = _iss_section("Code")
+    body = code[code.index("procedure RunRequiredStep"):code.index("procedure CurStepChanged")]
+    assert "ResultCode <> 0" in body
+    assert body.count("RaiseException") >= 2, (
+        "both a PowerShell that would not start and a non-zero exit must raise")
+    assert "Log(" in body, "the failure must reach the /LOG, which is all a silent install has"
+
+
+def test_the_payload_directory_can_be_overridden_for_the_refusal_test():
+    text = _iss()
+    assert "#ifndef DistDir" in text, (
+        "DistDir must be overridable (ISCC /DDistDir=...), or CI cannot build the "
+        "sabotaged installer that proves Setup refuses")
+
+
+def test_the_refusal_test_will_not_run_on_a_machine_that_cannot_be_thrown_away():
+    script = (_ROOT / "tools" / "ci" / "refusal_test.ps1").read_text(encoding="utf-8")
+    assert "GITHUB_ACTIONS" in script and "POLYSHIELD_DISPOSABLE_MACHINE" in script
+    assert "Refusing to run" in script

@@ -31,7 +31,11 @@
 #define AppVersion     "1.16.0"
 #define AppPublisher   "Alexander L Corthell"
 #define AppExeName     "PolyShield.exe"
+; Overridable (ISCC /DDistDir=...) so CI can build a deliberately broken payload
+; and prove that Setup refuses it; see tools/ci/refusal_test.ps1.
+#ifndef DistDir
 #define DistDir        "..\dist"
+#endif
 #define ServiceName    "PolyShieldService"
 
 [Setup]
@@ -109,18 +113,17 @@ Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}";     Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Run]
-; Order matters. The data root is created FIRST, with its ACLs, because a
-; directory the app creates for itself inherits the root ACL and the privilege
-; boundary would then exist only in the documentation.
-Filename: "powershell.exe"; \
-  Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\installer\setup_data_root.ps1"""; \
-  StatusMsg: "Creating the shared data directory..."; \
-  Flags: runhidden waituntilterminated
-
-Filename: "powershell.exe"; \
-  Parameters: "-ExecutionPolicy Bypass -NoProfile -File ""{app}\installer\register_service.ps1"" -InstallDir ""{app}"""; \
-  StatusMsg: "Registering the PolyShield service..."; \
-  Flags: runhidden waituntilterminated
+; The two steps that MUST succeed are NOT here. Creating the data root with its
+; ACLs (setup_data_root.ps1) and registering the service (register_service.ps1)
+; run from CurStepChanged(ssPostInstall) in [Code] below, as RunRequiredStep.
+; Inno ignores a [Run] entry's exit code, so as [Run] lines they could fail and
+; Setup would still exit 0 with no service and no privilege boundary -- which is
+; exactly what a CI install over a stale registration showed. They run BEFORE
+; everything in this section, in that order: the data root first, because a
+; directory the app creates for itself inherits the root ACL and the boundary
+; would then exist only in the documentation.
+;
+; Everything below is deliberately best-effort.
 
 ; k2 carries only 23 of its 1263 signatures in its plugin modules; the rest
 ; arrive in rule archives it downloads. A fresh install has an empty rules
@@ -179,10 +182,58 @@ begin
     Exec(Exe, '--unregister', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
 end;
 
+// ---------------------------------------------------------------------------
+// Steps that must succeed, or Setup refuses.
+//
+// An antivirus that is half installed is worse than one that is not installed:
+// it looks protected and is not. Creating the data root with its ACLs and
+// registering the service are what make the product work AND what make its
+// privilege boundary real, so a failure of either fails the whole install.
+//
+// This is [Code] rather than [Run] because Inno ignores a [Run] entry's exit
+// code. Measured in CI: register_service.ps1 exited 1, Inno logged
+// "Installation process succeeded", and Setup exited 0 with no service.
+//
+// RaiseException is what makes Setup stop: it exits non-zero and takes the
+// failure path, so DeinitializeSetup (InstallCompleted is still False) runs
+// RollBackIntegrations and Inno undoes what it installed. In a silent install the
+// message box is suppressed and the message goes to the /LOG instead.
+// ---------------------------------------------------------------------------
+procedure RunRequiredStep(const What, ScriptName, ScriptArgs, Detail: String);
+var
+  ResultCode: Integer;
+  Params: String;
+begin
+  Params := '-ExecutionPolicy Bypass -NoProfile -File "' +
+            ExpandConstant('{app}\installer\') + ScriptName + '" ' + ScriptArgs;
+  Log('Required step: ' + What + ' -> powershell.exe ' + Params);
+  if not WizardSilent then
+    WizardForm.StatusLabel.Caption := What + '...';
+
+  if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params,
+              '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    RaiseException(What + ' failed: PowerShell could not be started (' +
+                   SysErrorMessage(ResultCode) + '). PolyShield was not installed.');
+
+  Log('Required step exit code: ' + IntToStr(ResultCode));
+  if ResultCode <> 0 then
+    RaiseException(What + ' failed (exit code ' + IntToStr(ResultCode) + '). ' +
+                   'PolyShield was not installed. ' + Detail);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
 begin
+  if CurStep = ssPostInstall then
+  begin
+    // In this order, and before any [Run] entry: see the note in [Run].
+    RunRequiredStep('Creating the shared data directory', 'setup_data_root.ps1', '',
+                    'The data directory and its permissions could not be set up.');
+    RunRequiredStep('Registering the PolyShield service', 'register_service.ps1',
+                    '-InstallDir "' + ExpandConstant('{app}') + '"',
+                    'Details: %ProgramData%\PolyShield\logs\install_register_service.log');
+  end;
   if CurStep = ssInstall then
   begin
     // Stop the service BEFORE any file is replaced. With CloseApplications off
