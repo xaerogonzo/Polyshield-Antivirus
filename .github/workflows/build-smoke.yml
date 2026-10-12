@@ -182,6 +182,26 @@ jobs:
             -SkipSandboxPreconditions -SkipFullReport 2>&1 |
             Tee-Object -FilePath verify.log
 
+      - name: Prove that Setup refuses when the service cannot be registered
+        # The install cycle shows a GOOD install works. This shows a BAD one is
+        # refused: tools/ci/refusal_test.ps1 builds an installer from a payload
+        # whose service source exits 3, runs it, and requires a non-zero exit, no
+        # registered service, and a log that names the failed step. An antivirus
+        # that finishes "successfully" with no service looks protected and is not.
+        #
+        # Skipped (not run) if the cycle step failed: a cycle that left state
+        # behind would make "no service afterwards" prove nothing, and the verdict
+        # step below reports that failure regardless. The script refuses to run
+        # outside a CI runner; this is a disposable one.
+        timeout-minutes: 30
+        run: |
+          New-Item -ItemType Directory -Force artifacts\ci | Out-Null
+          powershell -ExecutionPolicy Bypass -File .\tools\ci\refusal_test.ps1 `
+            -DistDir "$env:GITHUB_WORKSPACE\dist" `
+            -ResultsDir "$env:GITHUB_WORKSPACE\artifacts\ci" 2>&1 |
+            Tee-Object -FilePath refusal.log
+          if ($LASTEXITCODE -ne 0) { throw "the refusal test failed (exit $LASTEXITCODE)" }
+
       - name: Fail on any failed check, or if the cycle did not finish
         # Its own step, and `if: always()`: a failed cycle must not hide this
         # verdict, and a cycle that hung writes NO verify.json -- which must read
@@ -213,6 +233,7 @@ jobs:
             build.log
             build_installer.log
             verify.log
+            refusal.log
             artifacts/ci/
             dist/PolyShield-Setup-*.exe
           if-no-files-found: ignore

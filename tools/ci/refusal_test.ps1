@@ -103,7 +103,9 @@ if (-not (Test-Path $svcPy)) { throw "service\polyshield_service.py is missing f
 Add-Result "sabotaged payload prepared" $true "polyshield_service.py replaced by a stub that exits 3"
 
 # ---------- Compile the installer from it -------------------------------------
-$outDir = Join-Path $resultsAbs "refusal_build"
+# Beside dist\, NOT under the results directory: the compiled installer is ~50 MB
+# and the results directory is what CI uploads as an artifact.
+$outDir = Join-Path (Split-Path $distAbs -Parent) "refusal_build"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 $iss = Join-Path $ROOT "installer\polyshield.iss"
 $compileOut = & $iscc "/DDistDir=$broken" "/O$outDir" "/FPolyShield-Setup-refusal" $iss 2>&1 | Out-String

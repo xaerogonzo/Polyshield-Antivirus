@@ -300,6 +300,37 @@ def test_build_smoke_uploads_the_verifier_results_so_a_red_run_can_be_diagnosed(
     assert "artifacts/ci/" in paths and "verify.log" in paths
 
 
+def test_build_smoke_proves_that_setup_refuses_after_the_install_cycle():
+    """The install cycle shows a good install works; this shows a bad one is
+    refused. It must come after the cycle (which uninstalls, leaving the clean
+    start it needs) and before the verdict."""
+    doc = _load("build-smoke.yml")
+    names = [s.get("name", "") for s in _steps(doc, "build")]
+    idx = {k: next(i for i, n in enumerate(names) if k in n)
+           for k in ("Run the install cycle", "Prove that Setup refuses",
+                     "Fail on any failed check")}
+    assert idx["Run the install cycle"] < idx["Prove that Setup refuses"] < idx["Fail on any failed check"]
+
+    step = _step(doc, "build", "Prove that Setup refuses")
+    assert "tools\\ci\\refusal_test.ps1" in step["run"]
+    assert "$LASTEXITCODE" in step["run"], (
+        "the script reports through its exit code; without this check the step "
+        "would pass whatever the test found")
+    assert step.get("timeout-minutes") and step["timeout-minutes"] <= 45
+
+
+def test_the_refusal_script_the_workflow_runs_exists_and_is_treated_as_build_relevant():
+    root = WORKFLOWS.parents[1]
+    assert (root / "tools" / "ci" / "refusal_test.ps1").is_file()
+    assert "tools/ci/*" in _relevant_patterns(), (
+        "an edit to the refusal test must trigger the build that runs it")
+
+
+def test_build_smoke_uploads_the_refusal_evidence():
+    paths = _step(_load("build-smoke.yml"), "build", "Upload logs")["with"]["path"]
+    assert "refusal.log" in paths
+
+
 def test_build_smoke_builds_unsigned_because_it_runs_on_pull_requests():
     """A signing certificate is a secret. It must never be wired into a workflow
     that pull requests can trigger."""
