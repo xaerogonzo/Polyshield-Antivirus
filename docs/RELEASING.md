@@ -11,6 +11,13 @@ product, registers the service and rewrites `%ProgramData%\PolyShield` ACLs.
 
 - On `master`, working tree clean, CI green on **both** matrix legs (Python 3.11
   and 3.13) for the commit you are releasing.
+- **`build-smoke` has passed on that exact commit.** Pull requests run it only when
+  they touch a build file, so the commit you are releasing may never have been built
+  by CI at all. Run it on demand and read the steps, not just the conclusion:
+  `gh workflow run build-smoke --ref master`, then check the run's head SHA is the
+  commit you are releasing (a re-run reuses the *original* commit) and that
+  `verify.json` shows no failed checks. It builds **unsigned**; signing is checked by
+  hand in steps 3-5.
 - **The PolyBedrock pin is a pushed commit that contains everything PolyShield
   imports.** A pin that predates an import passes locally -- the editable install
   hides it -- and raises `ModuleNotFoundError` for everyone else. Check it the way
