@@ -26,12 +26,29 @@ param(
     # Skip the install/uninstall cycle (4c.5). It registers a service, rewrites
     # ACLs under %ProgramData% and then removes both, so it belongs in a
     # throwaway machine and nowhere else.
-    [switch]$SkipInstall
+    [switch]$SkipInstall,
+
+    # For a disposable CI runner rather than Windows Sandbox. Two checks assert
+    # properties of the Sandbox ITSELF -- "no Python on PATH" and "no pre-existing
+    # data root" -- and a hosted runner has Python installed and has just run the
+    # build's own gate, which creates the data root. They are recorded as SKIPPED
+    # in the report (never as passes: a check that passes because it was not run is
+    # the failure this whole script exists to avoid), and everything that tests the
+    # PRODUCT still runs.
+    [switch]$SkipSandboxPreconditions,
+
+    # Do not attempt the second, deeper `ConvertTo-Json -Depth 8` of every result.
+    # The guaranteed report (checks, counts, engines, footprint) is written first
+    # and is all CI reads. The deep one is documented below as never having
+    # survived serialisation, and on a runner it did not fail -- it never returned,
+    # which held the step open until the job timeout killed it.
+    [switch]$SkipFullReport
 )
 
 $ErrorActionPreference = "Continue"
 $results = [ordered]@{}
 $checks  = [System.Collections.ArrayList]::new()
+$skipped = [System.Collections.ArrayList]::new()
 
 function ConvertFrom-MixedJson {
     <#
@@ -65,6 +82,17 @@ function Add-Check {
     } catch { }
 }
 
+function Skip-Check {
+    # Recorded and visible, never counted as a pass.
+    param([string]$Name, [string]$Reason)
+    [void]$skipped.Add([ordered]@{ name = $Name; reason = "$Reason" })
+    Write-Host ("  [SKIP] {0} - {1}" -f $Name, $Reason) -ForegroundColor Yellow
+    try {
+        Add-Content -Path (Join-Path $ResultsDir "progress.log") `
+            -Value ("SKIP`t{0}`t{1}" -f $Name, $Reason) -Encoding UTF8
+    } catch { }
+}
+
 function Write-Progress-Note {
     param([string]$Note)
     try {
@@ -81,8 +109,12 @@ Write-Host "=== PolyShield clean-machine verification ===" -ForegroundColor Cyan
 # below becomes ambiguous, because the binary might be finding it.
 
 $pythonOnPath = @(Get-Command python, python3, py -ErrorAction SilentlyContinue)
-Add-Check "no Python on PATH" ($pythonOnPath.Count -eq 0) `
-    ($(if ($pythonOnPath) { ($pythonOnPath.Source -join ", ") } else { "none found" }))
+if ($SkipSandboxPreconditions) {
+    Skip-Check "no Python on PATH" "not a Sandbox; found: $(($pythonOnPath.Source) -join ', ')"
+} else {
+    Add-Check "no Python on PATH" ($pythonOnPath.Count -eq 0) `
+        ($(if ($pythonOnPath) { ($pythonOnPath.Source -join ", ") } else { "none found" }))
+}
 
 $devVars = @("PYTHONPATH", "POLYSHIELD_DATA_DIR", "VIRTUAL_ENV") |
     Where-Object { [Environment]::GetEnvironmentVariable($_) }
@@ -95,7 +127,11 @@ Add-Check "no developer environment variables" ($devVars.Count -eq 0) `
 # Left pointing at the old location, five checks fail on a correct build and
 # would pass again the moment the defect came back.
 $appData = Join-Path $env:ProgramData "PolyShield"
-Add-Check "no pre-existing data root" (-not (Test-Path $appData)) $appData
+if ($SkipSandboxPreconditions) {
+    Skip-Check "no pre-existing data root" "not a Sandbox; the build's own gate creates it ($appData)"
+} else {
+    Add-Check "no pre-existing data root" (-not (Test-Path $appData)) $appData
+}
 
 # Both layouts are verified by the same script: a onefile build is a single exe
 # at the top of dist\, a standalone build is an exe inside app.dist\. Preferring
@@ -285,12 +321,20 @@ foreach ($d in @("config", "intelligence")) {
 $cfgDir = Join-Path $appData "config"
 if (-not (Test-Path $cfgDir)) { New-Item -ItemType Directory -Path $cfgDir -Force | Out-Null }
 $cfg = Join-Path $cfgDir "ui_settings.json"
-if (-not (Test-Path $cfg)) { Set-Content -Path $cfg -Value "{}" -Encoding UTF8 }
+# Written WITHOUT a byte-order mark. `Set-Content -Encoding UTF8` in Windows
+# PowerShell 5.1 prepends one, and the settings reader decodes strict UTF-8, so it
+# rejected the file as unreadable, set it aside as .corrupt and logged to stderr --
+# which in turn aborted register_service.ps1 (docs/ARCHITECTURE.md). The product
+# writes this file without a BOM; the verifier should hand it what the product
+# would have written. (Whether the reader should also tolerate a BOM is a separate
+# question for PolyBedrock.)
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+if (-not (Test-Path $cfg)) { [IO.File]::WriteAllText($cfg, "{}", $utf8NoBom) }
 if (Test-Path $cfg) {
     $json = Get-Content $cfg -Raw | ConvertFrom-Json
     $json | Add-Member -NotePropertyName "sandbox_sentinel" `
                        -NotePropertyValue "survived" -Force
-    $json | ConvertTo-Json -Depth 8 | Set-Content $cfg -Encoding UTF8
+    [IO.File]::WriteAllText($cfg, ($json | ConvertTo-Json -Depth 8), $utf8NoBom)
 
     $p2 = Start-Process -FilePath $gui -PassThru -WindowStyle Minimized
     Start-Sleep -Seconds 25
@@ -416,6 +460,89 @@ function Wait-ServiceState {
     return $false
 }
 
+function Save-ServiceDiagnostics {
+    # "STOPPED" says that a service is not running, not why. When a service check
+    # fails, keep what would explain it: the SCM's view of the service, the Service
+    # Control Manager's own events, and the service's log. A red run on a machine
+    # that is thrown away afterwards otherwise leaves nothing to read.
+    param([string]$Name, [string]$Tag)
+    try {
+        $lines = @(
+            "== sc queryex $Name ==", (& sc.exe queryex $Name 2>&1 | Out-String),
+            "== sc qc $Name ==",      (& sc.exe qc $Name 2>&1 | Out-String)
+        )
+        try {
+            $events = Get-WinEvent -FilterHashtable @{
+                LogName = "System"; ProviderName = "Service Control Manager"
+                StartTime = (Get-Date).AddMinutes(-45)
+            } -MaxEvents 30 -ErrorAction Stop
+            $lines += "== System log, Service Control Manager, last 45 minutes =="
+            $lines += @($events | ForEach-Object {
+                "{0:s}  id={1}  {2}" -f $_.TimeCreated, $_.Id, ($_.Message -replace '\s+', ' ')
+            })
+        } catch {
+            $lines += "== System log unavailable: $($_.Exception.Message) =="
+        }
+        $svcLog = Join-Path $env:ProgramData "PolyShield\service.log"
+        if (Test-Path $svcLog) {
+            $lines += "== service.log (last 60 lines) =="
+            $lines += @(Get-Content $svcLog -Tail 60 -ErrorAction SilentlyContinue)
+        } else {
+            $lines += "== no service.log at $svcLog =="
+        }
+        # The installer runs register_service.ps1 HIDDEN and ignores its exit code,
+        # so a registration that threw leaves nothing behind. Its pre-flight is
+        # documented read-only (it stops before touching the SCM), so re-run it
+        # here, visibly, and keep what it says.
+        # What the installer's own run of register_service.ps1 said (its transcript).
+        # This is the record of the run that actually failed; the pre-flight below
+        # is only a re-check afterwards.
+        $tx = Join-Path $env:ProgramData "PolyShield\logs\install_register_service.log"
+        if (Test-Path $tx) {
+            $lines += "== install_register_service.log (the installer's own run; last 80 lines) =="
+            $lines += @(Get-Content $tx -Tail 80 -ErrorAction SilentlyContinue)
+        } else {
+            $lines += "== no install_register_service.log at $tx =="
+        }
+        $reg = Join-Path $appDir "installer\register_service.ps1"
+        # Its own try: a broken install may lack the very runtime these re-runs
+        # need, Start-Process then throws, and the evidence gathered above must
+        # still be written.
+        try {
+        if ($appDir -and (Test-Path $reg)) {
+            $lines += "== register_service.ps1 -PreflightOnly (read-only) =="
+            $lines += (& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $reg `
+                          -InstallDir $appDir -PreflightOnly 2>&1 | Out-String)
+            $lines += "exit code: $LASTEXITCODE"
+
+            # What the pre-flight's `& python service.py --paths 2>&1` is fed, with
+            # the two streams apart. Under $ErrorActionPreference = Stop, a single
+            # stderr line from that command is a terminating error in 5.1.
+            $rtPy = Join-Path $appDir "runtime\python.exe"
+            $svcPy = Join-Path $appDir "service\polyshield_service.py"
+            $so = Join-Path $env:TEMP "svc_paths_stdout.txt"
+            $se = Join-Path $env:TEMP "svc_paths_stderr.txt"
+            $pp = Start-Process -FilePath $rtPy -ArgumentList "`"$svcPy`"", "--paths" `
+                      -RedirectStandardOutput $so -RedirectStandardError $se `
+                      -Wait -PassThru -WindowStyle Hidden
+            $lines += "== service --paths: exit $($pp.ExitCode) =="
+            $lines += "-- stderr --"
+            $lines += @(Get-Content $se -ErrorAction SilentlyContinue)
+            $lines += "-- stdout (first 12 lines) --"
+            $lines += @(Get-Content $so -TotalCount 12 -ErrorAction SilentlyContinue)
+        } else {
+            $lines += "== no register_service.ps1 under '$appDir' to re-run =="
+        }
+        } catch {
+            $lines += "== re-running the pre-flight failed: $($_.Exception.Message) =="
+        }
+        Set-Content -Path (Join-Path $ResultsDir "service_diag_$Tag.txt") -Value $lines -Encoding UTF8
+    } catch {
+        # Diagnostics must never take the verification down with them.
+        Write-Host "  (could not write service diagnostics: $($_.Exception.Message))" -ForegroundColor DarkGray
+    }
+}
+
 if (-not $SkipInstall) {
     Write-Host ""
     Write-Host "=== Install cycle ===" -ForegroundColor Cyan
@@ -442,8 +569,12 @@ if (-not $SkipInstall) {
 
         # -- Install ----------------------------------------------------------
         Write-Progress-Note "run the silent install"
+        # /LOG: Inno records each [Run] step and its exit code. The installer
+        # ignores a failing step's exit code (docs/ARCHITECTURE.md), so without this
+        # a service registration that threw leaves "exit 0" and nothing else.
         $p = Start-Process -FilePath $setup.FullName `
-            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCANCEL" `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCANCEL", `
+                          "/LOG=`"$(Join-Path $ResultsDir 'inno_install.log')`"" `
             -Wait -PassThru
         Add-Check "silent install over a dirty machine succeeded" ($p.ExitCode -eq 0) `
             "exit $($p.ExitCode)"
@@ -466,6 +597,7 @@ if (-not $SkipInstall) {
         # -- Registered is not running ----------------------------------------
         $running = Wait-ServiceState $svcName "RUNNING"
         Add-Check "service reaches RUNNING" $running (Get-ServiceState $svcName)
+        if (-not $running) { Save-ServiceDiagnostics $svcName "install" }
         if (-not $running) {
             $results.service_queryex = (& sc.exe queryex $svcName 2>&1 | Out-String)
         }
@@ -658,12 +790,14 @@ print('OK' if ok else 'FAIL', msg)
         # -- Idempotency -------------------------------------------------------
         Write-Progress-Note "reinstall over the existing install"
         $p2 = Start-Process -FilePath $setup.FullName `
-            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCANCEL" `
+            -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/NOCANCEL", `
+                          "/LOG=`"$(Join-Path $ResultsDir 'inno_reinstall.log')`"" `
             -Wait -PassThru
         Add-Check "installing over an existing install succeeds" ($p2.ExitCode -eq 0) `
             "exit $($p2.ExitCode)"
-        Add-Check "service still RUNNING after reinstall" `
-            (Wait-ServiceState $svcName "RUNNING") (Get-ServiceState $svcName)
+        $runningAfter = Wait-ServiceState $svcName "RUNNING"
+        Add-Check "service still RUNNING after reinstall" $runningAfter (Get-ServiceState $svcName)
+        if (-not $runningAfter) { Save-ServiceDiagnostics $svcName "reinstall" }
 
         # -- Data survives, program state goes --------------------------------
         # Something the user would recognise, to prove retention is real rather
@@ -679,8 +813,7 @@ print('OK' if ok else 'FAIL', msg)
         if ($uninst) {
             # Bounded. An uninstall CAN hang: leave the service registered and
             # running -- which is what a failed --unregister does -- and Inno's
-            # CloseApplications finds {app}
-untime\python.exe in use and waits
+            # CloseApplications finds {app}\runtime\python.exe in use and waits
             # on Restart Manager forever. Observed: a run sat idle at 0% CPU for
             # twenty minutes and produced no report at all, so a single hang cost
             # every check after it.
@@ -736,6 +869,10 @@ untime\python.exe in use and waits
 # ---------- Report --------------------------------------------------------
 
 $results.checks    = $checks
+# In $results as well as in the guaranteed report below: when the deep report
+# succeeds it REPLACES verify.json with $results, and a field that lives only in
+# the guaranteed report would silently disappear from the file a reader gets.
+$results.skipped   = $skipped
 $results.passed    = @($checks | Where-Object { $_.pass }).Count
 $results.failed    = @($checks | Where-Object { -not $_.pass }).Count
 $results.timestamp = (Get-Date).ToString("s")
@@ -760,9 +897,15 @@ $out = Join-Path $ResultsDir "verify.json"
     # them -- a future regression is diagnosed by comparing them, not by
     # re-reading "pass".
     startup_footprint = $results.startup_footprint
+    # Checks that were deliberately not run, with the reason. Part of the report
+    # so that "49 passed" can never be mistaken for "everything was checked".
+    skipped = $skipped
 } | ConvertTo-Json -Depth 6 | Set-Content $out -Encoding UTF8
 Write-Host "  checks written -> $out" -ForegroundColor DarkGray
 
+if ($SkipFullReport) {
+    Write-Host "  (full report skipped by -SkipFullReport)" -ForegroundColor DarkGray
+} else {
 try {
     $results | ConvertTo-Json -Depth 8 | Set-Content $out -Encoding UTF8
 } catch {
@@ -776,6 +919,7 @@ try {
         failed = @($checks | Where-Object { -not $_.pass }).Count
         note   = "reduced report; full results failed to serialise"
     } | ConvertTo-Json -Depth 6 | Set-Content $out -Encoding UTF8
+}
 }
 
 Write-Host ""

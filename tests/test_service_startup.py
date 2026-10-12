@@ -280,6 +280,61 @@ def test_the_shell_installers_still_agree_with_the_python_policy(rel):
         f"{rel} has a different recovery action list"
 
 
+# == register_service.ps1 must not die on a stderr line =======================
+#
+# Found by the first CI run to complete an install over a stale registration.
+# Inno ran the script, it exited 1, and Setup finished with exit 0 and no service
+# (Inno ignores a [Run] step's exit code).  The transcript named the line:
+#
+#     & $rtPython $svcScript remove *> $null
+#
+# The service's Python had logged one ordinary line to stderr, and under
+# $ErrorActionPreference = "Stop" Windows PowerShell 5.1 turns that into a
+# terminating NativeCommandError -- `2>&1` and `*> $null` do not prevent it.
+# The script already judged success by $LASTEXITCODE; the preference only
+# converted information into failure.  These pin the shape that fixes it.
+
+def _ps_code(rel: str) -> str:
+    """The script with whole-line comments removed, so prose cannot satisfy or
+    break a shape check."""
+    text = (_ROOT / rel).read_text(encoding="utf-8", errors="replace")
+    return "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+
+
+def test_register_service_never_calls_the_service_python_bare():
+    code = _ps_code("installer/register_service.ps1")
+    calls = [ln for ln in code.splitlines() if "& $rtPython" in ln]
+
+    assert calls, "found no call of the staged runtime: this guard is looking at the wrong thing"
+    bare = [ln.strip() for ln in calls if "Invoke-Native" not in ln]
+    assert not bare, (
+        "these call the service's Python without Invoke-Native, so one stderr line "
+        "aborts the registration under $ErrorActionPreference = 'Stop':\n  "
+        + "\n  ".join(bare))
+
+
+def test_invoke_native_relaxes_the_preference_and_keeps_the_streams_apart():
+    code = _ps_code("installer/register_service.ps1")
+    start = code.index("function Invoke-Native")
+    body = code[start:code.index("\n}\n", start)]
+
+    assert '$ErrorActionPreference = "Continue"' in body
+    assert "finally" in body, "the preference must be restored even if the command throws"
+    assert "ExitCode" in body and "Out" in body and "Err" in body
+
+
+def test_the_verifier_writes_the_settings_file_without_a_byte_order_mark():
+    """`Set-Content -Encoding UTF8` in Windows PowerShell 5.1 prepends a BOM; the
+    settings reader decodes strict UTF-8, rejects the file as unreadable, sets it
+    aside as .corrupt and logs to stderr -- the line above. The product writes
+    this file without a BOM, so the verifier must hand it the same."""
+    code = _ps_code("tools/sandbox_verify.ps1")
+    offenders = [ln.strip() for ln in code.splitlines()
+                 if "$cfg" in ln and "Set-Content" in ln]
+    assert not offenders, "the settings file is written with Set-Content: " + "; ".join(offenders)
+    assert "UTF8Encoding($false)" in code
+
+
 # ══ service_state: two facts, never one ══════════════════════════════════════
 
 
