@@ -148,20 +148,35 @@ Add-Result "the log names the required step that failed" `
 Add-Result "the log says PolyShield was not installed" `
     ($logText -match "PolyShield was not installed") "refusal message is in the Inno log"
 
+# The later [Run] entries (K2 rule download, Explorer verb) must NOT have run: the
+# required steps come first, and a refusal ends Setup before the rest. A match on
+# "Parameters:" is a [Run] entry that executed; the same file name also appears in
+# the [Files] copy lines, which say nothing about being run.
+Add-Result "no later [Run] entry ran after the refusal" `
+    ($logText -notmatch 'Parameters: [^\r\n]*seed_k2_rules\.ps1') "seed_k2_rules.ps1 was never run"
+
+# The product must be gone, not half there. Inno's own uninstaller does the undo
+# (FailSetup in polyshield.iss), so the executable and the uninstaller must both be
+# absent. Stray files that the program wrote while running (bytecode caches that
+# Inno never recorded) may remain and are reported below, not asserted.
+$appDir = Join-Path $env:ProgramFiles "PolyShield"
+Add-Result "the program is not left installed (no PolyShield.exe)" `
+    (-not (Test-Path (Join-Path $appDir "PolyShield.exe"))) $(if (Test-Path (Join-Path $appDir "PolyShield.exe")) { "STILL THERE" } else { "removed" })
+Add-Result "no uninstaller is left behind" `
+    (-not (Test-Path (Join-Path $appDir "unins000.exe"))) $(if (Test-Path (Join-Path $appDir "unins000.exe")) { "STILL THERE" } else { "removed" })
+
 # ---------- Measured, not asserted --------------------------------------------
-$appDir   = Join-Path $env:ProgramFiles "PolyShield"
 $leftover = @()
 if (Test-Path $appDir) {
     $leftover = @(Get-ChildItem $appDir -Recurse -Force -File -ErrorAction SilentlyContinue)
 }
 $measured = [ordered]@{
-    app_dir_exists   = (Test-Path $appDir)
+    app_dir_exists        = (Test-Path $appDir)
     files_left_in_app_dir = $leftover.Count
-    gui_exe_left     = (Test-Path (Join-Path $appDir "PolyShield.exe"))
-    uninstaller_left = (Test-Path (Join-Path $appDir "unins000.exe"))
+    sample_of_files_left  = @($leftover | Select-Object -First 8 | ForEach-Object { $_.FullName.Substring($appDir.Length) })
 }
-Write-Host ("  measured (not asserted): app dir exists={0}, files left={1}, PolyShield.exe left={2}, unins000.exe left={3}" -f `
-    $measured.app_dir_exists, $measured.files_left_in_app_dir, $measured.gui_exe_left, $measured.uninstaller_left)
+Write-Host ("  measured (not asserted): app dir exists={0}, files left={1}" -f `
+    $measured.app_dir_exists, $measured.files_left_in_app_dir)
 
 $failed = @($checks | Where-Object { -not $_.pass }).Count
 $report = [ordered]@{

@@ -113,16 +113,28 @@ Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}";     Filename: "{app}\{#AppExeName}"; Tasks: desktopicon
 
 [Run]
-; The two steps that MUST succeed are NOT here. Creating the data root with its
-; ACLs (setup_data_root.ps1) and registering the service (register_service.ps1)
-; run from CurStepChanged(ssPostInstall) in [Code] below, as RunRequiredStep.
-; Inno ignores a [Run] entry's exit code, so as [Run] lines they could fail and
-; Setup would still exit 0 with no service and no privilege boundary -- which is
-; exactly what a CI install over a stale registration showed. They run BEFORE
-; everything in this section, in that order: the data root first, because a
-; directory the app creates for itself inherits the root ACL and the boundary
-; would then exist only in the documentation.
+; The two steps that MUST succeed are not [Run] lines. Creating the data root with
+; its ACLs (setup_data_root.ps1) and registering the service (register_service.ps1)
+; are run by RunRequiredSteps in [Code], which is attached to the FIRST entry
+; below as its BeforeInstall -- i.e. after the files are copied and before every
+; other entry here, in that order: the data root first, because a directory the app
+; creates for itself inherits the root ACL and the boundary would otherwise exist
+; only in the documentation.
 ;
+; Why not as plain [Run] lines, and why not from CurStepChanged(ssPostInstall)?
+; Inno ignores a [Run] entry's exit code, so a failure would still exit 0 with no
+; service (measured in CI). And ssPostInstall fires AFTER every [Run] entry, so
+; the required steps would run last (measured: ssInstall > [Run] entries >
+; ssPostInstall > ssDone). Raising an exception from any of these places does NOT
+; stop a silent Setup either: it is reported and ignored, exit 0 (measured, for
+; RaiseException and Abort, from ssPostInstall and from BeforeInstall).
+;
+; This entry must stay unconditional (no Tasks/Check) and first, or the required
+; steps would be skipped or reordered; tests/test_service_startup.py pins that.
+Filename: "{sys}\cmd.exe"; Parameters: "/c exit 0"; \
+  StatusMsg: "Setting up PolyShield..."; \
+  Flags: runhidden waituntilterminated; BeforeInstall: RunRequiredSteps
+
 ; Everything below is deliberately best-effort.
 
 ; k2 carries only 23 of its 1263 signatures in its plugin modules; the rest
@@ -166,6 +178,9 @@ var
   RemoveDataCheckBox: TNewCheckBox;
   InstallCompleted: Boolean;
 
+// Used by FailSetup, and only there. See the note above RunRequiredSteps.
+procedure ExitProcess(uExitCode: Cardinal); external 'ExitProcess@kernel32.dll stdcall';
+
 // ---------------------------------------------------------------------------
 // Rollback. A failed install must not leave a registered service and a
 // half-written install directory behind: docs/ARCHITECTURE.md records that
@@ -190,15 +205,61 @@ end;
 // registering the service are what make the product work AND what make its
 // privilege boundary real, so a failure of either fails the whole install.
 //
-// This is [Code] rather than [Run] because Inno ignores a [Run] entry's exit
-// code. Measured in CI: register_service.ps1 exited 1, Inno logged
-// "Installation process succeeded", and Setup exited 0 with no service.
+// Inno gives a silent Setup NO supported way to stop after the files are in.
+// Measured on a throwaway installer, for each of these: exit code 0, the files
+// and uninstaller still on disk, later [Run] entries still executed --
+//   RaiseException / Abort from CurStepChanged(ssPostInstall)
+//   RaiseException / Abort from a [Run] entry's BeforeInstall
+//   a [Run] entry whose program cannot be launched
+// so none of them is used. What does work, and what FailSetup therefore does:
+//   1. Undo the install with Inno's OWN uninstaller. It runs [UninstallRun]
+//      (PolyShield.exe --unregister: service, verb, task), removes the files and
+//      the uninstall registration, and keeps user data (silent default).
+//   2. ExitProcess(4), Inno's "fatal error during the actual installation
+//      process" exit code, so a deployment tool sees the failure.
 //
-// RaiseException is what makes Setup stop: it exits non-zero and takes the
-// failure path, so DeinitializeSetup (InstallCompleted is still False) runs
-// RollBackIntegrations and Inno undoes what it installed. In a silent install the
-// message box is suppressed and the message goes to the /LOG instead.
+// A failed UPGRADE therefore leaves nothing installed, not a mixture of old and
+// new files: the uninstaller removes the product that was there, and Inno's
+// transactional rollback is not reachable from here. That is deliberate. For a
+// security product, "not installed, and said so" beats "partly updated".
+//
+// ExitProcess skips DeinitializeSetup, which is why the rollback is done here
+// explicitly rather than left to RollBackIntegrations.
 // ---------------------------------------------------------------------------
+procedure FailSetup(const Msg: String);
+var
+  ResultCode, Waited: Integer;
+  Uninstaller: String;
+begin
+  Log('SETUP REFUSED: ' + Msg + ' PolyShield was not installed.');
+  SuppressibleMsgBox(Msg + #13#10#13#10 + 'PolyShield was not installed.',
+                     mbCriticalError, MB_OK, IDOK);
+
+  Uninstaller := ExpandConstant('{uninstallexe}');
+  if FileExists(Uninstaller) then
+  begin
+    if Exec(Uninstaller, '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART', '', SW_HIDE,
+            ewWaitUntilTerminated, ResultCode) then
+      Log('Rollback: uninstaller exited ' + IntToStr(ResultCode))
+    else
+      Log('Rollback: the uninstaller could not be started');
+    // The uninstaller hands off to a temporary copy of itself and returns; the
+    // real work finishes when it deletes itself, so wait for that, bounded.
+    Waited := 0;
+    while FileExists(Uninstaller) and (Waited < 180000) do
+    begin
+      Sleep(250);
+      Waited := Waited + 250;
+    end;
+    Log('Rollback: uninstaller gone=' + IntToStr(Ord(not FileExists(Uninstaller))) +
+        ' after ' + IntToStr(Waited) + ' ms');
+  end
+  else
+    Log('Rollback: no uninstaller at ' + Uninstaller);
+
+  ExitProcess(4);
+end;
+
 procedure RunRequiredStep(const What, ScriptName, ScriptArgs, Detail: String);
 var
   ResultCode: Integer;
@@ -212,28 +273,29 @@ begin
 
   if not Exec(ExpandConstant('{sys}\WindowsPowerShell\v1.0\powershell.exe'), Params,
               '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
-    RaiseException(What + ' failed: PowerShell could not be started (' +
-                   SysErrorMessage(ResultCode) + '). PolyShield was not installed.');
+    FailSetup(What + ' failed: PowerShell could not be started (' +
+              SysErrorMessage(ResultCode) + ').');
 
   Log('Required step exit code: ' + IntToStr(ResultCode));
   if ResultCode <> 0 then
-    RaiseException(What + ' failed (exit code ' + IntToStr(ResultCode) + '). ' +
-                   'PolyShield was not installed. ' + Detail);
+    FailSetup(What + ' failed (exit code ' + IntToStr(ResultCode) + '). ' + Detail);
+end;
+
+// Attached to the first [Run] entry as BeforeInstall: runs after the files are
+// copied and before every other entry, in this order (the data root first).
+procedure RunRequiredSteps;
+begin
+  RunRequiredStep('Creating the shared data directory', 'setup_data_root.ps1', '',
+                  'The data directory and its permissions could not be set up.');
+  RunRequiredStep('Registering the PolyShield service', 'register_service.ps1',
+                  '-InstallDir "' + ExpandConstant('{app}') + '"',
+                  'Details: %ProgramData%\PolyShield\logs\install_register_service.log');
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   ResultCode: Integer;
 begin
-  if CurStep = ssPostInstall then
-  begin
-    // In this order, and before any [Run] entry: see the note in [Run].
-    RunRequiredStep('Creating the shared data directory', 'setup_data_root.ps1', '',
-                    'The data directory and its permissions could not be set up.');
-    RunRequiredStep('Registering the PolyShield service', 'register_service.ps1',
-                    '-InstallDir "' + ExpandConstant('{app}') + '"',
-                    'Details: %ProgramData%\PolyShield\logs\install_register_service.log');
-  end;
   if CurStep = ssInstall then
   begin
     // Stop the service BEFORE any file is replaced. With CloseApplications off

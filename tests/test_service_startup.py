@@ -505,8 +505,10 @@ def test_the_install_button_no_longer_names_sys_executable():
 # exited 1, Inno logged "Installation process succeeded", and Setup exited 0 with
 # no service. For an antivirus a half-installed product is worse than none, so the
 # two steps that make it work -- the data root with its ACLs, and the service --
-# run from [Code] and raise on failure. These pin that shape; the behaviour itself
-# is proved on a real runner by tools/ci/refusal_test.ps1.
+# are required: run by [Code] from the first [Run] entry, and a failure undoes the
+# install and exits non-zero. Raising an exception does NOT do that for a silent
+# Setup (measured), which is why the shape is what it is. These pin the shape; the
+# behaviour itself is proved on a real runner by tools/ci/refusal_test.ps1.
 
 def _iss() -> str:
     return (_ROOT / "installer" / "polyshield.iss").read_text(encoding="utf-8")
@@ -536,24 +538,59 @@ def test_the_required_steps_are_not_run_entries_whose_failure_is_ignored(script)
         "failure here would again leave a successful install with no protection.")
 
 
-def test_the_required_steps_run_in_code_and_in_the_right_order():
-    code = _iss_section("Code")
-    data = code.index("'setup_data_root.ps1'")
-    service = code.index("'register_service.ps1'")
+def _strip_pascal_comments(text: str) -> str:
+    return "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("//"))
+
+
+def test_the_required_steps_are_run_by_the_first_run_entry():
+    """Measured on a throwaway installer: [Code]'s CurStepChanged(ssPostInstall)
+    fires AFTER every [Run] entry, so the required steps would run last. A
+    BeforeInstall on the FIRST [Run] entry runs after the files are copied and
+    before all the others. That entry therefore has to be first and unconditional:
+    a Tasks:/Check: on it would let the required steps be skipped."""
+    run = _strip_iss_comments(_iss_section("Run"))
+    first = run[run.index("Filename:"):]
+    first = first[:first.index("Filename:", 1)] if first.count("Filename:") > 1 else first
+    assert "BeforeInstall: RunRequiredSteps" in first, (
+        "the first [Run] entry no longer carries RunRequiredSteps")
+    assert "Tasks:" not in first and "Check:" not in first, (
+        "the entry that carries the required steps must be unconditional")
+
+
+def test_the_required_steps_run_in_the_right_order():
+    code = _strip_pascal_comments(_iss_section("Code"))
+    body = code[code.index("procedure RunRequiredSteps"):code.index("procedure CurStepChanged")]
+    data = body.index("'setup_data_root.ps1'")
+    service = body.index("'register_service.ps1'")
     assert data < service, (
         "the data root must exist, with its ACLs, before the service registers: a "
         "directory the app creates for itself inherits the root ACL")
-    assert "CurStep = ssPostInstall" in code
-    assert code.index("CurStep = ssPostInstall") < data
 
 
-def test_a_required_step_failure_stops_setup():
-    code = _iss_section("Code")
-    body = code[code.index("procedure RunRequiredStep"):code.index("procedure CurStepChanged")]
-    assert "ResultCode <> 0" in body
-    assert body.count("RaiseException") >= 2, (
-        "both a PowerShell that would not start and a non-zero exit must raise")
-    assert "Log(" in body, "the failure must reach the /LOG, which is all a silent install has"
+def test_a_required_step_failure_ends_setup_non_zero_after_undoing_the_install():
+    code = _strip_pascal_comments(_iss_section("Code"))
+    step = code[code.index("procedure RunRequiredStep("):code.index("procedure RunRequiredSteps")]
+    assert "ResultCode <> 0" in step
+    assert step.count("FailSetup(") >= 2, (
+        "both a PowerShell that would not start and a non-zero exit must fail Setup")
+
+    fail = code[code.index("procedure FailSetup"):code.index("procedure RunRequiredStep(")]
+    assert "{uninstallexe}" in fail, "the install must be undone with Inno's own uninstaller"
+    assert "ExitProcess(4)" in fail, "Setup must end with a non-zero exit code"
+    assert fail.index("{uninstallexe}") < fail.index("ExitProcess(4)"), (
+        "undo first: ExitProcess skips DeinitializeSetup and Inno's own rollback")
+    assert "Log('SETUP REFUSED" in fail, "the reason must reach the /LOG"
+
+
+@pytest.mark.parametrize("mechanism", ["RaiseException", "Abort;"])
+def test_no_mechanism_that_is_known_not_to_stop_a_silent_setup_is_used(mechanism):
+    """Measured on a throwaway installer: RaiseException and Abort, from
+    CurStepChanged(ssPostInstall) and from a [Run] entry's BeforeInstall, all leave
+    exit code 0, the files in place and the later [Run] entries executed. Writing one
+    here would look like a refusal and not be one."""
+    code = _strip_pascal_comments(_iss_section("Code"))
+    assert mechanism not in code, (
+        f"{mechanism} does not stop a silent Setup after the files are installed")
 
 
 def test_the_payload_directory_can_be_overridden_for_the_refusal_test():

@@ -75,12 +75,14 @@ release decides the number and bumps both files (a test keeps them equal).
 ### Changed
 - **Setup now refuses instead of half-installing.** If creating the shared data
   directory (and its permissions) or registering the service fails, the installer
-  exits non-zero and rolls back rather than finishing "successfully" with no
+  undoes itself and exits with code 4 rather than finishing "successfully" with no
   protection. Previously Inno ignored those steps' exit codes. **A silent
   deployment that used to report success on a broken machine will now fail** --
   that is the point; read the installer's `/LOG` and
-  `%ProgramData%\PolyShield\logs\install_register_service.log`. The K2 rule
-  download, the Explorer entry and the startup entry stay best-effort. See
+  `%ProgramData%\PolyShield\logs\install_register_service.log`. **A failed upgrade
+  leaves nothing installed** (the old version is removed too) rather than a mixture
+  of old and new files. The K2 rule download, the Explorer entry and the startup
+  entry stay best-effort. See
   [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#a-failed-run-step-does-not-fail-the-install-so-the-required-steps-are-not-run-steps).
 - The `schtasks.exe` invocation behind scheduled scans now comes from
   `polybedrock.schtasks_run`, shared with PolyScour. Task naming, elevation and
