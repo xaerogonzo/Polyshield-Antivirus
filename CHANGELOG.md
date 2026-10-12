@@ -33,6 +33,12 @@ release decides the number and bumps both files (a test keeps them equal).
   sample (K2's own harmless Dummy test signature) and a clean control, and fails
   the build if K2 reports itself available and misses the first or flags the
   second. Previously it only counted loaded plugins.
+- **CI builds the installer and runs the install cycle** (`build-smoke`): GUI,
+  staged runtime, service, installer, then an install/reinstall/uninstall on a
+  throwaway runner with 47 checks. Runs when a pull request touches build files,
+  weekly, and on demand. Its `build-smoke-gate` job **always reports** and is the
+  one to mark as a required status check: it passes only for a clean build or for a
+  diff that cannot affect it, and fails closed if it cannot tell.
 
 - **The installer's service registration now leaves a record.**
   `register_service.ps1` appends a transcript to

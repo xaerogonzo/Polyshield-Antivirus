@@ -8,26 +8,22 @@ name: build-smoke
 # green (see CHANGELOG.md, "Fixed"). This job builds what a release builds, from a
 # clean checkout, and asks the result whether it works.
 #
-# Path-filtered on pull requests because a build takes tens of minutes and almost
-# no change can break it; weekly and on demand for everything else, since the
-# things that rot are outside this repository (Nuitka, the runner image, the
-# python.org download, PolyBedrock's pinned commit).
+# A build takes tens of minutes and almost no change can break it, so on pull
+# requests it runs only when the diff touches something that can (the `changes`
+# job below). It also runs weekly and on demand, since the things that rot are
+# outside this repository (Nuitka, the runner image, the python.org download,
+# PolyBedrock's pinned commit).
+#
+# NO `paths:` FILTER ON THE TRIGGER, on purpose. A workflow filtered at the
+# trigger does not run at all for a pull request that matches nothing, so it
+# reports no check, and a check that is required but never reported blocks the
+# merge forever. The filtering lives in a job instead, and `build-smoke-gate`
+# ALWAYS reports. That gate is the one name to mark as a required status check.
 #
 # UNSIGNED, deliberately: a signing certificate is a secret and this workflow
 # runs on pull requests. Signing is verified by hand per docs/RELEASING.md.
 on:
   pull_request:
-    paths:
-      - build.ps1
-      - build.bat
-      - installer/**
-      - requirements.txt
-      - requirements-build.txt
-      - tools/engine_probe.py
-      - tools/build_probe.py
-      - tools/sandbox_verify.ps1
-      - src/ui/core/paths.py
-      - .github/workflows/build-smoke.yml
   schedule:
     - cron: "17 5 * * 1"
   workflow_dispatch:
@@ -40,7 +36,68 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    # Cheap and on Linux: it only reads the diff. It FAILS CLOSED -- if it cannot
+    # work out what changed, the gate goes red rather than quietly deciding that
+    # nothing relevant did.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash
+    outputs:
+      relevant: ${{ steps.decide.outputs.relevant }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Both ends of the diff must be present; a shallow clone has neither.
+          fetch-depth: 0
+
+      - name: Decide whether this change can affect the build
+        id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          # Shell globs, one per line, matched with `case` (so `*` crosses `/`).
+          # Anything that can change what a release builds or how it is verified.
+          RELEVANT: |
+            build.ps1
+            build.bat
+            installer/*
+            requirements.txt
+            requirements-build.txt
+            tools/engine_probe.py
+            tools/build_probe.py
+            tools/sandbox_verify.ps1
+            tools/ci/*
+            src/ui/core/paths.py
+            .github/workflows/build-smoke.yml
+        run: |
+          set -euo pipefail
+          if [ "$EVENT" != "pull_request" ]; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+            echo "event is '$EVENT', not a pull request: always build"
+            exit 0
+          fi
+          changed=$(git diff --name-only "$BASE" "$HEAD")
+          echo "changed files:"
+          echo "$changed" | sed 's/^/  /'
+          relevant=false
+          while IFS= read -r file; do
+            [ -n "$file" ] || continue
+            while IFS= read -r pattern; do
+              [ -n "$pattern" ] || continue
+              case "$file" in
+                $pattern) relevant=true; echo "relevant: $file (matches $pattern)" ;;
+              esac
+            done <<< "$RELEVANT"
+          done <<< "$changed"
+          echo "relevant=$relevant" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: changes
+    if: needs.changes.outputs.relevant == 'true'
     # The product is Windows-only, and this runner is disposable: the install
     # cycle registers a service and rewrites %ProgramData%\PolyShield ACLs, which
     # is exactly what must never be done on a development machine.
@@ -160,3 +217,47 @@ jobs:
             dist/PolyShield-Setup-*.exe
           if-no-files-found: ignore
           retention-days: 5
+
+  build-smoke-gate:
+    # THE check to require. It always runs and always reports, whatever the diff
+    # was, so requiring it can never leave a pull request waiting for a status
+    # that was never going to arrive.
+    #
+    # It passes in exactly two cases, and `skipped` is only one of them when the
+    # skip was the intended one (docs/gotchas/ci-green-for-the-wrong-reason.md #1:
+    # a skipped job reads as "not applicable" even when it means "something
+    # upstream broke"):
+    #
+    #   relevant=true  and build succeeded   the build ran and was clean
+    #   relevant=false and build skipped     nothing here can affect the build
+    #
+    # Anything else fails: a failed or cancelled build, a build skipped when the
+    # diff said it was needed, or a `changes` job that did not produce an answer.
+    if: always()
+    needs: [changes, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Require a clean build, or a diff that cannot affect it
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          RELEVANT: ${{ needs.changes.outputs.relevant }}
+          BUILD_RESULT: ${{ needs.build.result }}
+        run: |
+          echo "changes: $CHANGES_RESULT | relevant: '$RELEVANT' | build: $BUILD_RESULT"
+          if [ "$CHANGES_RESULT" != "success" ]; then
+            echo "::error::the change detector did not finish ($CHANGES_RESULT); cannot say whether the build was needed"
+            exit 1
+          fi
+          case "$RELEVANT/$BUILD_RESULT" in
+            true/success)
+              echo "build ran and passed" ;;
+            false/skipped)
+              echo "no build-relevant file changed; the build was correctly skipped" ;;
+            *)
+              echo "::error::relevant='$RELEVANT' but the build result was '$BUILD_RESULT'"
+              exit 1 ;;
+          esac
