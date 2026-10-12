@@ -78,7 +78,11 @@ release decides the number and bumps both files (a test keeps them equal).
   `polybedrock.schtasks_run`, shared with PolyScour. Task naming, elevation and
   error handling are unchanged.
 - PolyBedrock pin `3a50288` -> `2801424` (requirements, CI requirements,
-  `build.ps1`); `schtasks_run` added to both Nuitka targets.
+  `build.ps1`); `schtasks_run` added to both Nuitka targets. Then `2801424` ->
+  `1ce539b`, whose only source change is that the settings reader accepts a UTF-8
+  byte-order mark instead of setting a valid file aside as `.corrupt` and falling
+  back to defaults (a settings file edited or written by a Windows tool that adds
+  one no longer loses its contents).
 - `docs/ARCHITECTURE.md` now states that K2 ships in the staged runtime (it has
   since 4c.2) and corrects the signature split: about 23 in the plugins, the rest
   from archives downloaded at install time.

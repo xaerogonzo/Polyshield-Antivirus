@@ -203,7 +203,7 @@ $RUNTIME_SHA256  = "0D57BB6CB078B74D23DBFE91F77D6780D45BED328911609F1F7EE2BA1606
 # because PolyBedrock carries no tags yet; it becomes a tag when it has one.
 # Must match requirements{,-ci}.txt -- tests/test_substrate_pin.py fails if
 # the three drift apart.
-$POLYBEDROCK     = "polybedrock-core @ git+https://github.com/xaerogonzo/PolyBedrock.git@2801424344efc33017d3febd7a87c63f015c7507#subdirectory=core"
+$POLYBEDROCK     = "polybedrock-core @ git+https://github.com/xaerogonzo/PolyBedrock.git@1ce539b338ff5333710dc7ae1fd1489a5e619cc5#subdirectory=core"
 $RUNTIME_PKGS    = @("pywin32", "psutil", "watchdog", "kicomav", $POLYBEDROCK)
 
 function Get-Sha256 {
