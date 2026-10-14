@@ -44,8 +44,7 @@ release decides the number and bumps both files (a test keeps them equal).
   `register_service.ps1` appends a transcript to
   `%ProgramData%\PolyShield\logs\install_register_service.log`. The installer runs
   it hidden and ignores its exit code, so a registration that threw used to leave
-  no trace at all. (The installer still exits 0 in that case; see
-  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#a-failed-run-step-does-not-fail-the-install-known-gap).)
+  no trace at all. (It no longer does: see **Setup now refuses** below.)
 
 ### Fixed
 - **Service registration aborted on any line the service's Python wrote to
@@ -74,6 +73,17 @@ release decides the number and bumps both files (a test keeps them equal).
   predated. The local editable install hid it; CI and `build.ps1` would not have.
 
 ### Changed
+- **Setup now refuses instead of half-installing.** If creating the shared data
+  directory (and its permissions) or registering the service fails, the installer
+  undoes itself and exits with code 4 rather than finishing "successfully" with no
+  protection. Previously Inno ignored those steps' exit codes. **A silent
+  deployment that used to report success on a broken machine will now fail** --
+  that is the point; read the installer's `/LOG` and
+  `%ProgramData%\PolyShield\logs\install_register_service.log`. **A failed upgrade
+  leaves nothing installed** (the old version is removed too) rather than a mixture
+  of old and new files. The K2 rule download, the Explorer entry and the startup
+  entry stay best-effort. See
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#a-failed-run-step-does-not-fail-the-install-so-the-required-steps-are-not-run-steps).
 - The `schtasks.exe` invocation behind scheduled scans now comes from
   `polybedrock.schtasks_run`, shared with PolyScour. Task naming, elevation and
   error handling are unchanged.

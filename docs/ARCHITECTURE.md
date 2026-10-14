@@ -748,13 +748,63 @@ asks the staged service to resolve its own paths, and got an `AttributeError`
 for a function added days earlier. The staging now clears each destination
 first, and the pre-flight is the standing check.
 
-### A failed `[Run]` step does not fail the install (known gap)
+### A failed `[Run]` step does not fail the install, so the required steps are not `[Run]` steps
 
 Inno ignores the exit code of a `[Run]` entry, and `polyshield.iss` has no
 `Check`/`AfterInstall` that reads one. The `[Code]` rollback fires only when Setup
 itself does not reach `ssDone`. So `register_service.ps1` -- which `throw`s on
-purpose, because "registered but dead is the failure worth catching" -- can fail
-and **Setup still exits 0 with no service**.
+purpose, because "registered but dead is the failure worth catching" -- could fail
+and **Setup still exited 0 with no service**.
+
+**Setup now refuses.** An antivirus that is half installed looks protected and is
+not, which is worse than one that is not installed, so the two steps that make the
+product work *and* make its privilege boundary real -- `setup_data_root.ps1` and
+`register_service.ps1` -- are no longer plain `[Run]` entries and a failure of
+either ends Setup.
+
+**What Inno does and does not let a silent Setup do** -- measured on a throwaway
+installer (a text file under a scratch directory, `cmd` echo lines for `[Run]`),
+because the documentation did not settle it and the first attempt got it wrong:
+
+| Attempt | Exit code | Files / uninstaller | Later `[Run]` entries |
+|---|---|---|---|
+| `RaiseException` from `CurStepChanged(ssPostInstall)` | 0 | kept | ran |
+| `Abort` from `CurStepChanged(ssPostInstall)` | 0 | kept | ran |
+| `RaiseException` / `Abort` from a `[Run]` entry's `BeforeInstall` | 0 | kept | ran |
+| a `[Run]` entry whose program cannot be launched | 0 | kept | ran |
+| `ExitProcess(4)` from `ssPostInstall` | **4** | kept (no rollback) | -- |
+| required step in the first `[Run]` entry's `BeforeInstall`; on failure the Inno uninstaller, then `ExitProcess(4)` | **4** | **all removed**, uninstall registration too | **did not run** |
+
+Event order, also measured: `ssInstall` (before the copy) -> `[Run]` entries ->
+`ssPostInstall` -> `ssDone`. So `ssPostInstall` is *after* `[Run]`, not before it.
+
+The last row is what ships. The first `[Run]` entry is an unconditional sentinel
+(`cmd /c exit 0`) whose `BeforeInstall` is `RunRequiredSteps`: it runs after the files
+are copied and before every other entry, data root first (a directory the app
+creates for itself cannot inherit a weaker ACL), then the service. On failure,
+`FailSetup` logs the reason, undoes the install with **Inno's own uninstaller** (which
+runs `[UninstallRun]` -- `PolyShield.exe --unregister` -- removes the files and the
+uninstall registration, and keeps user data in a silent run), waits for the
+uninstaller to finish, and ends with `ExitProcess(4)`, Inno's "fatal error during the
+actual installation process" code. `ExitProcess` skips `DeinitializeSetup`, which is
+why the undo is explicit. Everything still in `[Run]` (the K2 rule download, the
+Explorer verb, the startup entry) is deliberately best-effort. `DistDir` is
+overridable (`ISCC /DDistDir=...`) so CI can build a sabotaged payload.
+
+**A failed upgrade leaves nothing installed**, not a mixture of old and new files:
+the uninstaller removes the product that was there (measured: a good 1.0 followed by
+a failing 2.0 leaves no payload, no uninstaller and no registration). Inno's own
+transactional rollback, which would restore the old files, is not reachable from
+here. That is deliberate: for a security product, "not installed, and said so" beats
+"partly updated".
+
+`tools/ci/refusal_test.ps1`, run by `build-smoke`, is the proof on the real
+installer: it builds one whose service source exits 3, runs it, and requires a
+non-zero exit, no registered service, no Explorer verb, no later `[Run]` entry run,
+no `PolyShield.exe` and no uninstaller left, and a log that names the failed step.
+Stray files the program wrote while running (bytecode caches Inno never recorded) may
+remain; their count is **measured and reported** (`refusal.json`), not asserted. It
+refuses to run outside a CI runner.
 
 Observed on the first CI run that completed an install cycle: Inno's own log
 (`/LOG`) records `register_service.ps1 ... Process exit code: 1` followed by
@@ -778,19 +828,19 @@ python.exe : settings: ui_settings.json was unreadable; preserved as ... NativeC
    Windows PowerShell 5.1 prepends a byte-order mark (`EF BB BF`). *Fixed in the
    verifier; the product writes the file without one.*
 2. The settings reader decodes strict UTF-8 (`raw.decode("utf-8")`), so it rejects a
-   BOM, sets the file aside as `.corrupt`, and logs to **stderr**. *Open: whether
-   PolyBedrock should tolerate a BOM (`utf-8-sig`) -- a hand-edit in an older Notepad
-   would do the same to a real user.*
+   BOM, sets the file aside as `.corrupt`, and logs to **stderr**. *Changed in
+   PolyBedrock to `utf-8-sig` (PolyBedrock PR #18); it reaches PolyShield when the
+   pin moves. A hand-edit in an older Notepad would have done the same to a real
+   user.*
 3. `register_service.ps1` runs its native commands under
    `$ErrorActionPreference = "Stop"`, where Windows PowerShell 5.1 turns **any** stderr
    line into a terminating `NativeCommandError` -- `2>&1` and `*> $null` do not
    prevent it -- so a harmless log line aborted the registration, exit 1, *after* the
    pre-flight had passed. *Fixed: the three calls of the service's Python go through
    `Invoke-Native`, which judges by exit code and keeps stdout and stderr apart.*
-4. Inno ignores the exit code, so Setup exited 0. ***Still open.*** Whether a failed
-   registration should fail the whole install is a product decision that has not been
-   made, and until it is, any other way for this script to throw still ends in an
-   installer that reports success with no service.
+4. Inno ignores the exit code, so Setup exited 0. *Fixed: the required steps run from
+   `[Code]` and a failure stops Setup (above). It was a product decision, taken on the
+   principle that a security product should refuse rather than half-install.*
 
 Link 3 matters beyond this test: a deprecation warning or a log line from the
 service's Python would have broken registration for a real user in exactly this

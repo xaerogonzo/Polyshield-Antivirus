@@ -62,6 +62,15 @@ Run **`PolyShield-Setup-<version>.exe`**. It needs administrator rights, and it:
 - registers the PolyShield service and starts it
 - adds *Scan with PolyShield* to the Explorer right-click menu
 
+**If the data folder or the service can't be set up, Setup stops, undoes itself and
+exits with a failure code (4)** rather than finishing with a product that looks
+protected and isn't. On an upgrade that means nothing is left installed, not a mix
+of old and new files. The
+reason is in the installer's log (run it with `/LOG=setup.log`) and in
+`C:\ProgramData\PolyShield\logs\install_register_service.log`. Downloading the K2
+signature archives and adding the right-click entry are best-effort and never
+block an install.
+
 Uninstalling removes all of that. **It keeps your quarantine, logs and
 settings** unless you tick the box asking it not to — a quarantined file may be
 the only copy you have left.
