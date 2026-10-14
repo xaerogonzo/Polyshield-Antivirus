@@ -846,6 +846,46 @@ product, registers the service, rewrites `%ProgramData%\PolyShield` ACLs and
 then uninstalls -- all correct inside a throwaway VM and all unwelcome on a
 machine you were using.
 
+### The same cycle in CI: `build-smoke` (v1.17)
+
+`.github/workflows/tests.yml` proves the code. `build-smoke` proves the **product**:
+it builds the GUI, the staged runtime, the service and the installer from a clean
+checkout on a throwaway Windows runner, then runs this install cycle and a refusal
+test against the result. It is **unsigned** (a certificate is a secret and this runs
+on pull requests).
+
+| Job | What it does |
+|---|---|
+| `changes` | Reads the diff and decides whether anything build-relevant changed (`build.ps1`, `installer/*`, `requirements*.txt`, `tools/sandbox_verify.ps1`, `tools/ci/*`, ...). Fails closed. |
+| `build` | Builds, runs the install cycle (`-SkipSandboxPreconditions -SkipFullReport`), then `tools/ci/refusal_test.ps1`. Only when `changes` says so. |
+| `build-smoke-gate` | **Always reports.** Passes for "relevant and the build passed" or "not relevant and the build was skipped"; a failed, cancelled or wrongly skipped build fails it. This is the one to mark as a required status check. |
+
+It runs when a pull request touches a build-relevant file, weekly, and on demand:
+`gh workflow run build-smoke --ref master`. Because most pull requests do not run
+it, the commit you release may never have been built by CI -- run it on demand
+first (docs/RELEASING.md).
+
+**Reading a red run: read the steps, not the conclusion** (a skipped step reads as
+"not applicable" even when it means "something upstream broke"). Download the
+`build-smoke` artifact; the useful files are
+
+| File | Tells you |
+|---|---|
+| `artifacts/ci/verify.json`, `progress.log` | Every check and its detail; `skipped` lists what was deliberately not run. `progress.log` is written as it goes, so a hang still shows where it stopped. |
+| `artifacts/ci/inno_install.log`, `inno_reinstall.log` | Inno's own log: each `[Run]` step and the `Required step` lines with exit codes. |
+| `artifacts/ci/service_diag_*.txt` | Only on a service-check failure: `sc` state, Service Control Manager events, the installer's `install_register_service.log` transcript, and a re-run of the (read-only) pre-flight. |
+| `artifacts/ci/refusal.json`, `inno_refusal.log` | Whether Setup refused the sabotaged install, and what it left behind (measured, not asserted). |
+
+Two checks are skipped on a runner because they describe the Windows Sandbox itself
+("no Python on PATH", "no pre-existing data root"); they are listed as skipped, never
+counted as passed.
+
+**What this found, in order** -- each one invisible to every unit test and each
+fixed: a pin that predated an import; a runtime build that could not install its
+own dependencies; a build check that needed a profile that had already run k2; an
+install step that finished and then never returned; and a service registration that
+died on one harmless stderr line while Setup reported success.
+
 
 ## Battlespace Tests
 
