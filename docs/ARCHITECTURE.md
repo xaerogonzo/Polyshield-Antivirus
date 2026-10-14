@@ -1469,7 +1469,7 @@ a compiled standalone binary and the bundled tree contains
 #### The pin and the range are two different things
 
 All three sites are **pinned to a commit** -- today
-`@2801424344efc33017d3febd7a87c63f015c7507`. Unpinned, the URL resolved to
+`@1ce539b338ff5333710dc7ae1fd1489a5e619cc5`. Unpinned, the URL resolved to
 whatever `master` happened to be on build day, and `build.ps1` bakes it into the
 interpreter that ships inside the installer: the same PolyShield tag built twice
 would not have been the same product. It is a SHA rather than a tag only because
