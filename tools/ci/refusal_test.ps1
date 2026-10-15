@@ -157,25 +157,32 @@ Add-Result "no later [Run] entry ran after the refusal" `
 
 # The product must be gone, not half there. Inno's own uninstaller does the undo
 # (FailSetup in polyshield.iss), so the executable and the uninstaller must both be
-# absent. Stray files that the program wrote while running (bytecode caches that
-# Inno never recorded) may remain and are reported below, not asserted.
+# absent, and so must every file under the program directory: the bytecode caches
+# that the running product writes (which Inno never recorded) are removed by the
+# [UninstallDelete] rules for service\ and runtime\. The first CI run of the
+# refusal left 10 of them behind; that is now an assertion rather than a footnote.
 $appDir = Join-Path $env:ProgramFiles "PolyShield"
 Add-Result "the program is not left installed (no PolyShield.exe)" `
     (-not (Test-Path (Join-Path $appDir "PolyShield.exe"))) $(if (Test-Path (Join-Path $appDir "PolyShield.exe")) { "STILL THERE" } else { "removed" })
 Add-Result "no uninstaller is left behind" `
     (-not (Test-Path (Join-Path $appDir "unins000.exe"))) $(if (Test-Path (Join-Path $appDir "unins000.exe")) { "STILL THERE" } else { "removed" })
 
-# ---------- Measured, not asserted --------------------------------------------
 $leftover = @()
 if (Test-Path $appDir) {
     $leftover = @(Get-ChildItem $appDir -Recurse -Force -File -ErrorAction SilentlyContinue)
 }
+$sample = @($leftover | Select-Object -First 8 | ForEach-Object { $_.FullName.Substring($appDir.Length) })
+Add-Result "no file of any kind is left in the program directory" ($leftover.Count -eq 0) `
+    $(if ($leftover.Count -eq 0) { "none" } else { "$($leftover.Count) left, e.g. $($sample -join ', ')" })
+
+# ---------- Recorded for the report, not asserted -----------------------------
+# An empty directory left behind is untidy but harmless, so it is reported only.
 $measured = [ordered]@{
     app_dir_exists        = (Test-Path $appDir)
     files_left_in_app_dir = $leftover.Count
-    sample_of_files_left  = @($leftover | Select-Object -First 8 | ForEach-Object { $_.FullName.Substring($appDir.Length) })
+    sample_of_files_left  = $sample
 }
-Write-Host ("  measured (not asserted): app dir exists={0}, files left={1}" -f `
+Write-Host ("  recorded: app dir exists={0}, files left={1}" -f `
     $measured.app_dir_exists, $measured.files_left_in_app_dir)
 
 $failed = @($checks | Where-Object { -not $_.pass }).Count

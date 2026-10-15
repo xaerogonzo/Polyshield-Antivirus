@@ -862,6 +862,23 @@ print('OK' if ok else 'FAIL', msg)
             # for. The checkbox defaults to unticked and /VERYSILENT never ticks it.
             Add-Check "user data survives an uninstall" (Test-Path $sentinel) $sentinel
             Add-Check "shared data root survives an uninstall" (Test-Path $dataDir) $dataDir
+
+            # The program directory, on the other hand, must end up empty. Inno
+            # removes only files it recorded, and the running product writes more
+            # (Python bytecode caches under service\ and runtime\); the
+            # [UninstallDelete] rules in polyshield.iss remove those. The uninstaller
+            # hands off to a temporary copy of itself, so its exit is not the end of
+            # the work: wait, bounded, for the directory to empty before judging it.
+            $emptyDeadline = (Get-Date).AddSeconds(60)
+            do {
+                $left = @(Get-ChildItem $appDir -Recurse -Force -File -ErrorAction SilentlyContinue)
+                if ($left.Count -eq 0) { break }
+                Start-Sleep -Milliseconds 500
+            } while ((Get-Date) -lt $emptyDeadline)
+            Add-Check "no file is left in the program directory after uninstall" ($left.Count -eq 0) `
+                $(if ($left.Count -eq 0) { "none" } else {
+                    "$($left.Count) left, e.g. " + (($left | Select-Object -First 5 |
+                        ForEach-Object { $_.FullName.Substring($appDir.Length) }) -join ", ") })
         }
     }
 }

@@ -604,3 +604,34 @@ def test_the_refusal_test_will_not_run_on_a_machine_that_cannot_be_thrown_away()
     script = (_ROOT / "tools" / "ci" / "refusal_test.ps1").read_text(encoding="utf-8")
     assert "GITHUB_ACTIONS" in script and "POLYSHIELD_DISPOSABLE_MACHINE" in script
     assert "Refusing to run" in script
+
+
+# == Uninstall leaves nothing the product wrote ================================
+#
+# Inno removes only the files it recorded. The running product writes more -- Python
+# bytecode caches under service\ and runtime\ -- which survived every uninstall and
+# every refused install (10 files measured on a runner after a refusal; modelled on a
+# throwaway installer, they survive a normal uninstall too). [UninstallDelete] removes
+# the two subtrees the installer owns outright.
+
+def test_uninstall_removes_the_two_subtrees_the_installer_owns():
+    section = _strip_iss_comments(_iss_section("UninstallDelete"))
+    for sub in ("service", "runtime"):
+        assert f'Name: "{{app}}\{sub}"' in section, (
+            f"{sub}\ is not removed at uninstall, so bytecode caches written there survive")
+        assert "filesandordirs" in section
+
+
+def test_uninstall_never_deletes_the_install_directory_itself():
+    """The user can pick any install directory in the wizard. filesandordirs on
+    {app} itself would delete whatever else happens to live there."""
+    section = _strip_iss_comments(_iss_section("UninstallDelete"))
+    for line in section.splitlines():
+        assert 'Name: "{app}"' not in line, f"this removes the whole install directory: {line}"
+
+
+def test_both_verifiers_assert_that_no_file_is_left_after_uninstall_or_refusal():
+    verifier = _ps_code("tools/sandbox_verify.ps1")
+    assert "no file is left in the program directory after uninstall" in verifier
+    refusal = _ps_code("tools/ci/refusal_test.ps1")
+    assert "no file of any kind is left in the program directory" in refusal
