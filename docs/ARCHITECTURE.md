@@ -801,10 +801,21 @@ here. That is deliberate: for a security product, "not installed, and said so" b
 `tools/ci/refusal_test.ps1`, run by `build-smoke`, is the proof on the real
 installer: it builds one whose service source exits 3, runs it, and requires a
 non-zero exit, no registered service, no Explorer verb, no later `[Run]` entry run,
-no `PolyShield.exe` and no uninstaller left, and a log that names the failed step.
-Stray files the program wrote while running (bytecode caches Inno never recorded) may
-remain; their count is **measured and reported** (`refusal.json`), not asserted. It
-refuses to run outside a CI runner.
+no `PolyShield.exe`, no uninstaller and **no file of any kind** left in the program
+directory, and a log that names the failed step. It refuses to run outside a CI
+runner.
+
+**Uninstall removes what the product wrote, not only what Inno recorded.** The first
+run of that test left 10 files behind: Python bytecode caches (`__pycache__\*.pyc`)
+that the pre-flight run of the service wrote under `service\`. Inno removes only the
+files it recorded, so the same files survived every *normal* uninstall too (modelled
+on a throwaway installer: a cache written after install is left behind; with the rule
+below the directory is gone). `[UninstallDelete]` now removes `{app}\service` and
+`{app}\runtime`, the two subtrees the installer owns outright. It deliberately does
+**not** target `{app}` itself: the wizard lets the user choose any directory, and
+`filesandordirs` on it would delete whatever else lives there. Both `sandbox_verify.ps1`
+(after a normal uninstall) and `refusal_test.ps1` (after a refusal) assert that the
+program directory holds no files.
 
 Observed on the first CI run that completed an install cycle: Inno's own log
 (`/LOG`) records `register_service.ps1 ... Process exit code: 1` followed by

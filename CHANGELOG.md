@@ -35,7 +35,7 @@ release decides the number and bumps both files (a test keeps them equal).
   second. Previously it only counted loaded plugins.
 - **CI builds the installer and runs the install cycle** (`build-smoke`): GUI,
   staged runtime, service, installer, then an install/reinstall/uninstall on a
-  throwaway runner with 47 checks. Runs when a pull request touches build files,
+  throwaway runner with about 50 checks. Runs when a pull request touches build files,
   weekly, and on demand. Its `build-smoke-gate` job **always reports** and is the
   one to mark as a required status check: it passes only for a clean build or for a
   diff that cannot affect it, and fails closed if it cannot tell.
@@ -47,6 +47,12 @@ release decides the number and bumps both files (a test keeps them equal).
   no trace at all. (It no longer does: see **Setup now refuses** below.)
 
 ### Fixed
+- **Uninstall left files behind in the program directory.** Inno removes only the
+  files it recorded, and the running product writes more -- Python bytecode caches
+  (`__pycache__\*.pyc`) under `service\` and `runtime\` -- so `C:\Program
+  Files\PolyShield` survived every uninstall and every refused install. The
+  installer now removes those two subtrees (never the install directory itself, which
+  the user can choose). Both the install-cycle verifier and the refusal test assert it.
 - **Service registration aborted on any line the service's Python wrote to
   stderr.** `register_service.ps1` ran its native commands under
   `$ErrorActionPreference = "Stop"`, where Windows PowerShell 5.1 turns a stderr

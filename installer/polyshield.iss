@@ -173,6 +173,20 @@ Filename: "{app}\{#AppExeName}"; Description: "Launch {#AppName}"; \
 Filename: "{app}\{#AppExeName}"; Parameters: "--unregister"; \
   RunOnceId: "PolyShieldUnregister"; Flags: runhidden waituntilterminated
 
+[UninstallDelete]
+; The two subtrees the installer owns outright. Inno removes only files it
+; recorded, and the running product writes more into these: Python bytecode
+; caches (__pycache__\*.pyc) for the service source and the staged runtime. Left
+; alone they survive every uninstall AND a refused install, so the program
+; directory never goes away. Measured on a runner after a refusal: 10 stray .pyc
+; files; modelled on a throwaway installer, they also survive a normal uninstall.
+;
+; Deliberately these two, NOT {app} itself: a user can pick any install directory,
+; and filesandordirs on {app} would delete whatever else lives there. User data is
+; under %ProgramData%\PolyShield and is not touched here.
+Type: filesandordirs; Name: "{app}\service"
+Type: filesandordirs; Name: "{app}\runtime"
+
 [Code]
 var
   RemoveDataCheckBox: TNewCheckBox;
