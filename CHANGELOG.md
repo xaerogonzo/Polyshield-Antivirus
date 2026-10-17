@@ -15,6 +15,11 @@ login-autostart, tray and uninstall-entry work below is labelled "v1.17" in
 `CLAUDE.md`, so this section is the candidate 1.17 notes; whoever cuts the
 release decides the number and bumps both files (a test keeps them equal).
 
+### Fixed
+- **C2 blocklist update returned "no usable records".** abuse.ch now quotes every
+  field and changed ThreatFox's columns; the hand-rolled `split(",")` parsers kept
+  the quotes, so no IP validated. Both now use `csv` (ThreatFox by header name).
+
 ### Added
 - **Start with Windows (opt-in).** A per-user login entry that launches
   PolyShield minimised to the notification area (`--minimized` / `--tray`), a
