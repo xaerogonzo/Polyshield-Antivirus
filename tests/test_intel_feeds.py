@@ -819,3 +819,20 @@ def test_guardian_quarantines_a_corrupt_bloom(
     assert scanner._load_nsrl_bloom() is None
     assert not bloom_path.exists(), "a corrupt filter must be removed, not re-read"
     assert _meta(intel_db, "nsrl_bloom_stale") == "1"
+
+
+# ══ Quoted-CSV regression (abuse.ch quotes every field since 2026) ═══════════
+
+def test_feodo_parses_fully_quoted_rows(feeds):
+    raw = ('"first_seen_utc","dst_ip","dst_port","c2_status","last_online","malware"\n'
+           '"2026-01-13 21:41:15","34.204.119.63","443","offline","2026-03-01","QakBot"')
+    assert feeds._parse_feodo(raw) == [("34.204.119.63", "offline", 443, "QakBot")]
+
+
+def test_threatfox_parses_current_export_layout(feeds):
+    raw = ('# "first_seen_utc","ioc_id","ioc_value","ioc_type","threat_type","fk_malware",'
+           '"malware_alias","malware_printable","last_seen_utc","confidence_level"\n'
+           '"2026-10-17 07:05:05", "1971032", "103.115.57.95:8084", "ip:port", "botnet_cc", '
+           '"win.vshell", "None", "VShell", "", "100"')
+    assert feeds._parse_threatfox(raw) == [
+        ("103.115.57.95", "threatfox:100%", 8084, "VShell")]

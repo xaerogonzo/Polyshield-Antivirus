@@ -708,9 +708,23 @@ def clear_malicious_db(
 
 # ── Feodo Tracker C2 IP blocklist ────────────────────────────────────────────
 
+def _csv_rows(raw: str):
+    """Yield parsed CSV rows from an abuse.ch export, skipping blanks.
+
+    abuse.ch now quotes every field (``"a","b"`` or ``"a", "b"``); the old
+    ``line.split(",")`` left the quotes on each value, so no IP validated and
+    every feed reported zero records.  The csv module handles both quoted and
+    unquoted rows.  ``#`` comment lines are skipped here -- callers that need
+    the commented column header read it themselves.
+    """
+    import csv
+    lines = [ln for ln in raw.splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    yield from csv.reader(lines, skipinitialspace=True)
+
+
 def _parse_feodo(raw: str) -> list[tuple[str, str, int, str]]:
     """
-    Parse Feodo Tracker CSV.
+    Parse Feodo Tracker CSV (fields may or may not be quoted).
     Format: first_seen_utc,dst_ip,dst_port,c2_status,last_online,malware
     Returns list of (ip, tags, port, malware).
 
@@ -720,17 +734,14 @@ def _parse_feodo(raw: str) -> list[tuple[str, str, int, str]]:
     blocklist, where network_monitor compared every live connection against it.
     """
     records: list[tuple[str, str, int, str]] = []
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split(",")
+    for parts in _csv_rows(raw):
+        parts = [p.strip() for p in parts]
         if len(parts) < 4:
             continue
         ip      = _valid_ip(parts[1])
-        port    = int(parts[2].strip()) if parts[2].strip().isdigit() else 0
-        status  = parts[3].strip()
-        malware = parts[5].strip() if len(parts) > 5 else ""
+        port    = int(parts[2]) if parts[2].isdigit() else 0
+        status  = parts[3]
+        malware = parts[5] if len(parts) > 5 else ""
         if ip:
             records.append((ip, status, port, malware))
     return records
@@ -772,26 +783,41 @@ def _split_ioc_endpoint(ioc_value: str) -> tuple[str, int]:
 def _parse_threatfox(raw: str) -> list[tuple[str, str, int, str]]:
     """
     Parse ThreatFox ip-port CSV.
-    Format: "id","ioc_type","ioc_value","malware","confidence_level"
     ioc_value is "ip:port" or "ip" (IPv4 and IPv6).
     Returns list of (ip, tags, port, malware).
+
+    Columns are located by name.  The current export puts its header in a
+    '#'-comment (first_seen_utc, ioc_id, ioc_value, ioc_type, threat_type,
+    fk_malware, malware_alias, malware_printable, last_seen_utc,
+    confidence_level, ...); the previous layout was id, ioc_type, ioc_value,
+    malware, confidence_level.  With no recognisable header the previous
+    layout is assumed.
     """
-    records: list[tuple[str, str, int, str]] = []
+    cols = {"ioc_value": 2, "malware": 3, "confidence": 4}
     for line in raw.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or line.startswith('"id"'):
+        if "ioc_value" in line and line.lstrip().startswith("#"):
+            import csv
+            names = next(csv.reader([line.lstrip("# ").strip()], skipinitialspace=True))
+            idx = {n.strip(): i for i, n in enumerate(names)}
+            cols = {
+                "ioc_value":  idx.get("ioc_value", 2),
+                "malware":    idx.get("malware_printable", idx.get("malware", 3)),
+                "confidence": idx.get("confidence_level", 4),
+            }
+            break
+
+    def _field(parts: list[str], key: str) -> str:
+        i = cols[key]
+        return parts[i].strip() if i < len(parts) else ""
+
+    records: list[tuple[str, str, int, str]] = []
+    for parts in _csv_rows(raw):
+        if len(parts) < 4 or parts[0].strip() in ("id", "first_seen_utc"):
             continue
-        # Strip outer quotes from each field
-        parts = [p.strip().strip('"') for p in line.split('","')]
-        if len(parts) < 4:
-            continue
-        ioc_value = parts[2] if len(parts) > 2 else ""
-        malware   = parts[3] if len(parts) > 3 else ""
-        confidence = parts[4].strip('"') if len(parts) > 4 else ""
-        tags      = f"threatfox:{confidence}%"
-        ip, port  = _split_ioc_endpoint(ioc_value)
+        ip, port = _split_ioc_endpoint(_field(parts, "ioc_value"))
         if ip:
-            records.append((ip, tags, port, malware))
+            records.append((ip, f"threatfox:{_field(parts, 'confidence')}%",
+                            port, _field(parts, "malware")))
     return records
 
 
